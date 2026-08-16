@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Checkpoints / model files
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Dataset / cache
+.cache/
+data/
+datasets/

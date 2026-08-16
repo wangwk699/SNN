@@ -1,0 +1,22 @@
+# Python 3.10; install a CUDA-matched PyTorch wheel first as described in 环境配置.md.
+torch==2.5.1
+transformers==4.53.2
+tokenizers==0.21.2
+accelerate==1.8.1
+deepspeed==0.16.9
+trl==0.19.1
+datasets==3.6.0
+evaluate==0.4.3
+rouge-score==0.1.2
+safetensors==0.5.3
+huggingface-hub==0.33.2
+numpy==1.26.4
+PyYAML==6.0.2
+tqdm==4.67.1
+sentencepiece==0.2.0
+protobuf==5.29.5
+einops==0.8.1
+scipy==1.15.3
+scikit-learn==1.6.1
+pytest==8.4.1
+lm-eval @ git+https://github.com/EleutherAI/lm-evaluation-harness.git@6d2abda4fd171e68a8789330c4149e37c1ca0bda

@@ -1,0 +1,211 @@
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import Any
+
+import torch
+from torch.utils.data import DataLoader
+
+from .artifacts import write_json
+from .data import CausalLMCollator, tokenize_dataset
+from .stats import StatisticsStore
+
+
+def _group_reduce(vector: torch.Tensor, group_size: int, reduction: str) -> torch.Tensor:
+    channels = vector.numel()
+    if group_size <= 0 or group_size >= channels:
+        group_size = channels
+    if channels % group_size != 0:
+        raise ValueError(f"channels={channels} must be divisible by group_size={group_size}")
+    grouped = vector.reshape(-1, group_size)
+    if reduction == "min":
+        return grouped.amin(dim=-1)
+    if reduction == "max":
+        return grouped.amax(dim=-1)
+    if reduction == "sum":
+        return grouped.sum(dim=-1)
+    raise ValueError(reduction)
+
+
+def _qparams(minimum: torch.Tensor, maximum: torch.Tensor, bits: int):
+    qmin, qmax = 0, 2**bits - 1
+    scale = ((maximum - minimum) / (qmax - qmin)).clamp_min(1e-8)
+    zero = torch.round(qmin - minimum / scale).clamp(qmin, qmax)
+    representable_min = (qmin - zero) * scale
+    representable_max = (qmax - zero) * scale
+    return scale, zero, representable_min, representable_max
+
+
+def build_site_states(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    channels = int(statistics["channels"])
+    variable_channels = bool(statistics.get("variable_channels", False))
+    configured_group = int(cfg["calibration"].get("group_size", -1))
+    if variable_channels and configured_group > 0:
+        raise ValueError("Variable-length Softmax site 5 only supports the default single group")
+    reduction_group_size = channels if configured_group <= 0 else configured_group
+    runtime_group_size = -1 if configured_group <= 0 else configured_group
+    minimum = _group_reduce(statistics["value_min"].double(), reduction_group_size, "min")
+    maximum = _group_reduce(statistics["value_max"].double(), reduction_group_size, "max")
+    absolute = torch.maximum(minimum.abs(), maximum.abs()).clamp_min(1e-8)
+    saliency_counts = statistics.get("saliency_row_count")
+    if saliency_counts is None or "saliency_sum" not in statistics:
+        raise ValueError("Operator-aware GIF saliency statistics are missing for this site")
+    saliency_counts = saliency_counts.long()
+    observed = saliency_counts > 0
+    if not torch.any(observed):
+        raise ValueError("No operator-aware GIF saliency positions were observed")
+    operator_saliency = torch.zeros(channels, dtype=torch.float64)
+    operator_saliency[observed] = (
+        statistics["saliency_sum"].double()[observed] / saliency_counts[observed]
+    )
+
+    phase_cfg = cfg["phase"]
+    phase_tau = absolute.float()
+    phase_state = {
+        "format_version": 1,
+        "T": int(phase_cfg["T"]),
+        "base": float(phase_cfg["base"]),
+        "surrogate_slope": float(phase_cfg["surrogate_slope"]),
+        "max_spikes": int(phase_cfg.get("max_spikes", 2)),
+        "group_size": runtime_group_size,
+        "tau": phase_tau,
+        "v0": (0.5 * phase_tau * 2 ** (-int(phase_cfg["T"]))).float(),
+    }
+
+    gif_cfg = cfg["gif"]
+    base_bits = int(gif_cfg["base_bits"])
+    high_bits = base_bits + int(gif_cfg["add_bits"])
+    low_scale, low_zero, low_min, low_max = _qparams(minimum, maximum, base_bits)
+    high_scale, high_zero, high_min, high_max = _qparams(minimum, maximum, high_bits)
+    low_ratio = float(gif_cfg["low_ratio"])
+    observed_indices = torch.nonzero(observed, as_tuple=False).flatten()
+    low_channels = int(math.floor(low_ratio * observed_indices.numel()))
+    ordering = observed_indices[
+        torch.argsort(operator_saliency[observed_indices], descending=False)
+    ]
+    mask_low = torch.ones(channels, dtype=torch.bool) if variable_channels else torch.zeros(channels, dtype=torch.bool)
+    if not variable_channels:
+        mask_low[observed_indices] = False
+    mask_low[ordering[:low_channels]] = True
+    gif_state = {
+        "format_version": 1,
+        "base_bits": base_bits,
+        "add_bits": int(gif_cfg["add_bits"]),
+        "low_ratio": low_ratio,
+        "group_size": runtime_group_size,
+        "low_scale": low_scale.float(),
+        "low_zero": low_zero.float(),
+        "high_scale": high_scale.float(),
+        "high_zero": high_zero.float(),
+        "mask_low": mask_low,
+        "saliency_rule": "operator_aware_spikellm_extension",
+        "saliency_score": operator_saliency.float(),
+        "saliency_observed": observed,
+        "variable_key_position_mask": variable_channels,
+        "unobserved_position_policy": "low_bit" if variable_channels else "not_applicable",
+        "integer_decomposition": "unsigned_q_in_base_bit_chunks_then_subtract_zero_once",
+        "scale_initialization": "direct_min_max",
+        "mse_refinement": False,
+        "original_spikellm_dynamic_quantization": False,
+    }
+
+    mtn_cfg = cfg["mtn"]
+    mtn_state = {
+        "format_version": 1,
+        "T": int(mtn_cfg["T"]),
+        "K": int(mtn_cfg["K"]),
+        "group_size": runtime_group_size,
+        "base_scale": (2.0 * absolute).float(),
+        "threshold_factor": float(mtn_cfg.get("threshold_factor", 0.75)),
+    }
+
+    phase_bound = phase_tau.double() * (1.0 - 2.0 ** (-int(phase_cfg["T"])))
+    mtn_bound = 2.0 * int(mtn_cfg["T"]) * absolute
+    gif_lower = torch.maximum(low_min, high_min)
+    gif_upper = torch.minimum(low_max, high_max)
+    lower = torch.maximum(torch.maximum(-phase_bound, -mtn_bound), gif_lower)
+    upper = torch.minimum(torch.minimum(phase_bound, mtn_bound), gif_upper)
+    if torch.any(lower >= upper):
+        bad = torch.nonzero(lower >= upper, as_tuple=False).flatten().tolist()
+        raise ValueError(f"Invalid common clipping interval in groups {bad}")
+    clip_state = {
+        "format_version": 1,
+        "group_size": runtime_group_size,
+        "lower": lower.float(),
+        "upper": upper.float(),
+        "gif_low_range": (low_min.float(), low_max.float()),
+        "gif_high_range": (high_min.float(), high_max.float()),
+        "rule": "intersection(phase, mtn, intersection(gif_low, gif_high))",
+    }
+    return {"phase": phase_state, "gif": gif_state, "mtn": mtn_state, "clip": clip_state}
+
+
+def materialize_calibration_states(site_root: str | Path, cfg: dict[str, Any]) -> dict[str, Any]:
+    root = Path(site_root)
+    manifest: dict[str, Any] = {"format_version": 1, "sites": {}}
+    for statistics_path in sorted(root.glob("layer_*/site_*/statistics.pt")):
+        directory = statistics_path.parent
+        key = directory.relative_to(root).as_posix()
+        statistics = torch.load(statistics_path, map_location="cpu", weights_only=False)
+        states = build_site_states(statistics, cfg)
+        for name, state in states.items():
+            torch.save(state, directory / f"{name}_state.pt")
+        summary = {
+            "phase_T": states["phase"]["T"],
+            "phase_base": states["phase"]["base"],
+            "mtn_T": states["mtn"]["T"],
+            "mtn_K_positive_and_negative": states["mtn"]["K"],
+            "gif_base_bits": states["gif"]["base_bits"],
+            "gif_add_bits": states["gif"]["add_bits"],
+            "gif_low_ratio": states["gif"]["low_ratio"],
+            "group_size": states["phase"]["group_size"],
+            "clip_valid": bool(torch.all(states["clip"]["lower"] < states["clip"]["upper"])),
+        }
+        write_json(directory / "calibration_summary.json", summary)
+        manifest["sites"][key] = summary
+    expected = int(cfg["calibration"].get("expected_sites_per_layer", 9))
+    layers: dict[str, int] = {}
+    for key in manifest["sites"]:
+        layer = key.split("/")[0]
+        layers[layer] = layers.get(layer, 0) + 1
+    incomplete = {layer: count for layer, count in layers.items() if count != expected}
+    if incomplete:
+        raise RuntimeError(f"Incomplete activation-site calibration: {incomplete}")
+    manifest["layer_site_counts"] = layers
+    write_json(root / "calibration_state_manifest.json", manifest)
+    return manifest
+
+
+@torch.no_grad()
+def collect_site_statistics(
+    model: torch.nn.Module,
+    controller: Any,
+    tokenizer: Any,
+    calibration_raw: Any,
+    cfg: dict[str, Any],
+    prefix_ids: list[int],
+    site_root: str | Path,
+) -> dict[str, Any]:
+    dataset = tokenize_dataset(calibration_raw, tokenizer, cfg, prefix_ids=prefix_ids)
+    loader = DataLoader(
+        dataset,
+        batch_size=int(cfg["calibration"].get("batch_size", 1)),
+        shuffle=False,
+        collate_fn=CausalLMCollator(tokenizer),
+    )
+    controller.mode = "collect"
+    controller.statistics = StatisticsStore(
+        max_channels_by_site={5: int(cfg["data"]["max_seq_length"])}
+    )
+    model.eval()
+    device = next(model.parameters()).device
+    for batch in loader:
+        model(
+            input_ids=batch["input_ids"].to(device),
+            attention_mask=batch["attention_mask"].to(device),
+            use_cache=False,
+        )
+    stats_manifest = controller.statistics.reduce_and_save(site_root)
+    state_manifest = materialize_calibration_states(site_root, cfg)
+    return {"statistics": stats_manifest, "states": state_manifest}
