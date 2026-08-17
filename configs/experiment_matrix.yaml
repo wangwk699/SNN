@@ -23,7 +23,7 @@ defaults:
   calibration:
     seed: 42
     num_samples: 128
-    with_replacement: true
+    with_replacement: false
     batch_size: 1
     group_size: -1
     expected_sites_per_layer: 9
@@ -32,7 +32,7 @@ defaults:
     T: 4
     base: 2.0
     surrogate_slope: 4.0
-    max_spikes: 2
+    max_spikes: 4
     timestep_indexing: t_0_to_T_minus_1
     threshold_rule: tau_times_2_pow_minus_t_plus_1
   mtn:
@@ -75,7 +75,7 @@ defaults:
     save_steps: 50
     logging_steps: 10
     save_total_limit: 2
-    deepspeed_config: code/configs/deepspeed_zero3.json
+    deepspeed_config: configs/deepspeed_zero3.json
     resume_from_checkpoint: null
   evaluation:
     batch_size: 1
