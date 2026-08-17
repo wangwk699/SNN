@@ -75,8 +75,8 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError(f"ann_mode must be one of {sorted(ANN_MODES)}, got {mode}")
     if int(cfg["calibration"]["num_samples"]) != 128:
         raise ValueError("Main experiments require exactly 128 calibration draws")
-    if not bool(cfg["calibration"].get("with_replacement", False)):
-        raise ValueError("Calibration sampling must use replacement")
+    if bool(cfg["calibration"].get("with_replacement", False)):
+        raise ValueError("Calibration sampling must be done without replacement")
     if int(cfg["data"]["max_seq_length"]) != 2048:
         raise ValueError("Main experiments require max_seq_length=2048")
     if bool(cfg["data"].get("packing", True)):

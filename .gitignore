@@ -13,3 +13,6 @@ __pycache__/
 .cache/
 data/
 datasets/
+
+# result
+artifacts/

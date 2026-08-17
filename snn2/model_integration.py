@@ -177,11 +177,12 @@ def install_model_integration(
         for projection in (attention.q_proj, attention.k_proj, attention.v_proj):
             handles.append(projection.register_forward_hook(branch_linear_hook))
 
-        def output_linear_hook(_module, inputs, output, index=layer_index):
+        def output_linear_hook(_module, inputs, output, index=layer_index, attn=attention):
             score = _linear_score(inputs[0], output, _module.weight)
-            heads = getattr(attention, "num_heads", None)
+            heads = getattr(attn, "num_heads", None)
             if heads is None:
-                heads = getattr(attention, "num_attention_heads")
+                heads = getattr(attn, "num_attention_heads", None)
+                heads = attn.config.num_attention_heads
             heads = int(heads)
             score = score.reshape(score.shape[0], score.shape[1], heads, -1).transpose(1, 2)
             controller.record_saliency(index, 6, score)

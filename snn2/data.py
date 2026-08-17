@@ -78,10 +78,35 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         raw_validation = raw[validation_split]
         validation_indices = list(range(len(raw_validation)))
 
+    # calibration_rng = random.Random(int(cfg["calibration"]["seed"]))
+    # draws = int(cfg["calibration"]["num_samples"])
+    # calibration_positions = [calibration_rng.randrange(len(train_indices)) for _ in range(draws)]
+    # calibration_indices = [train_indices[position] for position in calibration_positions]
+
     calibration_rng = random.Random(int(cfg["calibration"]["seed"]))
     draws = int(cfg["calibration"]["num_samples"])
-    calibration_positions = [calibration_rng.randrange(len(train_indices)) for _ in range(draws)]
-    calibration_indices = [train_indices[position] for position in calibration_positions]
+    with_replacement = bool(cfg["calibration"].get("with_replacement", False))
+
+    if with_replacement:
+        calibration_positions = [
+            calibration_rng.randrange(len(train_indices))
+            for _ in range(draws)
+        ]
+    else:
+        if draws > len(train_indices):
+            raise ValueError(
+                f"Cannot sample {draws} calibration examples without replacement "
+                f"from only {len(train_indices)} training examples"
+            )
+        calibration_positions = calibration_rng.sample(
+            range(len(train_indices)),
+            k=draws,
+        )
+
+    calibration_indices = [
+        train_indices[position]
+        for position in calibration_positions
+    ]
 
     common = {
         "dataset_name": data_cfg["dataset_name"],
@@ -107,12 +132,16 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         "calibration": {
             **common,
             "split": train_split,
-            "sampling": "seeded_with_replacement",
+            "sampling": (
+                "seeded_with_replacement"
+                if with_replacement
+                else "seeded_without_replacement"
+            ),
             "calibration_seed": int(cfg["calibration"]["seed"]),
             "positions_in_selected_train": calibration_positions,
             "indices": calibration_indices,
             "record_ids": _record_ids(raw_train, calibration_indices),
-            "duplicates_preserved": True,
+            "duplicates_preserved": with_replacement,
             "retained_in_training": True,
         },
     }

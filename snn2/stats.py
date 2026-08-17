@@ -63,9 +63,17 @@ class SiteStatistics:
         if (not self.variable_channels and active != self.channels) or active > self.channels:
             raise ValueError(f"Channel dimension changed from {self.channels} to {values.shape[-1]}")
         work = values.float()
-        self.value_min[:active].minimum_(work.amin(dim=0).double().cpu())
-        self.value_max[:active].maximum_(work.amax(dim=0).double().cpu())
-        self.abs_max[:active].maximum_(work.abs().amax(dim=0).double().cpu())
+        # self.value_min[:active].minimum_(work.amin(dim=0).double().cpu())
+        # self.value_max[:active].maximum_(work.amax(dim=0).double().cpu())
+        # self.abs_max[:active].maximum_(work.abs().amax(dim=0).double().cpu())
+
+        current_min = work.amin(dim=0).double().cpu()
+        current_max = work.amax(dim=0).double().cpu()
+        current_abs_max = work.abs().amax(dim=0).double().cpu()
+        self.value_min[:active].copy_(torch.minimum(self.value_min[:active], current_min))
+        self.value_max[:active].copy_(torch.maximum(self.value_max[:active], current_max))
+        self.abs_max[:active].copy_(torch.maximum(self.abs_max[:active], current_abs_max))
+
         self.sum_abs[:active].add_(work.abs().sum(dim=0).double().cpu())
         self.sum_sq[:active].add_(work.square().sum(dim=0).double().cpu())
         self.row_count.add_(values.shape[0])

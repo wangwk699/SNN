@@ -1,0 +1,133 @@
+experiment:
+  id: snn2_main_v1
+  output_root: artifacts
+  seed: 42
+  trust_remote_code: false
+  task: tulu3
+  model_name: meta-llama/Meta-Llama-3-8B
+  model_revision: 8cde5ca
+  ann_mode: gif_aware
+data:
+  max_seq_length: 2048
+  truncation: true
+  truncation_side: right
+  packing: false
+  dataset_name: allenai/tulu-3-sft-mixture
+  dataset_revision: 3c09be1fe3882f2b1cb5a42ab26ceeab3dc9c6ea
+  train_split: train
+  train_size: 100000
+  validation_size: 1000
+  chat_template_override: true
+  chat_template: '{{ bos_token }}{% for message in messages %}{{ ''<|start_header_id|>''
+    + message[''role''] + ''<|end_header_id|>\n\n'' }}{% if message[''role''] == ''assistant''
+    %}{% generation %}{{ message[''content''] | trim + ''<|eot_id|>'' }}{% endgeneration
+    %}{% else %}{{ message[''content''] | trim + ''<|eot_id|>'' }}{% endif %}{% endfor
+    %}{% if add_generation_prompt %}{{ ''<|start_header_id|>assistant<|end_header_id|>\n\n''
+    }}{% endif %}'
+rotation:
+  enabled: true
+  seed: 42
+  fusion_device: cuda
+  implementation: fused_weights_plus_online_R3_R4
+  fused_weights_are_finetuned: true
+prefix:
+  enabled: true
+  outlier_threshold: 64.0
+  detection_activation: down_proj_input
+  loss_masked: true
+calibration:
+  seed: 42
+  num_samples: 128
+  with_replacement: false
+  batch_size: 1
+  group_size: -1
+  expected_sites_per_layer: 9
+  device_map: auto
+phase:
+  T: 4
+  base: 2.0
+  surrogate_slope: 4.0
+  max_spikes: 4
+  timestep_indexing: t_0_to_T_minus_1
+  threshold_rule: tau_times_2_pow_minus_t_plus_1
+mtn:
+  T: 4
+  K: 6
+  threshold_factor: 0.75
+gif:
+  base_bits: 4
+  add_bits: 1
+  low_ratio: 0.9
+  salient_ratio: 0.1
+  scale_initialization: direct_min_max
+  mse_scale_refinement: false
+  runtime_quantization: static
+  saliency_rule: operator_aware_spikellm_extension
+replacement:
+  train_mode: gif
+  outer_clip_backward: hard_clip
+  clip_rule: phase_mtn_gif_low_high_common_intersection
+training:
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 1.0e-06
+  weight_decay: 0.0
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1.0e-08
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  bf16: true
+  fp16: false
+  dtype: bfloat16
+  max_grad_norm: 1.0
+  gradient_checkpointing: false
+  attn_implementation: eager
+  flash_attention: false
+  eval_steps: 50
+  save_steps: 50
+  logging_steps: 10
+  save_total_limit: 2
+  deepspeed_config: configs/deepspeed_zero3.json
+  resume_from_checkpoint: null
+evaluation:
+  batch_size: 1
+  max_new_tokens: 32
+  tldr_input_length: 512
+  tldr_test_samples: 6528
+  rouge_types:
+  - rouge1
+  - rouge2
+  - rougeL
+  - rougeLsum
+  max_samples: null
+  limit: null
+  lm_eval_revision: 6d2abda4fd171e68a8789330c4149e37c1ca0bda
+  apply_chat_template: true
+  lm_eval_task_specs:
+  - name: truthfulqa_mc1
+    num_fewshot: 6
+    metric: acc_mc1
+    cot: true
+  - name: mmlu_pro
+    num_fewshot: 0
+    metric: exact_match
+    cot: false
+  - name: bbh
+    num_fewshot: 3
+    metric: exact_match
+    cot: false
+  - name: agieval
+    num_fewshot: 0
+    metric: acc
+    cot: false
+  - name: gsm8k_cot
+    num_fewshot: 8
+    metric: exact_match
+    cot: true
+  - name: minerva_math
+    num_fewshot: 4
+    metric: exact_match
+    cot: false
