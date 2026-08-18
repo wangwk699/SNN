@@ -15,6 +15,7 @@ from snn2.data import _as_text, load_selected_raw
 from snn2.evaluation import greedy_generate
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
+from snn2.sites import SITE_COUNT, SITE_TOPOLOGY_VERSION
 from snn2.modeling import (
     load_model,
     load_tokenizer,
@@ -418,12 +419,12 @@ def main():
             #
             # temporal sample steps
             # × Transformer layers
-            # × 9 replacement sites
+            # × SITE_COUNT activation replacement sites
             # ----------------------------------------
             activation_site_temporal_operator_calls = (
                 temporal_sample_step_forwards
                 * layers
-                * 9
+                * SITE_COUNT
             )
 
             # ----------------------------------------
@@ -435,7 +436,7 @@ def main():
             batched_activation_site_temporal_slots = (
                 batched_temporal_sample_slots
                 * layers
-                * 9
+                * SITE_COUNT
             )
 
             metrics.update(
@@ -465,6 +466,8 @@ def main():
                     "world_size": world_size,
                     "neuron": args.neuron,
                     "full_temporal_steps": steps,
+                    "site_count": SITE_COUNT,
+                    "site_topology_version": SITE_TOPOLOGY_VERSION,
                     "decode": "greedy",
                     "input_length": input_length,
                     "max_new_tokens": max_new,

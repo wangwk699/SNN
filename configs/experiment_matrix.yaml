@@ -26,7 +26,7 @@ defaults:
     with_replacement: false
     batch_size: 1
     group_size: -1
-    expected_sites_per_layer: 9
+    expected_sites_per_layer: 10
     device_map: auto
   phase:
     T: 4

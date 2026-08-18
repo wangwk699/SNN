@@ -5,29 +5,36 @@ from typing import Any
 
 import torch
 
-from .artifacts import ArtifactLayout, sha256_file, write_json
+from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
+from .sites import SITE_COUNT, SITE_TOPOLOGY_VERSION, topology_metadata, validate_site_topology
 from .controller import SiteController
 
 
 def validate_calibration(site_root: str | Path) -> dict[str, Any]:
     root = Path(site_root)
-    sites = sorted(path.parent for path in root.glob("layer_*/site_*/clip_state.pt"))
-    if not sites:
-        raise FileNotFoundError(f"No site calibration states under {root}")
-    layers: dict[str, int] = {}
+    site_sets = validate_site_topology(root)
+    sites = sorted(path for path in root.glob("layer_*/site_*") if path.is_dir())
     for directory in sites:
-        layer = directory.parent.name
-        layers[layer] = layers.get(layer, 0) + 1
         for name in ("statistics.pt", "phase_state.pt", "gif_state.pt", "mtn_state.pt", "clip_state.pt"):
             if not (directory / name).exists():
                 raise FileNotFoundError(directory / name)
         clip = torch.load(directory / "clip_state.pt", map_location="cpu", weights_only=False)
         if torch.any(clip["lower"] >= clip["upper"]):
             raise ValueError(f"Invalid clipping interval: {directory}")
-    incomplete = {layer: count for layer, count in layers.items() if count != 9}
-    if incomplete:
-        raise RuntimeError(f"Expected nine sites per layer, got {incomplete}")
-    return {"layers": len(layers), "sites": len(sites), "site_counts": layers}
+    manifest_path = root / "calibration_state_manifest.json"
+    if manifest_path.exists():
+        manifest = read_json(manifest_path)
+        if manifest.get("site_topology_version") != SITE_TOPOLOGY_VERSION or manifest.get("site_count") != SITE_COUNT:
+            raise RuntimeError(
+                "Calibration manifest topology does not match the current code: "
+                f"expected version={SITE_TOPOLOGY_VERSION}, sites={SITE_COUNT}"
+            )
+    return {
+        "layers": len(site_sets),
+        "sites": len(sites),
+        "site_counts": {layer: len(names) for layer, names in site_sets.items()},
+        **topology_metadata(),
+    }
 
 
 def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) -> dict[str, Any]:
@@ -70,6 +77,7 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
         ),
         "post_finetuning_recalibration": False,
         "calibration_validation": validation,
+        **topology_metadata(),
     }
     write_json(output / "conversion_metadata.json", metadata)
     return metadata

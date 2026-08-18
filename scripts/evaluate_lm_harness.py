@@ -11,6 +11,7 @@ from snn2.controller import SiteController
 from snn2.evaluation import EvaluationModelProxy
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
+from snn2.sites import SITE_COUNT, SITE_TOPOLOGY_VERSION
 from snn2.modeling import (
     load_model,
     load_tokenizer,
@@ -329,6 +330,10 @@ def main():
 
             "full_temporal_steps": steps,
 
+            "site_count": SITE_COUNT,
+
+            "site_topology_version": SITE_TOPOLOGY_VERSION,
+
             "batch_size": batch_size,
 
             "prefix_token_ids": (
@@ -345,14 +350,14 @@ def main():
             "activation_site_temporal_operator_calls": (
                 temporal_sample_step_forwards
                 * layers
-                * 9
+                * SITE_COUNT
             ),
 
             # Actual batched sample-slot execution
             "batched_activation_site_temporal_slots": (
                 batched_temporal_sample_slots
                 * layers
-                * 9
+                * SITE_COUNT
             ),
         }
 

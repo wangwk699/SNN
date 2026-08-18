@@ -4,6 +4,7 @@ from _common import parser, setup
 
 from snn2.artifacts import read_json, write_json
 from snn2.conversion import validate_calibration
+from snn2.sites import topology_metadata
 from snn2.logging_utils import StageRun
 
 
@@ -199,6 +200,7 @@ def main():
             "prefix_kv_required": bool(
                 prefix_token_ids
             ),
+            **topology_metadata(),
         }
 
         write_json(

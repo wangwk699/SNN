@@ -8,23 +8,10 @@ import torch
 
 from .artifacts import write_json
 
-
-SITE_NAMES = {
-    1: "post_input_rmsnorm",
-    2: "q_post_rope_r3",
-    3: "k_post_rope_r3",
-    4: "v_projection_r2",
-    5: "post_spiking_softmax",
-    6: "post_attention_value_dot_r2",
-    7: "post_mlp_rmsnorm",
-    8: "post_spiking_silu",
-    9: "post_mlp_product_r4",
-}
-
-
-def site_key(layer_index: int, site_index: int) -> str:
-    return f"layer_{layer_index:03d}/site_{site_index:02d}_{SITE_NAMES[site_index]}"
-
+from .sites import (
+    SITE_COORDINATES, SITE_COUNT, SITE_IDS, SITE_NAMES, SITE_TOPOLOGY_VERSION,
+    site_key, topology_metadata,
+)
 
 @dataclass
 class SiteStatistics:
@@ -197,7 +184,7 @@ class StatisticsStore:
 
     def reduce_and_save(self, root: str | Path) -> dict[str, Any]:
         root = Path(root)
-        manifest: dict[str, Any] = {"format_version": 1, "sites": {}}
+        manifest: dict[str, Any] = {"format_version": 1, **topology_metadata(), "sites": {}}
         for key, stats in sorted(self.items.items()):
             stats.distributed_reduce()
             directory = root / key

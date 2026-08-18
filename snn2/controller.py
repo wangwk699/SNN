@@ -6,7 +6,8 @@ from typing import Any
 import torch
 
 from .neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, StaticGIF
-from .stats import StatisticsStore, site_key
+from .sites import site_key
+from .stats import StatisticsStore
 
 
 class SiteController:

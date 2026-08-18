@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from torch.utils.data import DataLoader
 
 from .artifacts import write_json
 from .data import CausalLMCollator, tokenize_dataset
+from .sites import SITE_COUNT, SITE_TOPOLOGY_VERSION, topology_metadata, validate_site_topology
 from .stats import StatisticsStore
 from .prefix_cache import install_prefix_kv_forward
 
@@ -144,7 +146,7 @@ def build_site_states(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[s
 
 def materialize_calibration_states(site_root: str | Path, cfg: dict[str, Any]) -> dict[str, Any]:
     root = Path(site_root)
-    manifest: dict[str, Any] = {"format_version": 1, "sites": {}}
+    manifest: dict[str, Any] = {"format_version": 1, **topology_metadata(), "sites": {}}
     for statistics_path in sorted(root.glob("layer_*/site_*/statistics.pt")):
         directory = statistics_path.parent
         key = directory.relative_to(root).as_posix()
@@ -165,15 +167,14 @@ def materialize_calibration_states(site_root: str | Path, cfg: dict[str, Any]) -
         }
         write_json(directory / "calibration_summary.json", summary)
         manifest["sites"][key] = summary
-    expected = int(cfg["calibration"].get("expected_sites_per_layer", 9))
-    layers: dict[str, int] = {}
-    for key in manifest["sites"]:
-        layer = key.split("/")[0]
-        layers[layer] = layers.get(layer, 0) + 1
-    incomplete = {layer: count for layer, count in layers.items() if count != expected}
-    if incomplete:
-        raise RuntimeError(f"Incomplete activation-site calibration: {incomplete}")
-    manifest["layer_site_counts"] = layers
+    expected = int(cfg["calibration"]["expected_sites_per_layer"])
+    if expected != SITE_COUNT:
+        raise ValueError(
+            "calibration.expected_sites_per_layer must match "
+            f"the code topology: config={expected}, code={SITE_COUNT}"
+        )
+    site_sets = validate_site_topology(root)
+    manifest["layer_site_counts"] = {layer: len(sites) for layer, sites in site_sets.items()}
     write_json(root / "calibration_state_manifest.json", manifest)
     return manifest
 
@@ -188,6 +189,23 @@ def collect_site_statistics(
     prefix_key_values: Any,
     site_root: str | Path,
 ) -> dict[str, Any]:
+    root = Path(site_root)
+    existing_layers = [path for path in root.glob("layer_*") if path.is_dir()]
+    if existing_layers:
+        validate_site_topology(root)
+        for manifest_name in ("statistics_manifest.json", "calibration_state_manifest.json"):
+            manifest_path = root / manifest_name
+            if not manifest_path.exists():
+                continue
+            metadata = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if (
+                metadata.get("site_topology_version") != SITE_TOPOLOGY_VERSION
+                or metadata.get("site_count") != SITE_COUNT
+            ):
+                raise RuntimeError(
+                    "Existing calibration artifact uses a stale site topology; "
+                    "remove or move the old sites/ directory before recalibrating."
+                )
     dataset = tokenize_dataset(calibration_raw, tokenizer, cfg, prefix_ids=None)
     loader = DataLoader(
         dataset,

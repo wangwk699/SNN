@@ -134,12 +134,15 @@ def _make_mlp_forward(controller: SiteController, layer_index: int, r4: Hadamard
         gate = mlp.act_fn(mlp.gate_proj(x))
         gate = controller.apply(layer_index, 8, gate)
         up = mlp.up_proj(x)
+        up = controller.apply(layer_index, 9, up)
         if controller.mode == "collect":
-            controller.record_saliency(layer_index, 8, gate.square() * up.square())
+            product_saliency = gate.square() * up.square()
+            controller.record_saliency(layer_index, 8, product_saliency)
+            controller.record_saliency(layer_index, 9, product_saliency)
         product = gate * up
         if r4 is not None:
             product = random_hadamard(product, r4)
-        product = controller.apply(layer_index, 9, product)
+        product = controller.apply(layer_index, 10, product)
         return mlp.down_proj(product)
 
     return forward
@@ -215,7 +218,7 @@ def install_model_integration(
         handles.append(layer.mlp.up_proj.register_forward_hook(mlp_input_hook))
 
         def down_input_hook(_module, inputs, output, index=layer_index):
-            controller.record_saliency(index, 9, _linear_score(inputs[0], output, _module.weight))
+            controller.record_saliency(index, 10, _linear_score(inputs[0], output, _module.weight))
 
         handles.append(layer.mlp.down_proj.register_forward_hook(down_input_hook))
         layer.mlp.forward = types.MethodType(_make_mlp_forward(controller, layer_index, r4), layer.mlp)

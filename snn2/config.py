@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from .sites import SITE_COUNT
+
 
 ANN_MODES = {"vanilla", "unaware", "phase_aware", "gif_aware"}
 SNN_NEURONS = {"phase", "gif", "mtn"}
@@ -75,6 +77,12 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError(f"ann_mode must be one of {sorted(ANN_MODES)}, got {mode}")
     if int(cfg["calibration"]["num_samples"]) != 128:
         raise ValueError("Main experiments require exactly 128 calibration draws")
+    expected_sites = int(cfg["calibration"]["expected_sites_per_layer"])
+    if expected_sites != SITE_COUNT:
+        raise ValueError(
+            "calibration.expected_sites_per_layer must match "
+            f"the code topology: config={expected_sites}, code={SITE_COUNT}"
+        )
     if bool(cfg["calibration"].get("with_replacement", False)):
         raise ValueError("Calibration sampling must be done without replacement")
     if int(cfg["data"]["max_seq_length"]) != 2048:

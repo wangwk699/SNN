@@ -34,7 +34,7 @@ calibration:
   with_replacement: false
   batch_size: 1
   group_size: -1
-  expected_sites_per_layer: 9
+  expected_sites_per_layer: 10
   device_map: auto
 phase:
   T: 4
@@ -86,7 +86,7 @@ training:
   deepspeed_config: configs/deepspeed_zero3.json
   resume_from_checkpoint: null
 evaluation:
-  batch_size: 32
+  batch_size: 8
   max_new_tokens: 32
   tldr_input_length: 512
   tldr_test_samples: null
