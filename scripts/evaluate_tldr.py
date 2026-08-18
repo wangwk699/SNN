@@ -462,6 +462,24 @@ def main():
                     "input_length": input_length,
                     "max_new_tokens": max_new,
 
+                    "model_variant": (
+                        "base"
+                        if args.base
+                        else (
+                            "finetuned_ann"
+                            if args.neuron == "ann"
+                            else f"snn_{args.neuron}"
+                        )
+                    ),
+
+                    "model_source": source,
+
+                    "model_revision": (
+                        cfg["experiment"].get("model_revision")
+                        if args.base
+                        else None
+                    ),
+
                     # 实际 batched model 调用次数
                     "model_forward_calls": (
                         model_forward_calls
@@ -506,15 +524,11 @@ def main():
             )
 
             if args.base:
-                model_output_dir = (
-                    layout.root.parents[2]
-                    / "base"
-                    / f"seed{int(cfg['experiment']['seed'])}"
-                )
+                model_output_dir = layout.base_dir
             elif args.neuron == "ann":
                 model_output_dir = layout.ann_dir
             else:
-                model_output_dir = layout.snn_dir(args.neuron)
+                model_output_dir = layout.snn_dir(args.neuron)       
 
             output_dir = (
                 model_output_dir
