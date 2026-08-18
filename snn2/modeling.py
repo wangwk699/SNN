@@ -12,7 +12,7 @@ from .rotation import load_rotation_state
 
 def model_source(cfg: dict[str, Any], layout: ArtifactLayout, ann: bool = False) -> str:
     if ann:
-        return str(layout.ann_dir / "best")
+        return str(layout.ann_dir / "final")
     if bool(cfg["rotation"]["enabled"]):
         return str(layout.rotation_dir / "fused_base")
     return cfg["experiment"]["model_name"]

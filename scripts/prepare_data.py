@@ -6,8 +6,8 @@ from snn2.logging_utils import StageRun
 
 def main():
     args = parser("Create deterministic train/validation/calibration manifests").parse_args()
-    cfg, layout = setup(args.config)
-    with StageRun("prepare_data", layout.logs_dir, cfg["experiment"]) as run:
+    cfg, layout = setup(args.config, config_scope="task_shared")
+    with StageRun("prepare_data", layout.shared_task_logs_dir, cfg["experiment"],) as run:
         manifests = prepare_manifests(cfg, layout)
         run.event(
             "manifests_saved",

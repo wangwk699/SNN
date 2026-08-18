@@ -11,8 +11,8 @@ from snn2.prefix import discover_prefix_tokens
 
 def main():
     args = parser("Discover PrefixQuant prefixed outlier tokens").parse_args()
-    cfg, layout = setup(args.config)
-    with StageRun("discover_prefix", layout.logs_dir, cfg["experiment"]) as run:
+    cfg, layout = setup(args.config, config_scope="policy_shared")
+    with StageRun("discover_prefix", layout.policy_logs_dir, cfg["experiment"]) as run:
         output = layout.prefix_dir / "prefix_state.json"
         if not cfg["prefix"]["enabled"]:
             write_json(

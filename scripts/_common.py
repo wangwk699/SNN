@@ -29,17 +29,29 @@ def parser(
     return result
 
 
-def setup(config_path: str):
+def setup(config_path: str, config_scope: str = "run"):
     cfg = load_config(config_path)
     layout = ArtifactLayout(cfg)
-    layout.ensure()
+
+    if config_scope == "task_shared":
+        config_dir = layout.shared_task_config_dir
+    elif config_scope == "policy_shared":
+        config_dir = layout.policy_config_dir
+    elif config_scope == "run":
+        config_dir = layout.config_dir
+    else:
+        raise ValueError(f"Unknown config scope: {config_scope}")
+
     if int(os.environ.get("RANK", "0")) == 0:
-        layout.write_resolved_config(cfg)
+        layout.write_resolved_config(cfg, config_dir)
+
     seed = int(cfg["experiment"]["seed"])
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
     return cfg, layout

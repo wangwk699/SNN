@@ -21,7 +21,8 @@ class ArtifactLayout:
         task_root = experiment_root / exp["task"]
         model_root = task_root / model
         seed = f"seed{int(exp['seed'])}"
-        self.root = model_root / exp["ann_mode"] / seed
+        learning_rate = f"lr{cfg['training']['learning_rate']}"
+        self.root = model_root / exp["ann_mode"] / learning_rate/ seed
         self.shared_task_root = task_root / "_shared" / seed
         self.shared_model_root = model_root / "_shared" / seed
         policy = "rotated_prefix" if cfg["rotation"]["enabled"] else "vanilla_original"
@@ -34,6 +35,22 @@ class ArtifactLayout:
     @property
     def data_dir(self) -> Path:
         return self.shared_task_root / "data"
+
+    @property
+    def shared_task_logs_dir(self) -> Path:
+        return self.shared_task_root / "logs"
+
+    @property
+    def policy_logs_dir(self) -> Path:
+        return self.policy_root / "logs"
+
+    @property
+    def shared_task_config_dir(self) -> Path:
+        return self.shared_task_root / "config"
+
+    @property
+    def policy_config_dir(self) -> Path:
+        return self.policy_root / "config"
 
     @property
     def rotation_dir(self) -> Path:
@@ -66,21 +83,23 @@ class ArtifactLayout:
         for path in (
             self.config_dir,
             self.data_dir,
+            self.shared_task_logs_dir,
             self.rotation_dir,
             self.prefix_dir,
             self.calibration_dir,
             self.site_dir,
+            self.policy_logs_dir,
             self.ann_dir,
             self.logs_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
-    def write_resolved_config(self, cfg: dict[str, Any]) -> Path:
-        self.ensure()
-        path = self.config_dir / "resolved_config.yaml"
+    def write_resolved_config(self, cfg: dict[str, Any], config_dir: Path | None = None) -> Path:
+        config_dir = config_dir or self.config_dir
+        config_dir.mkdir(parents=True, exist_ok=True)
+        path = config_dir / "resolved_config.yaml"
         save_yaml(cfg, path)
         return path
-
 
 def write_json(path: str | Path, payload: Any) -> Path:
     path = Path(path)

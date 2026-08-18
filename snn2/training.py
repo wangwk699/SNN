@@ -46,16 +46,11 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         fp16=bool(training_cfg.get("fp16", False)),
         max_grad_norm=float(training_cfg.get("max_grad_norm", 1.0)),
         gradient_checkpointing=bool(training_cfg.get("gradient_checkpointing", False)),
-        eval_strategy="steps",
-        eval_steps=int(training_cfg["eval_steps"]),
-        save_strategy="steps",
-        save_steps=int(training_cfg["save_steps"]),
+        eval_strategy=training_cfg.get("eval_strategy", "no"),
+        save_strategy=training_cfg.get("save_strategy", "no"),
+        load_best_model_at_end=bool(training_cfg.get("load_best_model_at_end", False)),
         logging_strategy="steps",
         logging_steps=int(training_cfg.get("logging_steps", 10)),
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",
-        greater_is_better=False,
-        save_total_limit=int(training_cfg.get("save_total_limit", 2)),
         seed=int(cfg["experiment"]["seed"]),
         data_seed=int(cfg["experiment"]["seed"]),
         deepspeed=str(Path(training_cfg["deepspeed_config"]).resolve()),
@@ -93,10 +88,10 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         processing_class=tokenizer,
     )
     result = trainer.train(resume_from_checkpoint=training_cfg.get("resume_from_checkpoint"))
-    best_dir = layout.ann_dir / "best"
-    trainer.save_model(str(best_dir))
+    final_dir = layout.ann_dir / "final"
+    trainer.save_model(str(final_dir))
     if trainer.is_world_process_zero():
-        tokenizer.save_pretrained(best_dir)
+        tokenizer.save_pretrained(final_dir)
     metrics = dict(result.metrics)
     metrics.update(
         {

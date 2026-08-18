@@ -16,8 +16,8 @@ from snn2.modeling import (
 
 def main():
     args = parser("Collect and save statistics for every activation replacement site").parse_args()
-    cfg, layout = setup(args.config)
-    with StageRun("calibrate_sites", layout.logs_dir, cfg["experiment"]) as run:
+    cfg, layout = setup(args.config, config_scope="policy_shared")
+    with StageRun("calibrate_sites", layout.policy_logs_dir, cfg["experiment"]) as run:
         source = model_source(cfg, layout)
         model = load_model(
             cfg, source, training=False, device_map=cfg["calibration"].get("device_map")

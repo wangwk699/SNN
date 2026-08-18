@@ -10,8 +10,8 @@ from snn2.rotation import fuse_rotations, save_rotation_state
 
 def main():
     args = parser("Fuse fixed random Hadamard rotations into the Base checkpoint").parse_args()
-    cfg, layout = setup(args.config)
-    with StageRun("prepare_rotation", layout.logs_dir, cfg["experiment"]) as run:
+    cfg, layout = setup(args.config, config_scope="policy_shared")
+    with StageRun("prepare_rotation", layout.policy_logs_dir, cfg["experiment"]) as run:
         if not cfg["rotation"]["enabled"]:
             disabled = {"enabled": False, "reason": "vanilla baseline"}
             write_json(layout.root / "policy" / "rotation_disabled.json", disabled)
