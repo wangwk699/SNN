@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 from pathlib import Path
 
 import torch
@@ -64,15 +65,109 @@ def main():
         if args.neuron != "ann" or cfg["rotation"]["enabled"]:
             install_model_integration(model, controller, rotation_state(cfg, layout))
         prefixes = prefix_ids(cfg, layout)
+
         evaluation = load_selected_raw(cfg, layout).evaluation
         if evaluation is None:
-            raise FileNotFoundError("TL;DR evaluation manifest/test split is missing")
-        max_samples = cfg["evaluation"].get("max_samples")
-        stop = len(evaluation)
-        if max_samples is not None:
-            stop = min(stop, int(max_samples))
-        max_new = int(cfg["evaluation"].get("max_new_tokens", 32))
-        input_length = int(cfg["evaluation"].get("tldr_input_length", 512))
+            raise FileNotFoundError(
+                "TL;DR evaluation manifest/test split is missing"
+            )
+
+        total_test_samples = len(evaluation)
+
+        configured_test_samples = cfg["evaluation"].get(
+            "tldr_test_samples"
+        )
+
+        tldr_test_seed = int(
+            cfg["evaluation"].get(
+                "tldr_test_seed",
+                42,
+            )
+        )
+
+        # --------------------------------------------------
+        # Select TL;DR evaluation samples.
+        #
+        # tldr_test_samples = null
+        #     -> full test split
+        #
+        # tldr_test_samples = N
+        #     -> deterministic random subset of N samples,
+        #        sampled without replacement.
+        # --------------------------------------------------
+        if configured_test_samples is None:
+            selected_indices = list(
+                range(total_test_samples)
+            )
+
+            is_full_test = True
+
+        else:
+            requested_test_samples = int(
+                configured_test_samples
+            )
+
+            if requested_test_samples <= 0:
+                raise ValueError(
+                    "evaluation.tldr_test_samples must be "
+                    "a positive integer or null"
+                )
+
+            if requested_test_samples >= total_test_samples:
+                selected_indices = list(
+                    range(total_test_samples)
+                )
+
+                is_full_test = True
+
+            else:
+                rng = random.Random(
+                    tldr_test_seed
+                )
+
+                selected_indices = rng.sample(
+                    range(total_test_samples),
+                    k=requested_test_samples,
+                )
+
+                # 保持最终处理顺序与原始 test split 一致。
+                # 不影响随机抽到的是哪些样本。
+                selected_indices.sort()
+
+                is_full_test = False
+
+
+        selected_test_samples = len(
+            selected_indices
+        )
+
+        if is_full_test:
+            test_samples_dirname = (
+                f"test_samples_{selected_test_samples}_full"
+            )
+            sampling_method = "full_split"
+        else:
+            test_samples_dirname = (
+                f"test_samples_{selected_test_samples}"
+            )
+            sampling_method = (
+                "seeded_random_without_replacement"
+            )
+
+
+        max_new = int(
+            cfg["evaluation"].get(
+                "max_new_tokens",
+                32,
+            )
+        )
+
+        input_length = int(
+            cfg["evaluation"].get(
+                "tldr_input_length",
+                512,
+            )
+        )
 
         local_rows = []
         execution_counter: dict[str, int] = {}
@@ -81,7 +176,7 @@ def main():
         if batch_size <= 0:
             raise ValueError(f"batch_size must be positive, got {batch_size}")
 
-        local_indices = range(rank, stop, world_size)
+        local_indices = selected_indices[rank::world_size]
 
         progress = tqdm(
             total=len(local_indices),
@@ -271,6 +366,26 @@ def main():
             metrics.update(
                 {
                     "samples": len(rows),
+
+                    # TL;DR test sampling information
+                    "total_test_samples": (
+                        total_test_samples
+                    ),
+                    "tldr_test_samples": (
+                        selected_test_samples
+                    ),
+                    "tldr_test_seed": (
+                        None
+                        if is_full_test
+                        else tldr_test_seed
+                    ),
+                    "tldr_test_sampling": (
+                        sampling_method
+                    ),
+                    "full_test_split": (
+                        is_full_test
+                    ),
+
                     "batch_size": batch_size,
                     "world_size": world_size,
                     "neuron": args.neuron,
@@ -326,11 +441,30 @@ def main():
                 layout.ann_dir
                 if args.neuron == "ann"
                 else layout.snn_dir(args.neuron)
-            ) / "evaluation" / "tldr"
+            ) / "evaluation" / "tldr" / test_samples_dirname
 
             _write_jsonl(
                 output_dir / "predictions.jsonl",
                 rows,
+            )
+
+            write_json(
+                output_dir / "selection.json",
+                {
+                    "total_test_samples": (
+                        total_test_samples
+                    ),
+                    "selected_test_samples": (
+                        selected_test_samples
+                    ),
+                    "sampling": sampling_method,
+                    "seed": (
+                        None
+                        if is_full_test
+                        else tldr_test_seed
+                    ),
+                    "indices": selected_indices,
+                },
             )
 
             write_json(

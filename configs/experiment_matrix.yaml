@@ -81,8 +81,10 @@ defaults:
     batch_size: 8
     max_new_tokens: 32
     tldr_input_length: 512
+    # null: 使用完整 TL;DR test split；int: 从完整 test split 中固定随机抽取指定数量的样本；也就是说，快速测试时你只需要改：tldr_test_samples: 128；正式实验时改回：tldr_test_samples: null
+    tldr_test_samples: null
+    tldr_test_seed: 42
     rouge_types: [rouge1, rouge2, rougeL, rougeLsum]
-    max_samples: null
     limit: null
     lm_eval_revision: 6d2abda4fd171e68a8789330c4149e37c1ca0bda
     apply_chat_template: true

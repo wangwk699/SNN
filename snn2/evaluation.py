@@ -24,9 +24,10 @@ def _update_execution_counter(
         This depends on batch size.
 
     temporal_model_step_forwards:
-        Number of actual temporal model-step calls.
-        For ANN, temporal_steps = 1.
-        For Phase/MTN, for example temporal_steps = 4.
+        Logical temporal model-step equivalents across actual
+        batched model forward calls. For ANN, temporal_steps = 1.
+        For full-temporal SNN deployment, each model call represents
+        temporal_steps logical timestep executions.
 
     sample_forward_equivalents:
         Logical sample-level forward equivalents.
