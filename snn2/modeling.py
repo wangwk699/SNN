@@ -8,6 +8,7 @@ import torch
 from .artifacts import ArtifactLayout, read_json
 from .model_integration import register_attention_backend
 from .rotation import load_rotation_state
+from .prefix_cache import load_prefix_key_values
 
 
 def model_source(cfg: dict[str, Any], layout: ArtifactLayout, ann: bool = False) -> str:
@@ -71,6 +72,19 @@ def prefix_ids(cfg: dict[str, Any], layout: ArtifactLayout) -> list[int]:
         return []
     state = read_json(layout.prefix_dir / "prefix_state.json")
     return [int(value) for value in state["prefix_token_ids"]]
+
+
+def prefix_key_values(cfg: dict[str, Any], layout: ArtifactLayout):
+    ids = prefix_ids(cfg, layout)
+    if not ids:
+        return None
+    path = layout.prefix_dir / "prefixed_key_values.pt"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Prefix is enabled but fixed KV cache is missing: {path}. "
+            "Re-run scripts/discover_prefix.py."
+        )
+    return load_prefix_key_values(path)
 
 
 def rotation_state(cfg: dict[str, Any], layout: ArtifactLayout):

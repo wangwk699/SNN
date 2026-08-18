@@ -9,7 +9,7 @@ from snn2.modeling import (
     load_model,
     load_tokenizer,
     model_source,
-    prefix_ids,
+    prefix_key_values,
     rotation_state,
 )
 
@@ -32,7 +32,7 @@ def main():
             tokenizer,
             bundle.calibration,
             cfg,
-            prefix_ids(cfg, layout),
+            prefix_key_values(cfg, layout),
             layout.site_dir,
         )
         run.event("site_states_saved", sites=len(result["states"]["sites"]))

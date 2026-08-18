@@ -16,6 +16,7 @@ from snn2.modeling import (
     load_tokenizer,
     model_source,
     prefix_ids,
+    prefix_key_values,
     rotation_state,
 )
 
@@ -201,7 +202,7 @@ def main():
         proxy = EvaluationModelProxy(
             model,
             controller,
-            model_prefix_ids,
+            prefix_key_values(cfg, layout),
         )
 
         batch_size = int(

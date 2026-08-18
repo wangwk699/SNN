@@ -7,6 +7,7 @@ from torch import nn
 
 from .controller import SiteController
 from .model_integration import temporal_forward
+from .prefix_cache import install_prefix_kv_forward
 
 
 def _update_execution_counter(
@@ -229,13 +230,13 @@ class EvaluationModelProxy(nn.Module):
         self,
         model: nn.Module,
         controller: SiteController,
-        prefix_ids: list[int],
+        prefix_key_values,
     ):
         super().__init__()
 
         self.model = model
         self.controller = controller
-        self.prefix_ids = list(prefix_ids)
+        install_prefix_kv_forward(self.model, prefix_key_values)
 
         self.config = model.config
 
@@ -259,49 +260,8 @@ class EvaluationModelProxy(nn.Module):
         attention_mask: torch.Tensor | None,
     ):
         if attention_mask is None:
-            attention_mask = torch.ones_like(
-                input_ids
-            )
-
-        if not self.prefix_ids:
-            return (
-                input_ids,
-                attention_mask,
-                0,
-            )
-
-        prefix = torch.tensor(
-            self.prefix_ids,
-            device=input_ids.device,
-            dtype=input_ids.dtype,
-        )
-
-        prefix = prefix.unsqueeze(0).expand(
-            input_ids.shape[0],
-            -1,
-        )
-
-        prefix_mask = torch.ones_like(
-            prefix
-        )
-
-        return (
-            torch.cat(
-                (
-                    prefix,
-                    input_ids,
-                ),
-                dim=-1,
-            ),
-            torch.cat(
-                (
-                    prefix_mask,
-                    attention_mask,
-                ),
-                dim=-1,
-            ),
-            prefix.shape[-1],
-        )
+            attention_mask = torch.ones_like(input_ids)
+        return input_ids, attention_mask, 0
 
     def forward(
         self,

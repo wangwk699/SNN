@@ -264,8 +264,10 @@ def tokenize_row(
         input_ids, labels = _encode_messages(row, tokenizer)
     prefix_ids = list(prefix_ids or [])
     if prefix_ids:
-        input_ids = prefix_ids + input_ids
-        labels = [-100] * len(prefix_ids) + labels
+        raise ValueError(
+            "Prefix token IDs must not be prepended to input_ids. "
+            "Use the fixed Prefix past_key_values cache instead."
+        )
     max_length = int(cfg["data"]["max_seq_length"])
     truncation_side = cfg["data"].get("truncation_side", "right")
     if len(input_ids) > max_length:

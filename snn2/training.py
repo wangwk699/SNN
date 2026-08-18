@@ -9,7 +9,8 @@ from .artifacts import ArtifactLayout, write_json
 from .controller import SiteController
 from .data import CausalLMCollator, load_selected_raw, tokenize_dataset
 from .model_integration import install_model_integration
-from .modeling import load_model, load_tokenizer, model_source, prefix_ids, rotation_state
+from .modeling import load_model, load_tokenizer, model_source, prefix_ids, prefix_key_values, rotation_state
+from .prefix_cache import install_prefix_kv_forward
 
 
 def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, Any]:
@@ -60,9 +61,10 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
     )
     bundle = load_selected_raw(cfg, layout)
     prefixes = prefix_ids(cfg, layout)
+    install_prefix_kv_forward(model, prefix_key_values(cfg, layout))
     with arguments.main_process_first(desc="tokenize train and validation datasets"):
-        train_dataset = tokenize_dataset(bundle.train, tokenizer, cfg, prefixes)
-        validation_dataset = tokenize_dataset(bundle.validation, tokenizer, cfg, prefixes)
+        train_dataset = tokenize_dataset(bundle.train, tokenizer, cfg, prefix_ids=None)
+        validation_dataset = tokenize_dataset(bundle.validation, tokenizer, cfg, prefix_ids=None)
     if int(os.environ.get("RANK", "0")) == 0:
         template = getattr(tokenizer, "chat_template", None) or ""
         write_json(
@@ -74,7 +76,9 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
                 "truncation": True,
                 "packing": False,
                 "loss_tokens": "assistant/completion plus EOS only",
-                "prefix_loss_masked": True,
+                "prefix_mode": "fixed_past_key_values",
+                "prefix_token_ids": prefixes,
+                "prefix_loss_masked": "not_applicable_prefix_not_in_labels",
                 "chat_template": template,
                 "chat_template_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest(),
             },

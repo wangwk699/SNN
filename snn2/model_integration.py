@@ -34,13 +34,25 @@ def snn2_eager_attention_forward(
 ):
     controller: SiteController = module._snn2_controller
     layer_index = int(module._snn2_layer_index)
+    current_length = int(query.shape[-2])
+    past_length = max(int(key.shape[-2]) - current_length, 0)
+
     r3: HadamardSpec | None = getattr(module, "_snn2_r3", None)
     if r3 is not None:
         query = random_hadamard(query, r3)
         key = random_hadamard(key, r3)
     query = controller.apply(layer_index, 2, query)
-    key = controller.apply(layer_index, 3, key)
-    value = controller.apply(layer_index, 4, value)
+
+    if past_length:
+        prefix_key, current_key = key[..., :past_length, :], key[..., past_length:, :]
+        prefix_value, current_value = value[..., :past_length, :], value[..., past_length:, :]
+        current_key = controller.apply(layer_index, 3, current_key)
+        current_value = controller.apply(layer_index, 4, current_value)
+        key = torch.cat((prefix_key, current_key), dim=-2)
+        value = torch.cat((prefix_value, current_value), dim=-2)
+    else:
+        key = controller.apply(layer_index, 3, key)
+        value = controller.apply(layer_index, 4, value)
 
     groups = int(getattr(module, "num_key_value_groups", 1))
     key = repeat_kv(key, groups)
@@ -48,9 +60,10 @@ def snn2_eager_attention_forward(
     qk = torch.matmul(query, key.transpose(2, 3))
     if controller.mode == "collect":
         controller.record_saliency(layer_index, 2, query * torch.matmul(qk, key))
-        controller.record_saliency(
-            layer_index, 3, key * torch.matmul(qk.transpose(2, 3), query)
-        )
+        key_score = key * torch.matmul(qk.transpose(2, 3), query)
+        if past_length:
+            key_score = key_score[..., past_length:, :]
+        controller.record_saliency(layer_index, 3, key_score)
     scale = float(scaling if scaling is not None else getattr(module, "scaling", 1.0 / math.sqrt(query.shape[-1])))
     weights = qk * scale
     if attention_mask is not None:
@@ -59,15 +72,19 @@ def snn2_eager_attention_forward(
         cap = float(kwargs["softcap"])
         weights = torch.tanh(weights / cap) * cap
     weights = F.softmax(weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    weights = controller.apply(layer_index, 5, weights)
+    if past_length:
+        prefix_weights = weights[..., :past_length]
+        current_weights = controller.apply(layer_index, 5, weights[..., past_length:])
+        weights = torch.cat((prefix_weights, current_weights), dim=-1)
+    else:
+        weights = controller.apply(layer_index, 5, weights)
     weights = F.dropout(weights, p=dropout, training=module.training)
     output = torch.matmul(weights, value)
     if controller.mode == "collect":
-        controller.record_saliency(
-            layer_index,
-            4,
-            value * torch.matmul(weights.transpose(2, 3), output),
-        )
+        value_score = value * torch.matmul(weights.transpose(2, 3), output)
+        if past_length:
+            value_score = value_score[..., past_length:, :]
+        controller.record_saliency(layer_index, 4, value_score)
         position_score = torch.zeros(
             weights.shape[-1], device=weights.device, dtype=torch.float32
         )
@@ -78,6 +95,8 @@ def snn2_eager_attention_forward(
             position_score.add_(
                 (weights[:, :, start:stop].float() * back.float()).sum(dim=(0, 1, 2))
             )
+        if past_length:
+            position_score = position_score[past_length:]
         controller.record_saliency_reduced(
             layer_index,
             5,

@@ -13,8 +13,9 @@ from .data import CausalLMCollator, tokenize_dataset
 
 
 class PrefixOutlierCollector:
-    def __init__(self, eta: float):
+    def __init__(self, eta: float, skip_initial_position: bool = True):
         self.eta = float(eta)
+        self.skip_initial_position = bool(skip_initial_position)
         self.current_ids: torch.Tensor | None = None
         self.current_mask: torch.Tensor | None = None
         self.layer_counts: dict[str, list[int]] = collections.defaultdict(list)
@@ -43,7 +44,7 @@ class PrefixOutlierCollector:
                 self.layer_counts[name].append(int(outlier.sum().item()))
                 positions = torch.nonzero(outlier, as_tuple=False).flatten()
                 for position in positions.tolist():
-                    if position == 0:  # PrefixQuant frequency excludes the initial token.
+                    if self.skip_initial_position and position == 0:
                         continue
                     self.token_frequency[int(ids[position].item())] += 1
 
@@ -61,7 +62,12 @@ class PrefixOutlierCollector:
             handle.remove()
         self.handles.clear()
 
-    def result(self, tokenizer: Any) -> dict[str, Any]:
+    def result(
+        self,
+        tokenizer: Any,
+        *,
+        append_start_token: bool = True,
+    ) -> dict[str, Any]:
         average_by_layer = {
             name: sum(counts) / max(len(counts), 1) for name, counts in self.layer_counts.items()
         }
@@ -74,13 +80,12 @@ class PrefixOutlierCollector:
             outlier_count = max(outlier_count - 1, 0)
             self.token_frequency.clear()
         top = [token for token, _ in self.token_frequency.most_common(outlier_count)]
-        bos = tokenizer.bos_token_id
-        if bos is None:
-            bos = tokenizer.eos_token_id
-        if bos is not None and int(bos) not in top:
-            top.append(int(bos))
-        if not top:
-            raise RuntimeError("PrefixQuant found no prefix token and tokenizer has no BOS/EOS")
+        appended_start_token_id = None
+        if append_start_token:
+            bos = tokenizer.bos_token_id
+            if bos is not None and int(bos) not in top:
+                appended_start_token_id = int(bos)
+                top.append(appended_start_token_id)
         return {
             "format_version": 1,
             "eta": self.eta,
@@ -92,6 +97,8 @@ class PrefixOutlierCollector:
             "layer_average_outlier_counts": average_by_layer,
             "token_frequency": {str(key): value for key, value in self.token_frequency.items()},
             "corner_case_filter": "drop sole token if frequency < 10% of calibration samples",
+            "skip_initial_position_in_frequency": self.skip_initial_position,
+            "appended_start_token_id": appended_start_token_id,
         }
 
 
@@ -110,7 +117,11 @@ def discover_prefix_tokens(
         shuffle=False,
         collate_fn=CausalLMCollator(tokenizer),
     )
-    collector = PrefixOutlierCollector(float(cfg["prefix"]["outlier_threshold"]))
+    is_qwen = "qwen" in str(cfg["experiment"]["model_name"]).lower()
+    collector = PrefixOutlierCollector(
+        float(cfg["prefix"]["outlier_threshold"]),
+        skip_initial_position=not is_qwen,
+    )
     collector.register(model)
     model.eval()
     device = next(model.parameters()).device
@@ -124,6 +135,9 @@ def discover_prefix_tokens(
             )
     finally:
         collector.remove()
-    state = collector.result(tokenizer)
+    state = collector.result(
+        tokenizer,
+        append_start_token=not is_qwen,
+    )
     write_json(output_path, state)
     return state

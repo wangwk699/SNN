@@ -15,7 +15,15 @@ from snn2.data import _as_text, load_selected_raw
 from snn2.evaluation import greedy_generate
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
-from snn2.modeling import load_model, load_tokenizer, model_source, prefix_ids, rotation_state
+from snn2.modeling import (
+    load_model,
+    load_tokenizer,
+    model_source,
+    prefix_ids,
+    prefix_key_values,
+    rotation_state,
+)
+from snn2.prefix_cache import install_prefix_kv_forward
 
 
 def _prompt_and_reference(row):
@@ -133,6 +141,7 @@ def main():
         if args.neuron != "ann" or cfg["rotation"]["enabled"]:
             install_model_integration(model, controller, rotation_state(cfg, layout))
         prefixes = prefix_ids(cfg, layout)
+        install_prefix_kv_forward(model, prefix_key_values(cfg, layout))
 
         evaluation = load_selected_raw(cfg, layout).evaluation
         if evaluation is None:
@@ -268,12 +277,10 @@ def main():
                     prompt,
                     add_special_tokens=True,
                     truncation=True,
-                    max_length=max(input_length - len(prefixes), 1),
+                    max_length=input_length,
                 )
 
-                input_ids = prefixes + prompt_ids
-
-                batch_input_ids.append(input_ids)
+                batch_input_ids.append(prompt_ids)
                 batch_references.append(reference)
 
             # 对不同长度的 prompt 做 padding

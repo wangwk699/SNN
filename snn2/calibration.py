@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from .artifacts import write_json
 from .data import CausalLMCollator, tokenize_dataset
 from .stats import StatisticsStore
+from .prefix_cache import install_prefix_kv_forward
 
 
 def _group_reduce(vector: torch.Tensor, group_size: int, reduction: str) -> torch.Tensor:
@@ -184,10 +185,10 @@ def collect_site_statistics(
     tokenizer: Any,
     calibration_raw: Any,
     cfg: dict[str, Any],
-    prefix_ids: list[int],
+    prefix_key_values: Any,
     site_root: str | Path,
 ) -> dict[str, Any]:
-    dataset = tokenize_dataset(calibration_raw, tokenizer, cfg, prefix_ids=prefix_ids)
+    dataset = tokenize_dataset(calibration_raw, tokenizer, cfg, prefix_ids=None)
     loader = DataLoader(
         dataset,
         batch_size=int(cfg["calibration"].get("batch_size", 1)),
@@ -198,6 +199,7 @@ def collect_site_statistics(
     controller.statistics = StatisticsStore(
         max_channels_by_site={5: int(cfg["data"]["max_seq_length"])}
     )
+    install_prefix_kv_forward(model, prefix_key_values)
     model.eval()
     device = next(model.parameters()).device
     for batch in loader:

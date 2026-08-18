@@ -7,6 +7,7 @@ from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
 from snn2.modeling import load_model, load_tokenizer, model_source, rotation_state
 from snn2.prefix import discover_prefix_tokens
+from snn2.prefix_cache import build_prefix_key_values, save_prefix_key_values
 
 
 def main():
@@ -30,7 +31,16 @@ def main():
         install_model_integration(model, controller, rotation_state(cfg, layout))
         bundle = load_selected_raw(cfg, layout)
         state = discover_prefix_tokens(model, tokenizer, bundle.calibration, cfg, output)
-        run.event("prefix_saved", count=len(state["prefix_token_ids"]), ids=state["prefix_token_ids"])
+        prefix_key_values = build_prefix_key_values(model, state["prefix_token_ids"])
+        cache_path = layout.prefix_dir / "prefixed_key_values.pt"
+        save_prefix_key_values(cache_path, prefix_key_values)
+        run.event(
+            "prefix_saved",
+            count=len(state["prefix_token_ids"]),
+            ids=state["prefix_token_ids"],
+            kv_cache_saved=prefix_key_values is not None,
+            kv_cache_path=str(cache_path) if prefix_key_values is not None else None,
+        )
 
 
 if __name__ == "__main__":
