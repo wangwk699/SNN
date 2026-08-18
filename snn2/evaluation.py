@@ -22,24 +22,96 @@ def greedy_generate(
 ) -> torch.Tensor:
     generated = input_ids
     mask = attention_mask
+
+    # [batch_size]
+    # 记录 batch 中每个样本是否已经生成 EOS。
+    finished = torch.zeros(
+        input_ids.shape[0],
+        dtype=torch.bool,
+        device=input_ids.device,
+    )
+
     for _ in range(max_new_tokens):
         if counter is not None:
-            counter["model_forward_calls"] = counter.get("model_forward_calls", 0) + 1
+            counter["model_forward_calls"] = (
+                counter.get("model_forward_calls", 0) + 1
+            )
+
             temporal = 1
             if controller is not None and controller.mode.startswith("deploy_"):
                 temporal = int(controller.temporal_steps or 1)
+
             counter["temporal_model_step_forwards"] = (
-                counter.get("temporal_model_step_forwards", 0) + temporal
+                counter.get("temporal_model_step_forwards", 0)
+                + temporal
             )
+
+        # ANN / 非 temporal deployment
         if controller is None or not controller.mode.startswith("deploy_"):
-            logits = model(input_ids=generated, attention_mask=mask, use_cache=False).logits
+            logits = model(
+                input_ids=generated,
+                attention_mask=mask,
+                use_cache=False,
+            ).logits
+
+        # Full-temporal SNN deployment
         else:
-            logits = temporal_forward(model, controller, generated, mask)
-        next_token = logits[:, -1].argmax(dim=-1, keepdim=True)
-        generated = torch.cat((generated, next_token), dim=-1)
-        mask = torch.cat((mask, torch.ones_like(next_token)), dim=-1)
-        if eos_token_id is not None and torch.all(next_token.squeeze(-1) == eos_token_id):
-            break
+            logits = temporal_forward(
+                model,
+                controller,
+                generated,
+                mask,
+            )
+
+        # 每个样本独立选择下一个 token
+        # shape: [batch_size, 1]
+        next_token = logits[:, -1, :].argmax(
+            dim=-1,
+            keepdim=True,
+        )
+
+        if eos_token_id is not None:
+            # 对已经结束的样本，之后始终补 EOS，
+            # 避免它们继续产生新的有效文本。
+            eos_tokens = torch.full_like(
+                next_token,
+                eos_token_id,
+            )
+
+            next_token = torch.where(
+                finished.unsqueeze(-1),
+                eos_tokens,
+                next_token,
+            )
+
+        # 拼接新生成 token
+        generated = torch.cat(
+            (generated, next_token),
+            dim=-1,
+        )
+
+        # 新 token 对应 attention mask = 1
+        mask = torch.cat(
+            (
+                mask,
+                torch.ones_like(
+                    next_token,
+                    dtype=mask.dtype,
+                ),
+            ),
+            dim=-1,
+        )
+
+        if eos_token_id is not None:
+            # 更新每个样本自己的结束状态
+            finished = finished | (
+                next_token.squeeze(-1) == eos_token_id
+            )
+
+            # 整个 batch 都结束时提前停止
+            if finished.all():
+                break
+
     return generated
 
 

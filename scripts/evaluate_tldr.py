@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 
 from _common import parser, setup
-
+from tqdm.auto import tqdm
 from snn2.artifacts import write_json
 from snn2.controller import SiteController
 from snn2.data import _as_text, load_selected_raw
@@ -68,8 +68,7 @@ def main():
         if evaluation is None:
             raise FileNotFoundError("TL;DR evaluation manifest/test split is missing")
         max_samples = cfg["evaluation"].get("max_samples")
-        default_samples = int(cfg["evaluation"].get("tldr_test_samples", 6528))
-        stop = min(len(evaluation), default_samples)
+        stop = len(evaluation)
         if max_samples is not None:
             stop = min(stop, int(max_samples))
         max_new = int(cfg["evaluation"].get("max_new_tokens", 32))
@@ -77,18 +76,54 @@ def main():
 
         local_rows = []
         execution_counter: dict[str, int] = {}
-        for index in range(rank, stop, world_size):
-            row = evaluation[index]
-            prompt, reference = _prompt_and_reference(row)
-            prompt_ids = tokenizer.encode(
-                prompt,
-                add_special_tokens=True,
-                truncation=True,
-                max_length=max(input_length - len(prefixes), 1),
+
+        batch_size = int(cfg["evaluation"]["batch_size"])
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+
+        local_indices = range(rank, stop, world_size)
+
+        progress = tqdm(
+            total=len(local_indices),
+            desc=f"Evaluating TL;DR ({args.neuron})",
+            dynamic_ncols=True,
+            disable=not accelerator.is_local_main_process,
+        )
+
+        for start in range(0, len(local_indices), batch_size):
+            batch_indices = local_indices[start : start + batch_size]
+
+            batch_input_ids = []
+            batch_references = []
+
+            # 先准备这一整个 batch 的样本
+            for index in batch_indices:
+                row = evaluation[index]
+                prompt, reference = _prompt_and_reference(row)
+
+                prompt_ids = tokenizer.encode(
+                    prompt,
+                    add_special_tokens=True,
+                    truncation=True,
+                    max_length=max(input_length - len(prefixes), 1),
+                )
+
+                input_ids = prefixes + prompt_ids
+
+                batch_input_ids.append(input_ids)
+                batch_references.append(reference)
+
+            # 对不同长度的 prompt 做 padding
+            padded = tokenizer.pad(
+                {"input_ids": batch_input_ids},
+                padding=True,
+                return_tensors="pt",
             )
-            input_ids = prefixes + prompt_ids
-            tensor = torch.tensor([input_ids], dtype=torch.long, device=accelerator.device)
-            mask = torch.ones_like(tensor)
+
+            tensor = padded["input_ids"].to(accelerator.device)
+            mask = padded["attention_mask"].to(accelerator.device)
+
+            # 一次 forward/generation 处理整个 batch
             output = greedy_generate(
                 model,
                 controller,
@@ -98,15 +133,33 @@ def main():
                 eos_token_id=tokenizer.eos_token_id,
                 counter=execution_counter,
             )
-            decoded = tokenizer.decode(
-                output[0].tolist(),
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=True,
-            )
-            prediction = decoded.split("TL;DR:", 1)[1].strip() if "TL;DR:" in decoded else decoded.strip()
-            local_rows.append(
-                {"index": index, "prediction": prediction, "reference": reference}
-            )
+
+            # 再逐条 decode batch 中的结果
+            for batch_position, index in enumerate(batch_indices):
+                decoded = tokenizer.decode(
+                    output[batch_position].tolist(),
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=True,
+                )
+
+                prediction = (
+                    decoded.split("TL;DR:", 1)[1].strip()
+                    if "TL;DR:" in decoded
+                    else decoded.strip()
+                )
+
+                local_rows.append(
+                    {
+                        "index": index,
+                        "prediction": prediction,
+                        "reference": batch_references[batch_position],
+                    }
+                )
+
+            # 进度仍然按照“样本数”显示，而不是 batch 数
+            progress.update(len(batch_indices))
+
+        progress.close()
 
         gathered = gather_object(local_rows)
         gathered_counters = gather_object([execution_counter])

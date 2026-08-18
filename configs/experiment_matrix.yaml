@@ -78,7 +78,7 @@ defaults:
     deepspeed_config: configs/deepspeed_zero3.json
     resume_from_checkpoint: null
   evaluation:
-    batch_size: 1
+    batch_size: 8
     max_new_tokens: 32
     tldr_input_length: 512
     tldr_test_samples: 6528
