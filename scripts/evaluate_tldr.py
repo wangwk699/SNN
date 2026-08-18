@@ -163,41 +163,187 @@ def main():
 
         gathered = gather_object(local_rows)
         gathered_counters = gather_object([execution_counter])
+
         if accelerator.is_main_process:
-            rows = sorted(gathered, key=lambda item: item["index"])
-            rouge = evaluate.load("rouge")
-            metrics = rouge.compute(
-                predictions=[row["prediction"] for row in rows],
-                references=[row["reference"] for row in rows],
+            rows = sorted(
+                gathered,
+                key=lambda item: item["index"],
             )
+
+            rouge = evaluate.load("rouge")
+
+            metrics = rouge.compute(
+                predictions=[
+                    row["prediction"]
+                    for row in rows
+                ],
+                references=[
+                    row["reference"]
+                    for row in rows
+                ],
+            )
+
+            # -----------------------------
+            # 汇总所有 evaluation processes
+            # 的执行计数
+            # -----------------------------
+            model_forward_calls = sum(
+                item.get(
+                    "model_forward_calls",
+                    0,
+                )
+                for item in gathered_counters
+            )
+
+            temporal_model_step_forwards = sum(
+                item.get(
+                    "temporal_model_step_forwards",
+                    0,
+                )
+                for item in gathered_counters
+            )
+
+            sample_forward_equivalents = sum(
+                item.get(
+                    "sample_forward_equivalents",
+                    0,
+                )
+                for item in gathered_counters
+            )
+
+            temporal_sample_step_forwards = sum(
+                item.get(
+                    "temporal_sample_step_forwards",
+                    0,
+                )
+                for item in gathered_counters
+            )
+
+            batched_sample_slots = sum(
+                item.get(
+                    "batched_sample_slots",
+                    0,
+                )
+                for item in gathered_counters
+            )
+
+            batched_temporal_sample_slots = sum(
+                item.get(
+                    "batched_temporal_sample_slots",
+                    0,
+                )
+                for item in gathered_counters
+            )
+
+            layers = int(
+                getattr(
+                    model.config,
+                    "num_hidden_layers",
+                )
+            )
+
+            # ----------------------------------------
+            # Batch-size-independent logical operator
+            # equivalent count
+            #
+            # temporal sample steps
+            # × Transformer layers
+            # × 9 replacement sites
+            # ----------------------------------------
+            activation_site_temporal_operator_calls = (
+                temporal_sample_step_forwards
+                * layers
+                * 9
+            )
+
+            # ----------------------------------------
+            # Actual batched execution slot count
+            #
+            # 这里包含 batch 中已经 EOS、
+            # 但因其它样本仍在生成而继续占据的 tensor slot。
+            # ----------------------------------------
+            batched_activation_site_temporal_slots = (
+                batched_temporal_sample_slots
+                * layers
+                * 9
+            )
+
             metrics.update(
                 {
                     "samples": len(rows),
+                    "batch_size": batch_size,
+                    "world_size": world_size,
                     "neuron": args.neuron,
                     "full_temporal_steps": steps,
                     "decode": "greedy",
                     "input_length": input_length,
                     "max_new_tokens": max_new,
-                    "roste_alignment": "test[:6528], decode full sequence, split on TL;DR:",
-                    "model_forward_calls": sum(
-                        item.get("model_forward_calls", 0) for item in gathered_counters
+
+                    # 实际 batched model 调用次数
+                    "model_forward_calls": (
+                        model_forward_calls
                     ),
-                    "temporal_model_step_forwards": sum(
-                        item.get("temporal_model_step_forwards", 0)
-                        for item in gathered_counters
+
+                    # 实际 temporal model-step 调用次数
+                    "temporal_model_step_forwards": (
+                        temporal_model_step_forwards
+                    ),
+
+                    # batch-size-independent
+                    # sample-level logical forwards
+                    "sample_forward_equivalents": (
+                        sample_forward_equivalents
+                    ),
+
+                    # batch-size-independent
+                    # sample-level temporal forwards
+                    "temporal_sample_step_forwards": (
+                        temporal_sample_step_forwards
+                    ),
+
+                    # 实际占据 batch tensor 的 sample slots
+                    "batched_sample_slots": (
+                        batched_sample_slots
+                    ),
+
+                    "batched_temporal_sample_slots": (
+                        batched_temporal_sample_slots
+                    ),
+
+                    # 后续论文中的主要 SNN 等价计算量
+                    "activation_site_temporal_operator_calls": (
+                        activation_site_temporal_operator_calls
+                    ),
+
+                    # 实际 batching 下的 slot-level 计算量
+                    "batched_activation_site_temporal_slots": (
+                        batched_activation_site_temporal_slots
                     ),
                 }
             )
-            layers = int(getattr(model.config, "num_hidden_layers"))
-            metrics["activation_site_temporal_operator_calls"] = (
-                metrics["temporal_model_step_forwards"] * layers * 9
-            )
+
             output_dir = (
-                layout.ann_dir if args.neuron == "ann" else layout.snn_dir(args.neuron)
+                layout.ann_dir
+                if args.neuron == "ann"
+                else layout.snn_dir(args.neuron)
             ) / "evaluation" / "tldr"
-            _write_jsonl(output_dir / "predictions.jsonl", rows)
-            write_json(output_dir / "metrics.json", metrics)
-            run.event("evaluation_saved", output_dir=str(output_dir), **metrics)
+
+            _write_jsonl(
+                output_dir / "predictions.jsonl",
+                rows,
+            )
+
+            write_json(
+                output_dir / "metrics.json",
+                metrics,
+            )
+
+            run.event(
+                "evaluation_saved",
+                output_dir=str(output_dir),
+                **metrics,
+            )
+
         accelerator.wait_for_everyone()
 
 

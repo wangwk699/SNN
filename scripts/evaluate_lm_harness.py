@@ -70,14 +70,64 @@ def main():
                 ),
             )
             results["tasks"][name] = task_result
+        layers = int(
+            getattr(
+                model.config,
+                "num_hidden_layers",
+            )
+        )
+
+        execution_counter = dict(
+            proxy.execution_counter
+        )
+
+        temporal_sample_step_forwards = (
+            execution_counter.get(
+                "temporal_sample_step_forwards",
+                0,
+            )
+        )
+
+        batched_temporal_sample_slots = (
+            execution_counter.get(
+                "batched_temporal_sample_slots",
+                0,
+            )
+        )
+
         results["snn2_metadata"] = {
             "neuron": args.neuron,
             "full_temporal_steps": steps,
-            "prefix_token_ids": prefix_ids(cfg, layout),
-            "execution_counter": proxy.execution_counter,
+            "batch_size": int(
+                cfg["evaluation"].get(
+                    "batch_size",
+                    1,
+                )
+            ),
+            "prefix_token_ids": prefix_ids(
+                cfg,
+                layout,
+            ),
+
+            # 保存全部原始 execution counter
+            "execution_counter": execution_counter,
+
+            # ----------------------------------------
+            # Batch-size-independent logical
+            # activation-site operator equivalents
+            # ----------------------------------------
             "activation_site_temporal_operator_calls": (
-                proxy.execution_counter.get("temporal_model_step_forwards", 0)
-                * int(getattr(model.config, "num_hidden_layers"))
+                temporal_sample_step_forwards
+                * layers
+                * 9
+            ),
+
+            # ----------------------------------------
+            # Actual batched sample-slot execution
+            # ----------------------------------------
+            "batched_activation_site_temporal_slots": (
+                batched_temporal_sample_slots
+                * layers
                 * 9
             ),
         }
