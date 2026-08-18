@@ -36,25 +36,93 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def main():
-    args = parser(
-        "Evaluate an ANN checkpoint or converted SNN on Reddit TL;DR",
+    eval_parser = parser(
+        "Evaluate a Base model, ANN checkpoint, or converted SNN on Reddit TL;DR",
         neuron=True,
         allow_ann=True,
-    ).parse_args()
-    cfg, layout = setup(args.config)
-    if cfg["experiment"]["task"] != "tldr":
-        raise ValueError("evaluate_tldr.py only accepts a TL;DR configuration")
+    )
 
-    rank = int(os.environ.get("RANK", "0"))
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    stage = f"evaluate_tldr_{args.neuron}_rank{rank}"
-    with StageRun(stage, layout.logs_dir, cfg["experiment"]) as run:
+    eval_parser.add_argument(
+        "--base",
+        action="store_true",
+        help=(
+            "Evaluate the original pretrained Base model instead "
+            "of the fine-tuned ANN checkpoint"
+        ),
+    )
+
+    args = eval_parser.parse_args()
+
+    # 先读取 config，之后才能访问 cfg
+    cfg, layout = setup(
+        args.config,
+        config_scope=(
+            "base"
+            if args.base
+            else "run"
+        ),
+    )
+
+    if cfg["experiment"]["task"] != "tldr":
+        raise ValueError(
+            "evaluate_tldr.py only accepts a TL;DR configuration"
+        )
+
+    # cfg 已经定义以后，再检查 Base evaluation 的合法性
+    if args.base:
+        if args.neuron != "ann":
+            raise ValueError(
+                "--base can only be used with --neuron ann"
+            )
+
+        if cfg["experiment"]["ann_mode"] != "vanilla":
+            raise ValueError(
+                "--base must use a vanilla configuration"
+            )
+
+    rank = int(
+        os.environ.get(
+            "RANK",
+            "0",
+        )
+    )
+
+    world_size = int(
+        os.environ.get(
+            "WORLD_SIZE",
+            "1",
+        )
+    )
+
+    model_variant = (
+        "base"
+        if args.base
+        else args.neuron
+    )
+
+    stage = (
+        f"evaluate_tldr_"
+        f"{model_variant}_rank{rank}"
+    )
+
+    logs_dir = (
+        layout.base_logs_dir
+        if args.base
+        else layout.logs_dir
+    )
+
+    with StageRun(stage, logs_dir, cfg["experiment"]) as run:
         from accelerate import Accelerator
         from accelerate.utils import gather_object
         import evaluate
 
         accelerator = Accelerator()
-        source = model_source(cfg, layout, ann=True)
+
+        if args.base:
+            source = cfg["experiment"]["model_name"]
+        else:
+            source = model_source(cfg, layout, ann=True)
+
         model = load_model(cfg, source, training=False)
         model.to(accelerator.device)
         model.eval()
@@ -437,11 +505,23 @@ def main():
                 }
             )
 
+            if args.base:
+                model_output_dir = (
+                    layout.root.parents[2]
+                    / "base"
+                    / f"seed{int(cfg['experiment']['seed'])}"
+                )
+            elif args.neuron == "ann":
+                model_output_dir = layout.ann_dir
+            else:
+                model_output_dir = layout.snn_dir(args.neuron)
+
             output_dir = (
-                layout.ann_dir
-                if args.neuron == "ann"
-                else layout.snn_dir(args.neuron)
-            ) / "evaluation" / "tldr" / test_samples_dirname
+                model_output_dir
+                / "evaluation"
+                / "tldr"
+                / test_samples_dirname
+            )
 
             _write_jsonl(
                 output_dir / "predictions.jsonl",

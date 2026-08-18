@@ -39,6 +39,8 @@ def setup(config_path: str, config_scope: str = "run"):
         config_dir = layout.policy_config_dir
     elif config_scope == "run":
         config_dir = layout.config_dir
+    elif config_scope == "base":
+        config_dir = layout.base_config_dir
     else:
         raise ValueError(f"Unknown config scope: {config_scope}")
 

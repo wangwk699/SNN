@@ -22,11 +22,30 @@ class ArtifactLayout:
         model_root = task_root / model
         seed = f"seed{int(exp['seed'])}"
         learning_rate = f"lr{cfg['training']['learning_rate']}"
-        self.root = model_root / exp["ann_mode"] / learning_rate/ seed
+
+        self.model_root = model_root
+        self.seed_name = seed
+        self.root = model_root / exp["ann_mode"] / learning_rate / seed
+        # 原始 Base 模型独立目录：
+        # 不依赖 ann_mode，也不依赖 learning_rate
+        self.base_root = model_root / "base" / seed
+
         self.shared_task_root = task_root / "_shared" / seed
         self.shared_model_root = model_root / "_shared" / seed
         policy = "rotated_prefix" if cfg["rotation"]["enabled"] else "vanilla_original"
         self.policy_root = self.shared_model_root / policy
+
+    @property
+    def base_dir(self) -> Path:
+        return self.base_root
+
+    @property
+    def base_config_dir(self) -> Path:
+        return self.base_root / "config"
+
+    @property
+    def base_logs_dir(self) -> Path:
+        return self.base_root / "logs"
 
     @property
     def config_dir(self) -> Path:
