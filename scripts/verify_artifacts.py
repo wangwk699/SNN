@@ -2,12 +2,39 @@ from __future__ import annotations
 
 from _common import parser, setup
 
-from snn2.artifacts import read_json, write_json
+from snn2.artifacts import read_json, sha256_file, write_json
 from snn2.conversion import validate_calibration
 from snn2.sites import topology_metadata
 from snn2.evaluation import resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
 
+
+def _require_manifest_flags(manifest, expected, label):
+    for key, value in expected.items():
+        if manifest.get(key) != value:
+            raise ValueError(f"{label} manifest has invalid {key}: {manifest.get(key)!r}")
+
+
+def _verify_hashes(manifest, label):
+    for path_key, hash_key in (
+        ("calibration_data_manifest_path", "calibration_data_manifest_sha256"),
+        ("prefix_state_path", "prefix_state_sha256"),
+        ("prefix_kv_path", "prefix_kv_sha256"),
+        ("rotation_state_path", "rotation_state_sha256"),
+        ("source_ann_checkpoint", None),
+    ):
+        path = manifest.get(path_key)
+        expected = manifest.get(hash_key) if hash_key else None
+        if path is None:
+            if expected is not None:
+                raise ValueError(f"{label} has {hash_key} without {path_key}")
+            continue
+        if hash_key and (not expected or sha256_file(path) != expected):
+            raise ValueError(f"{label} provenance hash mismatch: {hash_key}")
+    checkpoint = manifest.get("source_ann_checkpoint")
+    expected_config = manifest.get("source_ann_config_sha256")
+    if checkpoint is not None and (not expected_config or sha256_file(Path(checkpoint) / "config.json") != expected_config):
+        raise ValueError(f"{label} provenance hash mismatch: source_ann_config_sha256")
 
 def main():
     args = parser(
@@ -160,9 +187,21 @@ def main():
             layout.post_finetuning_site_dir
         )
 
+        vanilla_manifest = read_json(layout.vanilla_analysis_site_dir / "statistics_manifest.json")
+        _require_manifest_flags(vanilla_manifest, {"purpose": "vanilla_analysis_calibration", "analysis_only": True, "eligible_for_ann_training": False, "eligible_for_conversion": False, "post_finetuning_recalibration": False, "rotation_enabled": False, "prefix_protocol_enabled": False}, "Vanilla analysis")
+        if cfg["rotation"]["enabled"]:
+            ann_manifest = read_json(layout.ann_training_site_dir / "calibration_state_manifest.json")
+            _require_manifest_flags(ann_manifest, {"purpose": "ann_training_calibration", "analysis_only": False, "eligible_for_ann_training": True, "eligible_for_conversion": False, "post_finetuning_recalibration": False, "rotation_enabled": True, "prefix_protocol_enabled": True}, "ANN-training")
+            if not ann_manifest.get("calibration_data_manifest_sha256"):
+                raise ValueError("ANN-training calibration lacks calibration data provenance")
         post_manifest = read_json(layout.post_finetuning_site_dir / "calibration_state_manifest.json")
-        if post_manifest.get("purpose") != "post_finetuning_conversion_calibration" or not post_manifest.get("eligible_for_conversion") or not post_manifest.get("post_finetuning_recalibration"):
-            raise ValueError("Run-specific calibration is not eligible post-finetuning conversion calibration")
+        _require_manifest_flags(post_manifest, {"purpose": "post_finetuning_conversion_calibration", "analysis_only": False, "eligible_for_ann_training": False, "eligible_for_conversion": True, "post_finetuning_recalibration": True, "prefix_protocol_enabled": True}, "Post-finetuning")
+        if not post_manifest.get("source_ann_checkpoint") or not post_manifest.get("source_ann_config_sha256") or not post_manifest.get("calibration_data_manifest_sha256"):
+            raise ValueError("Post-finetuning calibration lacks required final-ANN or data provenance")
+        expected_rotation = bool(cfg["rotation"]["enabled"])
+        if post_manifest.get("rotation_enabled") != expected_rotation:
+            raise ValueError("Post-finetuning calibration rotation provenance disagrees with config")
+        _verify_hashes(post_manifest, "Post-finetuning calibration")
 
         conversions = {}
 

@@ -37,7 +37,27 @@ def validate_calibration(site_root: str | Path) -> dict[str, Any]:
     }
 
 
+def validate_post_finetuning_prefix(layout: ArtifactLayout) -> dict[str, Any]:
+    root = layout.post_finetuning_prefix_dir
+    state_path = root / "prefix_state.json"
+    if not state_path.exists():
+        raise FileNotFoundError(
+            f"Post-finetuning Prefix state is required before conversion: {state_path}. "
+            "Re-run scripts/discover_prefix.py --stage post_finetuning."
+        )
+    token_ids = [int(value) for value in read_json(state_path).get("prefix_token_ids", [])]
+    kv_path = root / "prefixed_key_values.pt"
+    if token_ids and not kv_path.exists():
+        raise FileNotFoundError(f"Non-empty post-finetuning Prefix requires fixed KV cache: {kv_path}")
+    return {
+        "prefix_root": str(root.resolve()),
+        "prefix_token_ids": token_ids,
+        "prefix_state_sha256": sha256_file(state_path),
+        "prefix_kv_sha256": sha256_file(kv_path) if token_ids else None,
+    }
+
 def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) -> dict[str, Any]:
+    prefix = validate_post_finetuning_prefix(layout)
     validation = validate_calibration(layout.post_finetuning_site_dir)
     ann_checkpoint = layout.ann_checkpoint_dir
     ann_config = ann_checkpoint / "config.json"
@@ -59,7 +79,6 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
     output = layout.snn_dir(neuron)
     output.mkdir(parents=True, exist_ok=True)
     rotation_path = layout.rotation_dir / "rotation_state.pt"
-    prefix_path = layout.post_finetuning_prefix_dir / "prefix_state.json"
     metadata = {
         "format_version": 1,
         "experiment": cfg["experiment"],
@@ -72,14 +91,14 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
         "gif_local_decomposition_steps": 2 ** int(cfg["gif"]["add_bits"]),
         "rotation_enabled": bool(cfg["rotation"]["enabled"]),
         "prefix_enabled": True,
+        "prefix_token_ids": prefix["prefix_token_ids"],
         "rotation_state_sha256": (
             sha256_file(rotation_path) if bool(cfg["rotation"]["enabled"]) else None
         ),
-        "prefix_state_sha256": (
-            sha256_file(prefix_path) if prefix_path.exists() else None
-        ),
+        "prefix_state_sha256": prefix["prefix_state_sha256"],
+        "prefix_kv_sha256": prefix["prefix_kv_sha256"],
         "post_finetuning_recalibration": True,
-        "prefix_root": str(layout.post_finetuning_prefix_dir.resolve()),
+        "prefix_root": prefix["prefix_root"],
         "calibration_validation": validation,
         **topology_metadata(),
     }

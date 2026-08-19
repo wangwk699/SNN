@@ -8,11 +8,68 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
-from .artifacts import write_json
+from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
 from .data import CausalLMCollator, tokenize_dataset
 from .sites import SITE_COUNT, SITE_TOPOLOGY_VERSION, topology_metadata, validate_site_topology
 from .stats import StatisticsStore
 from .prefix_cache import install_prefix_kv_forward
+
+
+def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: str) -> dict[str, Any]:
+    """Build complete, stage-aware calibration provenance metadata."""
+    if stage not in {"ann_training", "vanilla_analysis", "post_finetuning"}:
+        raise ValueError(f"Unknown calibration stage: {stage}")
+    purpose = {
+        "ann_training": "ann_training_calibration",
+        "vanilla_analysis": "vanilla_analysis_calibration",
+        "post_finetuning": "post_finetuning_conversion_calibration",
+    }[stage]
+    prefix_dir = None if stage == "vanilla_analysis" else (
+        layout.ann_training_prefix_dir if stage == "ann_training" else layout.post_finetuning_prefix_dir
+    )
+    prefix_state = prefix_dir / "prefix_state.json" if prefix_dir else None
+    if prefix_state and not prefix_state.exists():
+        raise FileNotFoundError(f"Prefix state required for {stage} calibration: {prefix_state}")
+    prefix_ids = [] if prefix_state is None else [int(value) for value in read_json(prefix_state).get("prefix_token_ids", [])]
+    prefix_kv = prefix_dir / "prefixed_key_values.pt" if prefix_dir and prefix_ids else None
+    if prefix_kv and not prefix_kv.exists():
+        raise FileNotFoundError(f"Non-empty Prefix requires fixed KV cache: {prefix_kv}")
+    rotation_path = layout.rotation_dir / "rotation_state.pt" if cfg["rotation"]["enabled"] else None
+    if rotation_path and not rotation_path.exists():
+        raise FileNotFoundError(f"Rotation state required for rotated calibration: {rotation_path}")
+    data_manifest = layout.data_dir / "calibration_manifest.json"
+    if not data_manifest.exists():
+        raise FileNotFoundError(f"Calibration data manifest is missing: {data_manifest}")
+    ann_config = layout.ann_checkpoint_dir / "config.json" if stage == "post_finetuning" else None
+    if ann_config and not ann_config.exists():
+        raise FileNotFoundError(f"Final ANN config is missing: {ann_config}")
+    post = stage == "post_finetuning"
+    return {
+        "purpose": purpose,
+        "analysis_only": stage == "vanilla_analysis",
+        "eligible_for_ann_training": stage == "ann_training",
+        "eligible_for_conversion": post,
+        "post_finetuning_recalibration": post,
+        "source_model_stage": "original_pretrained_base" if stage == "vanilla_analysis" else ("rotated_fused_base" if stage == "ann_training" else "final_ann_checkpoint"),
+        "source_ann_mode": cfg["experiment"]["ann_mode"] if post else None,
+        "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()) if post else None,
+        "source_ann_config_sha256": sha256_file(ann_config) if ann_config else None,
+        "calibration_data_manifest_path": str(data_manifest.resolve()),
+        "calibration_data_manifest_sha256": sha256_file(data_manifest),
+        "prefix_protocol_enabled": prefix_dir is not None,
+        "prefix_enabled": prefix_dir is not None,
+        "prefix_token_ids": prefix_ids,
+        "prefix_kv_present": prefix_kv is not None,
+        "prefix_state_path": str(prefix_state.resolve()) if prefix_state else None,
+        "prefix_state_sha256": sha256_file(prefix_state) if prefix_state else None,
+        "prefix_kv_path": str(prefix_kv.resolve()) if prefix_kv else None,
+        "prefix_kv_sha256": sha256_file(prefix_kv) if prefix_kv else None,
+        "rotation_enabled": rotation_path is not None,
+        "rotation_state_path": str(rotation_path.resolve()) if rotation_path else None,
+        "rotation_state_sha256": sha256_file(rotation_path) if rotation_path else None,
+        "learning_rate": cfg["training"]["learning_rate"] if post else None,
+        "seed": int(cfg["experiment"]["seed"]),
+    }
 
 
 def _group_reduce(vector: torch.Tensor, group_size: int, reduction: str) -> torch.Tensor:
@@ -239,15 +296,25 @@ def collect_site_statistics(
         "eligible_for_ann_training": eligible_ann,
         "eligible_for_conversion": eligible_conversion,
         "post_finetuning_recalibration": eligible_conversion,
+        "source_model_stage": None,
+        "source_ann_mode": None,
         "source_ann_checkpoint": None,
         "source_ann_config_sha256": None,
+        "calibration_data_manifest_path": None,
         "calibration_data_manifest_sha256": None,
-        "prefix_enabled": prefix_key_values is not None,
-        "prefix_token_ids": None,
+        "prefix_protocol_enabled": False,
+        "prefix_enabled": False,
+        "prefix_token_ids": [],
+        "prefix_kv_present": False,
+        "prefix_state_path": None,
         "prefix_state_sha256": None,
+        "prefix_kv_path": None,
         "prefix_kv_sha256": None,
-        "rotation_enabled": None,
+        "rotation_enabled": False,
+        "rotation_state_path": None,
         "rotation_state_sha256": None,
+        "learning_rate": None,
+        "seed": int(cfg["experiment"]["seed"]),
         **(extra_metadata or {}),
     }
     stats_manifest.update(metadata)

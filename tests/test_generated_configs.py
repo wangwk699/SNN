@@ -18,6 +18,12 @@ def test_generated_configs_preserve_qwen3_1_7b_overrides():
     for path in configs:
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert int(cfg["calibration"]["expected_sites_per_layer"]) == SITE_COUNT
+        assert cfg["post_finetuning"] == {
+            "rediscover_prefix": True,
+            "recalibrate_sites": True,
+            "prefix_enabled": True,
+            "post_finetuning_recalibration": True,
+        }
     for name, (learning_rate, batch_size) in expected.items():
         cfg = yaml.safe_load((root / name).read_text(encoding="utf-8"))
         assert float(cfg["training"]["learning_rate"]) == learning_rate
