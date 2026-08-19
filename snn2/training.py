@@ -9,18 +9,18 @@ from .artifacts import ArtifactLayout, write_json
 from .controller import SiteController
 from .data import CausalLMCollator, load_selected_raw, tokenize_dataset
 from .model_integration import install_model_integration
-from .modeling import load_model, load_tokenizer, model_source, prefix_ids, prefix_key_values, rotation_state
+from .modeling import load_model, load_tokenizer, model_source_for_stage, prefix_ids_for_stage, prefix_key_values_for_stage, rotation_state
 from .prefix_cache import install_prefix_kv_forward
 
 
 def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, Any]:
     from transformers import Trainer, TrainingArguments
 
-    source = model_source(cfg, layout, ann=False)
+    source = model_source_for_stage(cfg, layout, stage="ann_training")
     tokenizer = load_tokenizer(cfg, source if Path(source).exists() else None)
     model = load_model(cfg, source, training=True)
     mode = cfg["replacement"]["train_mode"]
-    controller = SiteController(mode=mode, site_root=layout.site_dir)
+    controller = SiteController(mode=mode, site_root=layout.ann_training_site_dir)
     if cfg["rotation"]["enabled"] or mode != "none":
         install_model_integration(model, controller, rotation_state(cfg, layout))
     model.config.snn2_ann_mode = cfg["experiment"]["ann_mode"]
@@ -60,8 +60,8 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         ddp_find_unused_parameters=False,
     )
     bundle = load_selected_raw(cfg, layout)
-    prefixes = prefix_ids(cfg, layout)
-    install_prefix_kv_forward(model, prefix_key_values(cfg, layout))
+    prefixes = prefix_ids_for_stage(cfg, layout, stage="ann_training")
+    install_prefix_kv_forward(model, prefix_key_values_for_stage(cfg, layout, stage="ann_training"))
     with arguments.main_process_first(desc="tokenize train and validation datasets"):
         train_dataset = tokenize_dataset(bundle.train, tokenizer, cfg, prefix_ids=None)
         validation_dataset = tokenize_dataset(bundle.validation, tokenizer, cfg, prefix_ids=None)

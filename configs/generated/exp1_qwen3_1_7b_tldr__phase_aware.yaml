@@ -28,6 +28,11 @@ prefix:
   outlier_threshold: 64.0
   detection_activation: down_proj_input
   loss_masked: true
+post_finetuning:
+  rediscover_prefix: true
+  recalibrate_sites: true
+  prefix_enabled: true
+  post_finetuning_recalibration: true
 calibration:
   seed: 42
   num_samples: 128

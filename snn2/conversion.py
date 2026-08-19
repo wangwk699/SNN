@@ -38,7 +38,7 @@ def validate_calibration(site_root: str | Path) -> dict[str, Any]:
 
 
 def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) -> dict[str, Any]:
-    validation = validate_calibration(layout.site_dir)
+    validation = validate_calibration(layout.post_finetuning_site_dir)
     ann_checkpoint = layout.ann_checkpoint_dir
     ann_config = ann_checkpoint / "config.json"
     if not ann_config.exists():
@@ -46,36 +46,40 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
             "The final fine-tuned ANN checkpoint is required before conversion: "
             f"{ann_config}"
         )
-    calibration_manifest = layout.site_dir / "calibration_state_manifest.json"
+    calibration_manifest = layout.post_finetuning_site_dir / "calibration_state_manifest.json"
     if not calibration_manifest.exists():
         raise FileNotFoundError(
             f"Calibration state manifest is missing: {calibration_manifest}"
         )
-    controller = SiteController(site_root=layout.site_dir)
+    manifest = read_json(calibration_manifest)
+    if manifest.get("purpose") != "post_finetuning_conversion_calibration" or not manifest.get("eligible_for_conversion") or not manifest.get("post_finetuning_recalibration"):
+        raise ValueError("Conversion requires post_finetuning_conversion_calibration eligible for conversion")
+    controller = SiteController(site_root=layout.post_finetuning_site_dir)
     steps = controller.set_deployment(neuron)
     output = layout.snn_dir(neuron)
     output.mkdir(parents=True, exist_ok=True)
     rotation_path = layout.rotation_dir / "rotation_state.pt"
-    prefix_path = layout.prefix_dir / "prefix_state.json"
+    prefix_path = layout.post_finetuning_prefix_dir / "prefix_state.json"
     metadata = {
         "format_version": 1,
         "experiment": cfg["experiment"],
         "source_ann_checkpoint": str(ann_checkpoint.resolve()),
         "source_ann_config_sha256": sha256_file(ann_config),
-        "calibration_root": str(layout.site_dir.resolve()),
+        "calibration_root": str(layout.post_finetuning_site_dir.resolve()),
         "calibration_state_manifest_sha256": sha256_file(calibration_manifest),
         "deployment_neuron": neuron,
         "full_temporal_steps": steps,
         "gif_local_decomposition_steps": 2 ** int(cfg["gif"]["add_bits"]),
         "rotation_enabled": bool(cfg["rotation"]["enabled"]),
-        "prefix_enabled": bool(cfg["prefix"]["enabled"]),
+        "prefix_enabled": True,
         "rotation_state_sha256": (
             sha256_file(rotation_path) if bool(cfg["rotation"]["enabled"]) else None
         ),
         "prefix_state_sha256": (
-            sha256_file(prefix_path) if bool(cfg["prefix"]["enabled"]) else None
+            sha256_file(prefix_path) if prefix_path.exists() else None
         ),
-        "post_finetuning_recalibration": False,
+        "post_finetuning_recalibration": True,
+        "prefix_root": str(layout.post_finetuning_prefix_dir.resolve()),
         "calibration_validation": validation,
         **topology_metadata(),
     }

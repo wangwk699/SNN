@@ -144,9 +144,9 @@ def build_site_states(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[s
     return {"phase": phase_state, "gif": gif_state, "mtn": mtn_state, "clip": clip_state}
 
 
-def materialize_calibration_states(site_root: str | Path, cfg: dict[str, Any]) -> dict[str, Any]:
+def materialize_calibration_states(site_root: str | Path, cfg: dict[str, Any], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     root = Path(site_root)
-    manifest: dict[str, Any] = {"format_version": 1, **topology_metadata(), "sites": {}}
+    manifest: dict[str, Any] = {"format_version": 1, **topology_metadata(), "sites": {}, **(metadata or {})}
     for statistics_path in sorted(root.glob("layer_*/site_*/statistics.pt")):
         directory = statistics_path.parent
         key = directory.relative_to(root).as_posix()
@@ -188,6 +188,10 @@ def collect_site_statistics(
     cfg: dict[str, Any],
     prefix_key_values: Any,
     site_root: str | Path,
+    *,
+    purpose: str,
+    materialize_states: bool = True,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = Path(site_root)
     existing_layers = [path for path in root.glob("layer_*") if path.is_dir()]
@@ -227,5 +231,28 @@ def collect_site_statistics(
             use_cache=False,
         )
     stats_manifest = controller.statistics.reduce_and_save(site_root)
-    state_manifest = materialize_calibration_states(site_root, cfg)
+    eligible_ann = purpose == "ann_training_calibration"
+    eligible_conversion = purpose == "post_finetuning_conversion_calibration"
+    metadata = {
+        "purpose": purpose,
+        "analysis_only": purpose == "vanilla_analysis_calibration",
+        "eligible_for_ann_training": eligible_ann,
+        "eligible_for_conversion": eligible_conversion,
+        "post_finetuning_recalibration": eligible_conversion,
+        "source_ann_checkpoint": None,
+        "source_ann_config_sha256": None,
+        "calibration_data_manifest_sha256": None,
+        "prefix_enabled": prefix_key_values is not None,
+        "prefix_token_ids": None,
+        "prefix_state_sha256": None,
+        "prefix_kv_sha256": None,
+        "rotation_enabled": None,
+        "rotation_state_sha256": None,
+        **(extra_metadata or {}),
+    }
+    stats_manifest.update(metadata)
+    write_json(root / "statistics_manifest.json", stats_manifest)
+    state_manifest = materialize_calibration_states(site_root, cfg, metadata) if materialize_states else {"format_version": 1, **topology_metadata(), **metadata, "sites": {}}
+    if not materialize_states:
+        write_json(root / "calibration_state_manifest.json", state_manifest)
     return {"statistics": stats_manifest, "states": state_manifest}

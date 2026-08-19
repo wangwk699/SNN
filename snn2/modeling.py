@@ -9,15 +9,21 @@ from .artifacts import ArtifactLayout, read_json
 from .model_integration import register_attention_backend
 from .rotation import load_rotation_state
 from .prefix_cache import load_prefix_key_values
+from .config import post_finetuning_prefix_enabled, training_prefix_enabled
 
 
 def model_source(cfg: dict[str, Any], layout: ArtifactLayout, ann: bool = False) -> str:
-    if ann:
-        return str(layout.ann_checkpoint_dir)
-    if bool(cfg["rotation"]["enabled"]):
-        return str(layout.rotation_dir / "fused_base")
-    return cfg["experiment"]["model_name"]
+    return model_source_for_stage(cfg, layout, stage="post_finetuning" if ann else "ann_training")
 
+
+def model_source_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: str) -> str:
+    if stage in {"ann_training", "pre_finetuning"}:
+        return str(layout.rotation_dir / "fused_base") if cfg["rotation"]["enabled"] else cfg["experiment"]["model_name"]
+    if stage in {"vanilla_analysis", "base_evaluation"}:
+        return cfg["experiment"]["model_name"]
+    if stage == "post_finetuning":
+        return str(layout.ann_checkpoint_dir)
+    raise ValueError(f"Unknown model stage: {stage}")
 
 def load_tokenizer(cfg: dict[str, Any], source: str | None = None):
     from transformers import AutoTokenizer
@@ -68,24 +74,39 @@ def load_model(
 
 
 def prefix_ids(cfg: dict[str, Any], layout: ArtifactLayout) -> list[int]:
-    if not bool(cfg["prefix"]["enabled"]):
+    return prefix_ids_for_stage(cfg, layout, stage="ann_training")
+
+
+def prefix_ids_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: str) -> list[int]:
+    if stage == "ann_training":
+        if not training_prefix_enabled(cfg):
+            return []
+        path = layout.ann_training_prefix_dir / "prefix_state.json"
+    elif stage == "post_finetuning":
+        if not post_finetuning_prefix_enabled(cfg):
+            return []
+        path = layout.post_finetuning_prefix_dir / "prefix_state.json"
+    elif stage in {"vanilla_analysis", "base_evaluation"}:
         return []
-    state = read_json(layout.prefix_dir / "prefix_state.json")
+    else:
+        raise ValueError(f"Unknown prefix stage: {stage}")
+    state = read_json(path)
     return [int(value) for value in state["prefix_token_ids"]]
 
 
 def prefix_key_values(cfg: dict[str, Any], layout: ArtifactLayout):
-    ids = prefix_ids(cfg, layout)
+    return prefix_key_values_for_stage(cfg, layout, stage="ann_training")
+
+
+def prefix_key_values_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: str):
+    ids = prefix_ids_for_stage(cfg, layout, stage=stage)
     if not ids:
         return None
-    path = layout.prefix_dir / "prefixed_key_values.pt"
+    directory = layout.ann_training_prefix_dir if stage == "ann_training" else layout.post_finetuning_prefix_dir
+    path = directory / "prefixed_key_values.pt"
     if not path.exists():
-        raise FileNotFoundError(
-            f"Prefix is enabled but fixed KV cache is missing: {path}. "
-            "Re-run scripts/discover_prefix.py."
-        )
+        raise FileNotFoundError(f"Prefix is enabled but fixed KV cache is missing: {path}. Re-run scripts/discover_prefix.py.")
     return load_prefix_key_values(path)
-
 
 def rotation_state(cfg: dict[str, Any], layout: ArtifactLayout):
     if not bool(cfg["rotation"]["enabled"]):

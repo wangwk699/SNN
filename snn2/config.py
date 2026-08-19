@@ -68,6 +68,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
         "replacement",
         "training",
         "evaluation",
+        "post_finetuning",
     }
     missing = required - cfg.keys()
     if missing:
@@ -110,6 +111,21 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("Main experiments disable GIF MSE scale refinement")
     if mode != "vanilla" and not bool(cfg["rotation"].get("fused_weights_are_finetuned", False)):
         raise ValueError("Rotated modes must fine-tune the fused rotation weights")
+    for key in ("rediscover_prefix", "recalibrate_sites", "prefix_enabled", "post_finetuning_recalibration"):
+        if not bool(cfg["post_finetuning"].get(key, False)):
+            raise ValueError(f"Main experiments require post_finetuning.{key}=true")
+
+
+def training_prefix_enabled(cfg: dict[str, Any]) -> bool:
+    return cfg["experiment"]["ann_mode"] != "vanilla" and bool(cfg["prefix"].get("enabled", False))
+
+
+def post_finetuning_prefix_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(cfg.get("post_finetuning", {}).get("prefix_enabled", True))
+
+
+def post_finetuning_recalibration_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(cfg.get("post_finetuning", {}).get("post_finetuning_recalibration", True))
 
 
 def config_hash(cfg: dict[str, Any]) -> str:

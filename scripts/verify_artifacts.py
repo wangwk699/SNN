@@ -63,13 +63,14 @@ def main():
         # --------------------------------------------------
         # Rotation / Prefix shared artifacts
         # --------------------------------------------------
-        prefix_state_path = None
+        prefix_state_path = layout.post_finetuning_prefix_dir / "prefix_state.json"
+        required.extend([
+            prefix_state_path,
+            layout.post_finetuning_site_dir / "calibration_state_manifest.json",
+            layout.vanilla_analysis_site_dir / "statistics_manifest.json",
+        ])
 
         if cfg["rotation"]["enabled"]:
-            prefix_state_path = (
-                layout.prefix_dir
-                / "prefix_state.json"
-            )
 
             required.extend(
                 [
@@ -80,7 +81,9 @@ def main():
                     / "fused_base"
                     / "config.json",
 
-                    prefix_state_path,
+                    layout.ann_training_prefix_dir / "prefix_state.json",
+                    layout.ann_training_site_dir / "calibration_state_manifest.json",
+
                 ]
             )
 
@@ -131,7 +134,7 @@ def main():
 
             if prefix_token_ids:
                 prefix_kv_path = (
-                    layout.prefix_dir
+                    layout.post_finetuning_prefix_dir
                     / "prefixed_key_values.pt"
                 )
 
@@ -154,8 +157,12 @@ def main():
         # Calibration
         # --------------------------------------------------
         calibration = validate_calibration(
-            layout.site_dir
+            layout.post_finetuning_site_dir
         )
+
+        post_manifest = read_json(layout.post_finetuning_site_dir / "calibration_state_manifest.json")
+        if post_manifest.get("purpose") != "post_finetuning_conversion_calibration" or not post_manifest.get("eligible_for_conversion") or not post_manifest.get("post_finetuning_recalibration"):
+            raise ValueError("Run-specific calibration is not eligible post-finetuning conversion calibration")
 
         conversions = {}
 
@@ -190,6 +197,11 @@ def main():
                 "Missing required artifacts:\n"
                 + "\n".join(missing)
             )
+
+        for neuron in ("phase", "gif", "mtn"):
+            metadata = read_json(layout.snn_dir(neuron) / "conversion_metadata.json")
+            if not metadata.get("post_finetuning_recalibration") or "post_finetuning/conversion_calibration/sites" not in metadata.get("calibration_root", ""):
+                raise ValueError(f"Conversion does not use run-specific post-finetuning calibration: {neuron}")
 
         if tldr_layout is not None:
             expected_count = int(tldr_layout["selected_test_samples"])

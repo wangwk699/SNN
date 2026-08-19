@@ -19,9 +19,9 @@ from snn2.sites import SITE_COUNT, SITE_TOPOLOGY_VERSION
 from snn2.modeling import (
     load_model,
     load_tokenizer,
-    model_source,
-    prefix_ids,
-    prefix_key_values,
+    model_source_for_stage,
+    prefix_ids_for_stage,
+    prefix_key_values_for_stage,
     rotation_state,
 )
 from snn2.prefix_cache import install_prefix_kv_forward
@@ -130,19 +130,19 @@ def main():
         if args.base:
             source = cfg["experiment"]["model_name"]
         else:
-            source = model_source(cfg, layout, ann=True)
+            source = model_source_for_stage(cfg, layout, stage="post_finetuning")
 
         model = load_model(cfg, source, training=False)
         model.to(accelerator.device)
         model.eval()
         tokenizer = load_tokenizer(cfg, source)
         tokenizer.padding_side = "left"
-        controller = SiteController(mode="identity", site_root=layout.site_dir)
+        controller = SiteController(mode="identity", site_root=layout.post_finetuning_site_dir if not args.base else None)
         steps = 1 if args.neuron == "ann" else controller.set_deployment(args.neuron)
         if args.neuron != "ann" or cfg["rotation"]["enabled"]:
             install_model_integration(model, controller, rotation_state(cfg, layout))
-        prefixes = prefix_ids(cfg, layout)
-        install_prefix_kv_forward(model, prefix_key_values(cfg, layout))
+        prefixes = prefix_ids_for_stage(cfg, layout, stage="base_evaluation" if args.base else "post_finetuning")
+        install_prefix_kv_forward(model, prefix_key_values_for_stage(cfg, layout, stage="base_evaluation" if args.base else "post_finetuning"))
 
         evaluation = load_selected_raw(cfg, layout).evaluation
         if evaluation is None:
@@ -418,6 +418,9 @@ def main():
                     "decode": "greedy",
                     "input_length": input_length,
                     "max_new_tokens": max_new,
+                    "prefix_stage": "base_evaluation" if args.base else "post_finetuning",
+                    "post_finetuning_recalibration": False if args.base else True,
+                    "calibration_root": None if args.base else str(layout.post_finetuning_site_dir),
 
                     "model_variant": (
                         "base"

@@ -76,16 +76,38 @@ class ArtifactLayout:
         return self.shared_model_root / "rotated_prefix" / "rotation"
 
     @property
+    def ann_training_prefix_dir(self) -> Path:
+        return self.shared_model_root / "rotated_prefix" / "ann_training_prefix"
+
+    @property
+    def ann_training_calibration_dir(self) -> Path:
+        return self.shared_model_root / "rotated_prefix" / "ann_training_calibration"
+
+    @property
+    def ann_training_site_dir(self) -> Path:
+        return self.ann_training_calibration_dir / "sites"
+
+    @property
+    def vanilla_analysis_calibration_dir(self) -> Path:
+        return self.shared_model_root / "vanilla_original" / "vanilla_analysis_calibration"
+
+    @property
+    def vanilla_analysis_site_dir(self) -> Path:
+        return self.vanilla_analysis_calibration_dir / "sites"
+
+    @property
     def prefix_dir(self) -> Path:
-        return self.shared_model_root / "rotated_prefix" / "prefix"
+        """Legacy alias; new code must select an explicit prefix stage."""
+        return self.ann_training_prefix_dir
 
     @property
     def calibration_dir(self) -> Path:
-        return self.policy_root / "calibration"
+        """Legacy alias; new code must select an explicit calibration stage."""
+        return self.ann_training_calibration_dir
 
     @property
     def site_dir(self) -> Path:
-        return self.calibration_dir / "sites"
+        return self.ann_training_site_dir
 
     @property
     def ann_dir(self) -> Path:
@@ -95,6 +117,22 @@ class ArtifactLayout:
     def ann_checkpoint_dir(self) -> Path:
         """Canonical final fine-tuned ANN checkpoint for all downstream stages."""
         return self.ann_dir / "final"
+
+    @property
+    def post_finetuning_dir(self) -> Path:
+        return self.root / "post_finetuning"
+
+    @property
+    def post_finetuning_prefix_dir(self) -> Path:
+        return self.post_finetuning_dir / "prefix"
+
+    @property
+    def post_finetuning_conversion_calibration_dir(self) -> Path:
+        return self.post_finetuning_dir / "conversion_calibration"
+
+    @property
+    def post_finetuning_site_dir(self) -> Path:
+        return self.post_finetuning_conversion_calibration_dir / "sites"
 
     @property
     def logs_dir(self) -> Path:
@@ -109,9 +147,14 @@ class ArtifactLayout:
             self.data_dir,
             self.shared_task_logs_dir,
             self.rotation_dir,
-            self.prefix_dir,
-            self.calibration_dir,
-            self.site_dir,
+            self.ann_training_prefix_dir,
+            self.ann_training_calibration_dir,
+            self.ann_training_site_dir,
+            self.vanilla_analysis_calibration_dir,
+            self.vanilla_analysis_site_dir,
+            self.post_finetuning_prefix_dir,
+            self.post_finetuning_conversion_calibration_dir,
+            self.post_finetuning_site_dir,
             self.policy_logs_dir,
             self.ann_dir,
             self.logs_dir,

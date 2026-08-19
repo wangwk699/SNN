@@ -15,9 +15,9 @@ from snn2.sites import SITE_COUNT, SITE_TOPOLOGY_VERSION
 from snn2.modeling import (
     load_model,
     load_tokenizer,
-    model_source,
-    prefix_ids,
-    prefix_key_values,
+    model_source_for_stage,
+    prefix_ids_for_stage,
+    prefix_key_values_for_stage,
     rotation_state,
 )
 
@@ -138,11 +138,7 @@ def main():
         if args.base:
             source = cfg["experiment"]["model_name"]
         else:
-            source = model_source(
-                cfg,
-                layout,
-                ann=True,
-            )
+            source = model_source_for_stage(cfg, layout, stage="post_finetuning")
 
         model = load_model(
             cfg,
@@ -163,7 +159,7 @@ def main():
 
         controller = SiteController(
             mode="identity",
-            site_root=layout.site_dir,
+            site_root=layout.post_finetuning_site_dir if not args.base else None,
         )
 
         steps = (
@@ -194,16 +190,15 @@ def main():
                 ),
             )
 
-        model_prefix_ids = prefix_ids(
-            cfg,
-            layout,
+        model_prefix_ids = prefix_ids_for_stage(
+            cfg, layout, stage="base_evaluation" if args.base else "post_finetuning"
         )
 
         # Base + vanilla 时这里自然为 []
         proxy = EvaluationModelProxy(
             model,
             controller,
-            prefix_key_values(cfg, layout),
+            prefix_key_values_for_stage(cfg, layout, stage="base_evaluation" if args.base else "post_finetuning"),
         )
 
         batch_size = int(
@@ -339,6 +334,9 @@ def main():
             "prefix_token_ids": (
                 model_prefix_ids
             ),
+            "prefix_stage": "base_evaluation" if args.base else "post_finetuning",
+            "post_finetuning_recalibration": False if args.base else True,
+            "calibration_root": None if args.base else str(layout.post_finetuning_site_dir),
 
             # 保存全部原始 execution counter
             "execution_counter": (
