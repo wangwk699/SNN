@@ -36,6 +36,8 @@ def main():
         cache_path = output_dir / "prefixed_key_values.pt"
         if values is not None:
             save_prefix_key_values(cache_path, values)
+        elif cache_path.exists():
+            cache_path.unlink()
         run.event("prefix_saved", stage=args.stage, count=len(state["prefix_token_ids"]), prefix_root=str(output_dir), kv_cache_saved=values is not None)
 
 

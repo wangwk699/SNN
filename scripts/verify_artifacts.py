@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from pathlib import Path
 from _common import parser, setup
 
 from snn2.artifacts import read_json, sha256_file, write_json
@@ -189,11 +189,11 @@ def main():
 
         vanilla_manifest = read_json(layout.vanilla_analysis_site_dir / "statistics_manifest.json")
         _require_manifest_flags(vanilla_manifest, {"purpose": "vanilla_analysis_calibration", "analysis_only": True, "eligible_for_ann_training": False, "eligible_for_conversion": False, "post_finetuning_recalibration": False, "rotation_enabled": False, "prefix_protocol_enabled": False}, "Vanilla analysis")
+        _verify_hashes(vanilla_manifest, "Vanilla analysis calibration")
         if cfg["rotation"]["enabled"]:
             ann_manifest = read_json(layout.ann_training_site_dir / "calibration_state_manifest.json")
             _require_manifest_flags(ann_manifest, {"purpose": "ann_training_calibration", "analysis_only": False, "eligible_for_ann_training": True, "eligible_for_conversion": False, "post_finetuning_recalibration": False, "rotation_enabled": True, "prefix_protocol_enabled": True}, "ANN-training")
-            if not ann_manifest.get("calibration_data_manifest_sha256"):
-                raise ValueError("ANN-training calibration lacks calibration data provenance")
+            _verify_hashes(ann_manifest,"ANN-training calibration")
         post_manifest = read_json(layout.post_finetuning_site_dir / "calibration_state_manifest.json")
         _require_manifest_flags(post_manifest, {"purpose": "post_finetuning_conversion_calibration", "analysis_only": False, "eligible_for_ann_training": False, "eligible_for_conversion": True, "post_finetuning_recalibration": True, "prefix_protocol_enabled": True}, "Post-finetuning")
         if not post_manifest.get("source_ann_checkpoint") or not post_manifest.get("source_ann_config_sha256") or not post_manifest.get("calibration_data_manifest_sha256"):
