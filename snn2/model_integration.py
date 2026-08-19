@@ -152,6 +152,17 @@ def _linear_score(inputs: torch.Tensor, output: torch.Tensor, weight: torch.Tens
     return inputs * torch.matmul(output, weight)
 
 
+def record_down_proj_saliency(
+    controller: SiteController,
+    layer_index: int,
+    inputs: tuple[torch.Tensor, ...],
+    output: torch.Tensor,
+    weight: torch.Tensor,
+) -> None:
+    """Record the R4 product consumer sensitivity at Site 10."""
+    controller.record_saliency(layer_index, 10, _linear_score(inputs[0], output, weight))
+
+
 def install_model_integration(
     model: torch.nn.Module,
     controller: SiteController,
@@ -218,7 +229,7 @@ def install_model_integration(
         handles.append(layer.mlp.up_proj.register_forward_hook(mlp_input_hook))
 
         def down_input_hook(_module, inputs, output, index=layer_index):
-            controller.record_saliency(index, 10, _linear_score(inputs[0], output, _module.weight))
+            record_down_proj_saliency(controller, index, inputs, output, _module.weight)
 
         handles.append(layer.mlp.down_proj.register_forward_hook(down_input_hook))
         layer.mlp.forward = types.MethodType(_make_mlp_forward(controller, layer_index, r4), layer.mlp)

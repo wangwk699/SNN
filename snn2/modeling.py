@@ -13,7 +13,7 @@ from .prefix_cache import load_prefix_key_values
 
 def model_source(cfg: dict[str, Any], layout: ArtifactLayout, ann: bool = False) -> str:
     if ann:
-        return str(layout.ann_dir / "final")
+        return str(layout.ann_checkpoint_dir)
     if bool(cfg["rotation"]["enabled"]):
         return str(layout.rotation_dir / "fused_base")
     return cfg["experiment"]["model_name"]

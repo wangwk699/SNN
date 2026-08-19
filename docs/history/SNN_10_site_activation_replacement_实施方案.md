@@ -1,3 +1,7 @@
+# HISTORICAL MIGRATION PLAN — COMPLETED
+
+> 当前代码已经是 10-site；本文件仅保留完成的 9-site → 10-site 迁移背景，不描述当前实现。
+
 # SNN 项目：Activation Replacement 从 9 个 Site 扩展到 10 个 Site 的完整实施说明
 
 > **目标读者**：部署在服务器上的 Codex / 代码修改智能体  

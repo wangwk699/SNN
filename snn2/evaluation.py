@@ -10,6 +10,29 @@ from .model_integration import temporal_forward
 from .prefix_cache import install_prefix_kv_forward
 
 
+
+def resolve_tldr_evaluation_layout(
+    total_test_samples: int,
+    configured_test_samples: int | None,
+) -> dict[str, object]:
+    """Resolve the canonical TL;DR result directory and split cardinality."""
+    if total_test_samples <= 0:
+        raise ValueError("total_test_samples must be positive")
+    if configured_test_samples is None:
+        selected, is_full = total_test_samples, True
+    else:
+        requested = int(configured_test_samples)
+        if requested <= 0:
+            raise ValueError("evaluation.tldr_test_samples must be a positive integer or null")
+        selected = min(requested, total_test_samples)
+        is_full = selected == total_test_samples
+    dirname = f"test_samples_{selected}_full" if is_full else f"test_samples_{selected}"
+    return {
+        "selected_test_samples": selected,
+        "is_full_test": is_full,
+        "dirname": dirname,
+    }
+
 def _update_execution_counter(
     counter: dict[str, int] | None,
     *,

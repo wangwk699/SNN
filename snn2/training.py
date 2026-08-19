@@ -92,13 +92,14 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         processing_class=tokenizer,
     )
     result = trainer.train(resume_from_checkpoint=training_cfg.get("resume_from_checkpoint"))
-    final_dir = layout.ann_dir / "final"
+    final_dir = layout.ann_checkpoint_dir
     trainer.save_model(str(final_dir))
     if trainer.is_world_process_zero():
         tokenizer.save_pretrained(final_dir)
     metrics = dict(result.metrics)
     metrics.update(
         {
+            "final_model_checkpoint": str(layout.ann_checkpoint_dir.resolve()),
             "best_model_checkpoint": trainer.state.best_model_checkpoint,
             "best_metric": trainer.state.best_metric,
             "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),

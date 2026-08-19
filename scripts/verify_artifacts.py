@@ -5,6 +5,7 @@ from _common import parser, setup
 from snn2.artifacts import read_json, write_json
 from snn2.conversion import validate_calibration
 from snn2.sites import topology_metadata
+from snn2.evaluation import resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
 
 
@@ -25,7 +26,7 @@ def main():
             layout.data_dir / "train_manifest.json",
             layout.data_dir / "validation_manifest.json",
             layout.data_dir / "calibration_manifest.json",
-            layout.ann_dir / "best" / "config.json",
+            layout.ann_checkpoint_dir / "config.json",
             layout.ann_dir / "training_result.json",
         ]
 
@@ -36,24 +37,28 @@ def main():
                 layout.data_dir / "evaluation_manifest.json"
             )
 
-        eval_name = (
-            "metrics.json"
-            if task == "tldr"
-            else "results.json"
-        )
+        if task == "tldr":
+            evaluation_manifest = read_json(layout.data_dir / "evaluation_manifest.json")
+            tldr_layout = resolve_tldr_evaluation_layout(
+                len(evaluation_manifest["indices"]),
+                cfg["evaluation"].get("tldr_test_samples"),
+            )
+            eval_dir_name = "tldr"
+            evaluation_files = ("metrics.json", "selection.json")
+            evaluation_subdir = str(tldr_layout["dirname"])
+        else:
+            tldr_layout = None
+            eval_dir_name = "lm_harness"
+            evaluation_files = ("results.json",)
+            evaluation_subdir = None
 
-        eval_dir_name = (
-            "tldr"
-            if task == "tldr"
-            else "lm_harness"
-        )
+        def evaluation_paths(root):
+            directory = root / "evaluation" / eval_dir_name
+            if evaluation_subdir is not None:
+                directory = directory / evaluation_subdir
+            return [directory / name for name in evaluation_files]
 
-        required.append(
-            layout.ann_dir
-            / "evaluation"
-            / eval_dir_name
-            / eval_name
-        )
+        required.extend(evaluation_paths(layout.ann_dir))
 
         # --------------------------------------------------
         # Rotation / Prefix shared artifacts
@@ -170,10 +175,7 @@ def main():
                 [
                     path,
 
-                    layout.snn_dir(neuron)
-                    / "evaluation"
-                    / eval_dir_name
-                    / eval_name,
+                    *evaluation_paths(layout.snn_dir(neuron)),
                 ]
             )
 
@@ -188,6 +190,22 @@ def main():
                 "Missing required artifacts:\n"
                 + "\n".join(missing)
             )
+
+        if tldr_layout is not None:
+            expected_count = int(tldr_layout["selected_test_samples"])
+            expected_full = bool(tldr_layout["is_full_test"])
+            expected_sampling = (
+                "full_split" if expected_full else "seeded_random_without_replacement"
+            )
+            for root in [layout.ann_dir, *(layout.snn_dir(neuron) for neuron in ("phase", "gif", "mtn"))]:
+                selection_path = evaluation_paths(root)[1]
+                selection = read_json(selection_path)
+                if len(selection.get("indices", [])) != expected_count:
+                    raise ValueError(f"TL;DR selection size mismatch: {selection_path}")
+                if selection.get("sampling") != expected_sampling:
+                    raise ValueError(f"TL;DR sampling policy mismatch: {selection_path}")
+                if not expected_full and selection.get("seed") != int(cfg["evaluation"].get("tldr_test_seed", 42)):
+                    raise ValueError(f"TL;DR selection seed mismatch: {selection_path}")
 
         result = {
             "required_files": len(required),

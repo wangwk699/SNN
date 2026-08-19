@@ -1,6 +1,7 @@
 import torch
 
-from snn2.model_integration import _make_mlp_forward
+import snn2.model_integration as model_integration
+from snn2.model_integration import _make_mlp_forward, _linear_score, record_down_proj_saliency
 from snn2.sites import SITE_COORDINATES, SITE_COUNT, SITE_IDS, SITE_NAMES, site_key
 
 
@@ -58,3 +59,42 @@ def test_mlp_collects_symmetric_product_saliency_for_gate_and_up_sites():
     expected = torch.tensor([[5.0]]) ** 2 * torch.tensor([[6.0]]) ** 2
     torch.testing.assert_close(controller.saliency[8], expected)
     torch.testing.assert_close(controller.saliency[9], expected)
+
+
+def test_mlp_applies_site_nine_before_r4_and_site_ten(monkeypatch):
+    events = []
+
+    class Controller(_Controller):
+        def apply(self, layer, site, value):
+            events.append(f"site_{site}")
+            return value
+
+    monkeypatch.setattr(
+        model_integration,
+        "random_hadamard",
+        lambda value, spec: (events.append("r4") or value),
+    )
+    _make_mlp_forward(Controller(), 0, object())(_MLP(), torch.tensor([[2.0]]))
+    assert events == ["site_8", "site_9", "r4", "site_10"]
+
+
+def test_down_proj_saliency_is_recorded_at_site_ten():
+    controller = _Controller(mode="collect")
+    inputs = (torch.tensor([[2.0, 3.0]]),)
+    output = torch.tensor([[5.0, 7.0]])
+    weight = torch.eye(2)
+    record_down_proj_saliency(controller, 0, inputs, output, weight)
+    torch.testing.assert_close(controller.saliency[10], _linear_score(inputs[0], output, weight))
+    assert 9 not in controller.saliency
+
+
+def test_deploy_mode_does_not_bypass_site_nine():
+    class DeployController(_Controller):
+        def apply(self, layer, site, value):
+            self.applied.append(site)
+            return value + 10 if site == 9 else value
+
+    controller = DeployController(mode="deploy_phase")
+    output = _make_mlp_forward(controller, 0, None)(_MLP(), torch.tensor([[2.0]]))
+    assert controller.applied == [8, 9, 10]
+    torch.testing.assert_close(output, torch.tensor([[400.0]]))

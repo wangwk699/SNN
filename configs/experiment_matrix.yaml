@@ -111,6 +111,12 @@ model_runs:
         train_split: train
         validation_split: validation
         evaluation_split: test
+      evaluation:
+        batch_size: 32
+    mode_overrides:
+      unaware:
+        training:
+          learning_rate: 5.0e-6
   - name: exp1_qwen3_8b_tldr
     config:
       experiment:

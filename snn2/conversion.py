@@ -39,11 +39,11 @@ def validate_calibration(site_root: str | Path) -> dict[str, Any]:
 
 def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) -> dict[str, Any]:
     validation = validate_calibration(layout.site_dir)
-    ann_checkpoint = layout.ann_dir / "best"
+    ann_checkpoint = layout.ann_checkpoint_dir
     ann_config = ann_checkpoint / "config.json"
     if not ann_config.exists():
         raise FileNotFoundError(
-            "The validation-best ANN checkpoint is required before conversion: "
+            "The final fine-tuned ANN checkpoint is required before conversion: "
             f"{ann_config}"
         )
     calibration_manifest = layout.site_dir / "calibration_state_manifest.json"

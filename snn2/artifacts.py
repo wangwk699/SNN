@@ -92,6 +92,11 @@ class ArtifactLayout:
         return self.root / "ann"
 
     @property
+    def ann_checkpoint_dir(self) -> Path:
+        """Canonical final fine-tuned ANN checkpoint for all downstream stages."""
+        return self.ann_dir / "final"
+
+    @property
     def logs_dir(self) -> Path:
         return self.root / "logs"
 

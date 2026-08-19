@@ -44,6 +44,8 @@ def main() -> None:
     for model_run in matrix["model_runs"]:
         for mode in matrix["ann_modes"]:
             cfg = deep_merge(matrix["defaults"], model_run["config"])
+            mode_override = model_run.get("mode_overrides", {}).get(mode, {})
+            cfg = deep_merge(cfg, mode_override)
             cfg.setdefault("experiment", {})["ann_mode"] = mode
             cfg = resolve_config(cfg)
             validate_config(cfg)

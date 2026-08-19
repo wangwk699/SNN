@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 from snn2.artifacts import write_json
 from snn2.controller import SiteController
 from snn2.data import _as_text, load_selected_raw
-from snn2.evaluation import greedy_generate
+from snn2.evaluation import greedy_generate, resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
 from snn2.sites import SITE_COUNT, SITE_TOPOLOGY_VERSION
@@ -163,74 +163,21 @@ def main():
             )
         )
 
-        # --------------------------------------------------
-        # Select TL;DR evaluation samples.
-        #
-        # tldr_test_samples = null
-        #     -> full test split
-        #
-        # tldr_test_samples = N
-        #     -> deterministic random subset of N samples,
-        #        sampled without replacement.
-        # --------------------------------------------------
-        if configured_test_samples is None:
-            selected_indices = list(
-                range(total_test_samples)
-            )
-
-            is_full_test = True
-
-        else:
-            requested_test_samples = int(
-                configured_test_samples
-            )
-
-            if requested_test_samples <= 0:
-                raise ValueError(
-                    "evaluation.tldr_test_samples must be "
-                    "a positive integer or null"
-                )
-
-            if requested_test_samples >= total_test_samples:
-                selected_indices = list(
-                    range(total_test_samples)
-                )
-
-                is_full_test = True
-
-            else:
-                rng = random.Random(
-                    tldr_test_seed
-                )
-
-                selected_indices = rng.sample(
-                    range(total_test_samples),
-                    k=requested_test_samples,
-                )
-
-                # 保持最终处理顺序与原始 test split 一致。
-                # 不影响随机抽到的是哪些样本。
-                selected_indices.sort()
-
-                is_full_test = False
-
-
-        selected_test_samples = len(
-            selected_indices
+        selection_layout = resolve_tldr_evaluation_layout(
+            total_test_samples,
+            configured_test_samples,
         )
-
+        selected_test_samples = int(selection_layout["selected_test_samples"])
+        is_full_test = bool(selection_layout["is_full_test"])
+        test_samples_dirname = str(selection_layout["dirname"])
         if is_full_test:
-            test_samples_dirname = (
-                f"test_samples_{selected_test_samples}_full"
-            )
+            selected_indices = list(range(total_test_samples))
             sampling_method = "full_split"
         else:
-            test_samples_dirname = (
-                f"test_samples_{selected_test_samples}"
-            )
-            sampling_method = (
-                "seeded_random_without_replacement"
-            )
+            rng = random.Random(tldr_test_seed)
+            selected_indices = rng.sample(range(total_test_samples), k=selected_test_samples)
+            selected_indices.sort()
+            sampling_method = "seeded_random_without_replacement"
 
 
         max_new = int(
