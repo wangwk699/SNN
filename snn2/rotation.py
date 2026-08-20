@@ -334,8 +334,9 @@ def fuse_rmsnorm_scale(norm: nn.Module, linears: Iterable[nn.Linear]) -> None:
         raise TypeError(f"Expected RMSNorm-like module, got {type(norm).__name__}")
     scale = norm.weight.detach().to(dtype=torch.float64)
     for linear in linears:
-        dtype = linear.weight.dtype
-        linear.weight.data = (linear.weight.data.to(torch.float64) * scale).to(dtype)
+        weight = linear.weight.data
+        linear_scale = scale.to(device=weight.device)
+        linear.weight.data = (weight.to(torch.float64) * linear_scale).to(weight.dtype)
     norm.weight.data.fill_(1.0)
 
 

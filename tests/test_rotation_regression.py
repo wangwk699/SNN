@@ -10,6 +10,7 @@ from snn2.rotation import (
     _StreamingAbsErrorHistogram,
     compute_logits_error_metrics,
     enforce_rotation_regression,
+    fuse_rmsnorm_scale,
     validate_rotation_logits,
 )
 
@@ -88,6 +89,23 @@ def test_streaming_histogram_multiple_doublings_preserve_counts():
     assert histogram.total_count == 5
     assert int(histogram.counts.sum().item()) == histogram.total_count
     assert histogram.percentile(0.99) <= histogram.percentile(0.999)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA devices")
+def test_fuse_rmsnorm_scale_supports_cross_device_linear():
+    norm = torch.nn.Module()
+    norm.weight = torch.nn.Parameter(
+        torch.tensor([2.0, 3.0, 4.0], device="cuda:0")
+    )
+    linear = torch.nn.Linear(3, 2, bias=False, device="cuda:1")
+    original = linear.weight.detach().cpu().double()
+
+    fuse_rmsnorm_scale(norm, [linear])
+
+    expected = original * torch.tensor([2.0, 3.0, 4.0], dtype=torch.float64)
+    assert linear.weight.device == torch.device("cuda:1")
+    torch.testing.assert_close(linear.weight.detach().cpu().double(), expected)
+    torch.testing.assert_close(norm.weight.detach().cpu(), torch.ones(3))
 
 
 def test_rotation_regression_passes_at_threshold_and_is_serializable():
