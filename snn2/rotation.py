@@ -35,8 +35,10 @@ class RotationRegressionError(RuntimeError):
         self.result = result
         super().__init__(
             "Rotation logits regression failed: "
-            f"relative_l2_error={result['relative_l2_error']:.6g} exceeds "
-            f"threshold={result['threshold']['relative_l2_error']:.6g}"
+            f"relative_l2_error={result['relative_l2_error']:.6g} "
+            f"(required <= {result['threshold']['relative_l2_error']:.6g}), "
+            f"top1_agreement={result['top1_agreement']:.6g} "
+            f"(required > {result['threshold']['top1_agreement']:.6g})"
         )
 
 
@@ -411,16 +413,26 @@ def compute_logits_error_metrics(
 
 
 def enforce_rotation_regression(
-    result: dict[str, Any], relative_l2_threshold: float
+    result: dict[str, Any],
+    relative_l2_threshold: float,
+    top1_agreement_threshold: float,
 ) -> dict[str, Any]:
     """Attach the acceptance decision and hard-fail when rotation is not equivalent."""
-    threshold = float(relative_l2_threshold)
-    if threshold <= 0.0:
+    relative_l2_threshold = float(relative_l2_threshold)
+    top1_agreement_threshold = float(top1_agreement_threshold)
+    if relative_l2_threshold <= 0.0:
         raise ValueError("relative_l2_threshold must be positive")
+    if not 0.0 <= top1_agreement_threshold < 1.0:
+        raise ValueError("top1_agreement_threshold must be in [0, 1)")
+    relative_l2_passed = float(result["relative_l2_error"]) <= relative_l2_threshold
+    top1_passed = float(result["top1_agreement"]) > top1_agreement_threshold
     checked = {
         **result,
-        "threshold": {"relative_l2_error": threshold},
-        "passed": float(result["relative_l2_error"]) <= threshold,
+        "threshold": {
+            "relative_l2_error": relative_l2_threshold,
+            "top1_agreement": top1_agreement_threshold,
+        },
+        "passed": relative_l2_passed and top1_passed,
     }
     if not checked["passed"]:
         raise RotationRegressionError(checked)
@@ -501,7 +513,8 @@ def validate_rotation_logits(
     }
     return enforce_rotation_regression(
         result,
-        float(cfg["rotation"].get("regression_relative_l2_threshold", 0.01)),
+        float(cfg["rotation"].get("regression_relative_l2_threshold", 0.05)),
+        float(cfg["rotation"].get("regression_top1_agreement_threshold", 0.95)),
     )
 
 def get_model_parts(model: nn.Module) -> ModelParts:

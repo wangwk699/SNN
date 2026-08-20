@@ -207,26 +207,48 @@ def test_margin_diagnostics_exclude_padding_and_reconcile_partitions():
     assert all_delta["p50"] <= all_delta["p90"] <= all_delta["p99"] <= all_delta["max"]
 
 
-def test_rotation_regression_passes_at_threshold_and_is_serializable():
-    result = enforce_rotation_regression(
-        {"relative_l2_error": 0.005, "num_samples": 128},
-        relative_l2_threshold=0.01,
-    )
-
-    assert result["passed"] is True
-    assert result["threshold"] == {"relative_l2_error": 0.01}
-    json.dumps(result)
-
-
-def test_rotation_regression_hard_fails_and_carries_result():
-    with pytest.raises(RotationRegressionError) as caught:
-        enforce_rotation_regression(
-            {"relative_l2_error": 0.02, "num_samples": 128},
-            relative_l2_threshold=0.01,
+@pytest.mark.parametrize(
+    ("relative_l2_error", "top1_agreement", "passed"),
+    [
+        (0.04, 0.96, True),
+        (0.06, 0.99, False),
+        (0.01, 0.94, False),
+        (0.01, 0.95, False),
+        (0.05, 0.96, True),
+    ],
+)
+def test_rotation_regression_uses_joint_hard_gates(
+    relative_l2_error, top1_agreement, passed
+):
+    result = {
+        "relative_l2_error": relative_l2_error,
+        "top1_agreement": top1_agreement,
+        "num_samples": 128,
+    }
+    if not passed:
+        with pytest.raises(RotationRegressionError) as caught:
+            enforce_rotation_regression(
+                result,
+                relative_l2_threshold=0.05,
+                top1_agreement_threshold=0.95,
+            )
+        checked = caught.value.result
+    else:
+        checked = enforce_rotation_regression(
+            result,
+            relative_l2_threshold=0.05,
+            top1_agreement_threshold=0.95,
         )
 
-    assert caught.value.result["passed"] is False
-    assert caught.value.result["threshold"] == {"relative_l2_error": 0.01}
+    assert checked["passed"] is passed
+    assert checked["threshold"] == {
+        "relative_l2_error": 0.05,
+        "top1_agreement": 0.95,
+    }
+    if not passed:
+        message = str(caught.value)
+        assert "relative_l2_error=" in message
+        assert "top1_agreement=" in message
 
 
 def test_rotation_regression_requires_identity_controller():

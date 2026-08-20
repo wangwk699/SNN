@@ -145,10 +145,21 @@ def _verify_rotation_regression_metrics(regression):
         raise ValueError("Rotation regression P99.9 exceeds the observed maximum allowance")
 
     threshold = regression.get("threshold")
-    if not isinstance(threshold, dict) or "relative_l2_error" not in threshold:
-        raise ValueError("Rotation regression lacks the relative-L2 hard threshold")
-    if nonnegative_metrics["relative_l2_error"] > float(threshold["relative_l2_error"]):
-        raise ValueError("Rotation regression passed flag contradicts its relative-L2 hard gate")
+    if not isinstance(threshold, dict):
+        raise ValueError("Rotation regression lacks hard thresholds")
+    try:
+        relative_l2_threshold = float(threshold["relative_l2_error"])
+        top1_threshold = float(threshold["top1_agreement"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Rotation regression hard thresholds are incomplete") from exc
+    if relative_l2_threshold <= 0.0 or not 0.0 <= top1_threshold < 1.0:
+        raise ValueError("Rotation regression hard thresholds are invalid")
+    expected_passed = (
+        nonnegative_metrics["relative_l2_error"] <= relative_l2_threshold
+        and agreement > top1_threshold
+    )
+    if bool(regression.get("passed")) != expected_passed:
+        raise ValueError("Rotation regression passed flag contradicts its hard gates")
 
     margin = regression["margin_aware_diagnostic"]
     if not isinstance(margin, dict):
