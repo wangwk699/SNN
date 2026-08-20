@@ -61,16 +61,32 @@ def main():
             training=False,
             device_map=device_map,
         )
+
         state = fuse_rotations(
             model,
             seed=int(cfg["rotation"]["seed"]),
             device=cfg["rotation"].get("fusion_device", "cuda"),
         )
-        controller = SiteController(mode="identity")
-        install_model_integration(model, controller, state)
+
+        # Base 和 Rotated 两边都使用完全相同的 SNN2 forward integration，
+        # 唯一区别是 Base 不加载 rotation_state，而 Rotated 加载完整 R3/R4 rotation。
+        base_controller = SiteController(mode="identity")
+        install_model_integration(
+            base_model,
+            base_controller,
+            None,
+        )
+
+        rotated_controller = SiteController(mode="identity")
+        install_model_integration(
+            model,
+            rotated_controller,
+            state,
+        )
 
         calibration = load_selected_raw(cfg, layout).calibration
         manifest_path = layout.data_dir / "calibration_manifest.json"
+
         try:
             regression = validate_rotation_logits(
                 base_model,
@@ -78,13 +94,16 @@ def main():
                 tokenizer,
                 calibration,
                 cfg,
-                controller,
+                rotated_controller,   # 注意：这里不能再写 controller
                 calibration_manifest_path=manifest_path,
                 calibration_manifest_sha256=sha256_file(manifest_path),
             )
         except RotationRegressionError as exc:
             write_json(regression_path, exc.result)
-            run.event("rotation_regression_failed", path=str(regression_path.resolve()))
+            run.event(
+                "rotation_regression_failed",
+                path=str(regression_path.resolve()),
+            )
             raise
         write_json(regression_path, regression)
         run.event("rotation_regression_passed", path=str(regression_path.resolve()))

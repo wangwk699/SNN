@@ -39,8 +39,11 @@ def snn2_eager_attention_forward(
 
     r3: HadamardSpec | None = getattr(module, "_snn2_r3", None)
     if r3 is not None:
-        query = random_hadamard(query, r3)
-        key = random_hadamard(key, r3)
+        query_dtype = query.dtype
+        key_dtype = key.dtype
+        query = random_hadamard(query.float(), r3).to(query_dtype)
+        key = random_hadamard(key.float(), r3).to(key_dtype)
+
     query = controller.apply(layer_index, 2, query)
 
     if past_length:
@@ -141,7 +144,9 @@ def _make_mlp_forward(controller: SiteController, layer_index: int, r4: Hadamard
             controller.record_saliency(layer_index, 9, product_saliency)
         product = gate * up
         if r4 is not None:
-            product = random_hadamard(product, r4)
+            product_dtype = product.dtype
+            product = random_hadamard(product.float(), r4).to(product_dtype)
+
         product = controller.apply(layer_index, 10, product)
         return mlp.down_proj(product)
 
