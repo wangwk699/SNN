@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from pathlib import Path
 from _common import parser, setup
 
@@ -35,6 +36,85 @@ def _verify_hashes(manifest, label):
     expected_config = manifest.get("source_ann_config_sha256")
     if checkpoint is not None and (not expected_config or sha256_file(Path(checkpoint) / "config.json") != expected_config):
         raise ValueError(f"{label} provenance hash mismatch: source_ann_config_sha256")
+
+
+def _verify_rotation_regression_metrics(regression):
+    required = {
+        "num_tokens_compared",
+        "relative_l2_error",
+        "max_abs_error",
+        "mean_abs_error",
+        "p99_abs_error",
+        "p999_abs_error",
+        "top1_agreement",
+        "top1_agreement_count",
+        "top1_disagreement_count",
+        "absolute_error_percentile_estimator",
+    }
+    missing = sorted(required - regression.keys())
+    if missing:
+        raise ValueError(f"Rotation regression is missing required metrics: {missing}")
+
+    num_tokens = int(regression["num_tokens_compared"])
+    agreement_count = int(regression["top1_agreement_count"])
+    disagreement_count = int(regression["top1_disagreement_count"])
+    agreement = float(regression["top1_agreement"])
+    if num_tokens <= 0:
+        raise ValueError("Rotation regression must compare at least one valid token")
+    if not 0.0 <= agreement <= 1.0:
+        raise ValueError("Rotation regression top1_agreement must be in [0, 1]")
+    if agreement_count < 0 or disagreement_count < 0:
+        raise ValueError("Rotation regression Top-1 counts must be non-negative")
+    if agreement_count + disagreement_count != num_tokens:
+        raise ValueError("Rotation regression Top-1 counts do not match compared tokens")
+    expected_agreement = agreement_count / num_tokens
+    if abs(expected_agreement - agreement) > 1e-12:
+        raise ValueError("Rotation regression top1_agreement is inconsistent with its counts")
+
+    nonnegative_metrics = {
+        name: float(regression[name])
+        for name in (
+            "relative_l2_error",
+            "mean_abs_error",
+            "p99_abs_error",
+            "p999_abs_error",
+            "max_abs_error",
+        )
+    }
+    if not all(math.isfinite(value) for value in nonnegative_metrics.values()):
+        raise ValueError("Rotation regression error metrics must be finite")
+    if any(value < 0.0 for value in nonnegative_metrics.values()):
+        raise ValueError("Rotation regression error metrics must be non-negative")
+    if nonnegative_metrics["p99_abs_error"] > nonnegative_metrics["p999_abs_error"]:
+        raise ValueError("Rotation regression percentiles are not monotonic")
+
+    estimator = regression["absolute_error_percentile_estimator"]
+    if not isinstance(estimator, dict):
+        raise ValueError("Rotation regression percentile estimator metadata must be a mapping")
+    if estimator.get("method") != "streaming_linear_histogram":
+        raise ValueError("Rotation regression uses an unknown percentile estimator")
+    if int(estimator.get("num_bins", 0)) != 8192:
+        raise ValueError("Rotation regression percentile estimator must use 8192 bins")
+    if estimator.get("reported_value") != "bin_upper_edge":
+        raise ValueError("Rotation regression percentiles must report bin upper edges")
+    if estimator.get("exact") is not False:
+        raise ValueError("Rotation regression histogram percentiles must be marked inexact")
+    range_max = float(estimator.get("final_range_max", 0.0))
+    if range_max <= 0.0:
+        raise ValueError("Rotation regression histogram range must be positive")
+    bin_width = range_max / int(estimator["num_bins"])
+    if (
+        nonnegative_metrics["p999_abs_error"]
+        > nonnegative_metrics["max_abs_error"] + bin_width + 1e-12
+    ):
+        raise ValueError("Rotation regression P99.9 exceeds the observed maximum allowance")
+
+    threshold = regression.get("threshold")
+    if not isinstance(threshold, dict) or "relative_l2_error" not in threshold:
+        raise ValueError("Rotation regression lacks the relative-L2 hard threshold")
+    if nonnegative_metrics["relative_l2_error"] > float(threshold["relative_l2_error"]):
+        raise ValueError("Rotation regression passed flag contradicts its relative-L2 hard gate")
+
 
 def main():
     args = parser(
@@ -141,12 +221,14 @@ def main():
             _require_manifest_flags(
                 regression,
                 {
+                    "format_version": 2,
                     "purpose": "base_vs_rotated_logits_regression",
                     "num_samples": 128,
                     "passed": True,
                 },
                 "Rotation regression",
             )
+            _verify_rotation_regression_metrics(regression)
             calibration_manifest = layout.data_dir / "calibration_manifest.json"
             recorded_manifest = regression.get("calibration_manifest_path")
             if (

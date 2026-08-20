@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -39,6 +40,67 @@ class RotationRegressionError(RuntimeError):
         )
 
 
+class _StreamingAbsErrorHistogram:
+    """Deterministic, bounded-memory approximation of global error percentiles."""
+
+    def __init__(self, num_bins: int = 8192, initial_max: float = 1.0) -> None:
+        if num_bins <= 0 or num_bins % 2 != 0:
+            raise ValueError("num_bins must be a positive even integer")
+        if initial_max <= 0.0:
+            raise ValueError("initial_max must be positive")
+        self.num_bins = int(num_bins)
+        self.range_max = float(initial_max)
+        self.counts = torch.zeros(self.num_bins, dtype=torch.int64, device="cpu")
+        self.total_count = 0
+
+    def _expand_to(self, local_max: float) -> None:
+        while local_max > self.range_max:
+            previous_total = int(self.counts.sum().item())
+            merged = self.counts.reshape(self.num_bins // 2, 2).sum(dim=1)
+            new_counts = torch.zeros_like(self.counts)
+            new_counts[: self.num_bins // 2] = merged
+            self.counts = new_counts
+            self.range_max *= 2.0
+            if int(self.counts.sum().item()) != previous_total:
+                raise RuntimeError("Absolute-error histogram rebin lost counts")
+
+    def update(self, absolute_error: torch.Tensor) -> None:
+        if absolute_error.numel() == 0:
+            return
+        local_max = float(absolute_error.max().item())
+        if not math.isfinite(local_max):
+            raise RuntimeError("Rotation regression produced non-finite absolute error")
+        self._expand_to(local_max)
+        histogram = torch.histc(
+            absolute_error.float(),
+            bins=self.num_bins,
+            min=0.0,
+            max=self.range_max,
+        ).to(dtype=torch.int64, device="cpu")
+        count = int(absolute_error.numel())
+        if int(histogram.sum().item()) != count:
+            raise RuntimeError("Absolute-error histogram did not count every logit error")
+        self.counts += histogram
+        self.total_count += count
+
+    def percentile(self, q: float) -> float:
+        if not 0.0 < q <= 1.0:
+            raise ValueError("q must be in (0, 1]")
+        if self.total_count <= 0:
+            raise RuntimeError("Cannot compute a percentile from an empty histogram")
+        target = math.ceil(q * self.total_count)
+        cumulative = torch.cumsum(self.counts, dim=0)
+        index = int(
+            torch.searchsorted(
+                cumulative,
+                torch.tensor(target, dtype=cumulative.dtype),
+            ).item()
+        )
+        index = min(index, self.num_bins - 1)
+        bin_width = self.range_max / self.num_bins
+        return float((index + 1) * bin_width)
+
+
 class _LogitsErrorAccumulator:
     def __init__(self) -> None:
         self.num_samples = 0
@@ -49,6 +111,12 @@ class _LogitsErrorAccumulator:
         self.sum_squared_error = 0.0
         self.sum_squared_base = 0.0
         self.sum_squared_rotated = 0.0
+        self.top1_agreement_count = 0
+        self.top1_disagreement_count = 0
+        self.abs_error_histogram = _StreamingAbsErrorHistogram(
+            num_bins=8192,
+            initial_max=1.0,
+        )
 
     def update(
         self,
@@ -76,6 +144,17 @@ class _LogitsErrorAccumulator:
         self.num_tokens += valid_tokens
         self.num_elements += valid_tokens * vocab_size
 
+        mask_cpu = attention_mask.to(device="cpu", dtype=torch.bool)
+        base_top1 = base_logits.argmax(dim=-1)
+        rotated_top1 = rotated_logits.argmax(dim=-1).detach().to("cpu")
+        top1_matches = base_top1[mask_cpu] == rotated_top1[mask_cpu]
+        agreement = int(top1_matches.sum().item())
+        top1_total = int(top1_matches.numel())
+        if top1_total != valid_tokens:
+            raise RuntimeError("Top-1 comparison did not cover every valid token")
+        self.top1_agreement_count += agreement
+        self.top1_disagreement_count += top1_total - agreement
+
         for start in range(0, int(base_logits.shape[1]), chunk_tokens):
             stop = min(start + chunk_tokens, int(base_logits.shape[1]))
             chunk_mask = mask[:, start:stop]
@@ -84,11 +163,12 @@ class _LogitsErrorAccumulator:
             base = base_logits[:, start:stop].to(device=device, dtype=torch.float32)[chunk_mask]
             rotated = rotated_logits[:, start:stop].to(dtype=torch.float32)[chunk_mask]
             difference = base - rotated
+            absolute_error = difference.abs()
             self.max_abs_error = max(
                 self.max_abs_error,
-                float(difference.abs().max().item()),
+                float(absolute_error.max().item()),
             )
-            self.sum_abs_error += float(difference.abs().sum(dtype=torch.float64).item())
+            self.sum_abs_error += float(absolute_error.sum(dtype=torch.float64).item())
             self.sum_squared_error += float(
                 difference.square().sum(dtype=torch.float64).item()
             )
@@ -96,20 +176,38 @@ class _LogitsErrorAccumulator:
             self.sum_squared_rotated += float(
                 rotated.square().sum(dtype=torch.float64).item()
             )
+            self.abs_error_histogram.update(absolute_error)
 
     def metrics(self) -> dict[str, Any]:
         if self.num_elements == 0:
             raise RuntimeError("Rotation regression compared no valid logits")
+        if self.abs_error_histogram.total_count != self.num_elements:
+            raise RuntimeError("Absolute-error histogram count does not match compared logits")
+        top1_total = self.top1_agreement_count + self.top1_disagreement_count
+        if top1_total != self.num_tokens:
+            raise RuntimeError("Top-1 counts do not match compared tokens")
         return {
             "num_samples": self.num_samples,
             "num_tokens_compared": self.num_tokens,
             "max_abs_error": self.max_abs_error,
             "mean_abs_error": self.sum_abs_error / self.num_elements,
+            "p99_abs_error": self.abs_error_histogram.percentile(0.99),
+            "p999_abs_error": self.abs_error_histogram.percentile(0.999),
+            "top1_agreement": self.top1_agreement_count / top1_total,
+            "top1_agreement_count": self.top1_agreement_count,
+            "top1_disagreement_count": self.top1_disagreement_count,
             "relative_l2_error": (
                 self.sum_squared_error**0.5 / (self.sum_squared_base**0.5 + 1e-12)
             ),
             "base_logits_l2": self.sum_squared_base**0.5,
             "rotated_logits_l2": self.sum_squared_rotated**0.5,
+            "absolute_error_percentile_estimator": {
+                "method": "streaming_linear_histogram",
+                "num_bins": self.abs_error_histogram.num_bins,
+                "final_range_max": self.abs_error_histogram.range_max,
+                "reported_value": "bin_upper_edge",
+                "exact": False,
+            },
         }
 
 
@@ -204,7 +302,7 @@ def validate_rotation_logits(
             del base_logits, rotated_output
 
     result = {
-        "format_version": 1,
+        "format_version": 2,
         "purpose": "base_vs_rotated_logits_regression",
         "model_name": cfg["experiment"]["model_name"],
         "rotation_seed": int(cfg["rotation"]["seed"]),

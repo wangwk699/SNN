@@ -7,6 +7,7 @@ import torch
 
 from snn2.rotation import (
     RotationRegressionError,
+    _StreamingAbsErrorHistogram,
     compute_logits_error_metrics,
     enforce_rotation_regression,
     validate_rotation_logits,
@@ -25,7 +26,68 @@ def test_rotation_logits_metrics_ignore_padding_and_are_serializable():
     assert metrics["max_abs_error"] == pytest.approx(1.0)
     assert metrics["mean_abs_error"] == pytest.approx(0.5)
     assert metrics["relative_l2_error"] == pytest.approx(1.0 / math.sqrt(5.0))
+    assert metrics["top1_agreement"] == pytest.approx(1.0)
+    assert metrics["top1_agreement_count"] == 1
+    assert metrics["top1_disagreement_count"] == 0
+    assert metrics["p99_abs_error"] <= metrics["p999_abs_error"]
+    estimator = metrics["absolute_error_percentile_estimator"]
+    bin_width = estimator["final_range_max"] / estimator["num_bins"]
+    assert metrics["p999_abs_error"] <= metrics["max_abs_error"] + bin_width + 1e-12
+    assert estimator == {
+        "method": "streaming_linear_histogram",
+        "num_bins": 8192,
+        "final_range_max": 1.0,
+        "reported_value": "bin_upper_edge",
+        "exact": False,
+    }
     json.dumps(metrics)
+
+
+def test_rotation_logits_metrics_record_top1_disagreement():
+    metrics = compute_logits_error_metrics(
+        torch.tensor([[[10.0, 0.0]]]),
+        torch.tensor([[[0.0, 10.0]]]),
+        torch.tensor([[1]]),
+    )
+
+    assert metrics["top1_agreement"] == pytest.approx(0.0)
+    assert metrics["top1_agreement_count"] == 0
+    assert metrics["top1_disagreement_count"] == 1
+
+
+def test_rotation_logits_top1_ignores_padding_disagreement():
+    metrics = compute_logits_error_metrics(
+        torch.tensor([[[10.0, 0.0], [10.0, 0.0]]]),
+        torch.tensor([[[9.0, 0.0], [0.0, 10.0]]]),
+        torch.tensor([[1, 0]]),
+    )
+
+    assert metrics["num_tokens_compared"] == 1
+    assert metrics["top1_agreement"] == pytest.approx(1.0)
+    assert metrics["top1_agreement_count"] == 1
+    assert metrics["top1_disagreement_count"] == 0
+
+
+def test_streaming_histogram_expands_and_preserves_counts():
+    histogram = _StreamingAbsErrorHistogram(num_bins=8, initial_max=1.0)
+    histogram.update(torch.tensor([0.1, 0.5, 0.9]))
+    histogram.update(torch.tensor([2.5]))
+
+    assert histogram.range_max == pytest.approx(4.0)
+    assert histogram.total_count == 4
+    assert int(histogram.counts.sum().item()) == histogram.total_count
+    assert 0.0 <= histogram.percentile(0.99) <= histogram.percentile(0.999)
+
+
+def test_streaming_histogram_multiple_doublings_preserve_counts():
+    histogram = _StreamingAbsErrorHistogram(num_bins=8, initial_max=1.0)
+    histogram.update(torch.tensor([0.0, 0.25, 0.75]))
+    histogram.update(torch.tensor([9.0, 17.0]))
+
+    assert histogram.range_max == pytest.approx(32.0)
+    assert histogram.total_count == 5
+    assert int(histogram.counts.sum().item()) == histogram.total_count
+    assert histogram.percentile(0.99) <= histogram.percentile(0.999)
 
 
 def test_rotation_regression_passes_at_threshold_and_is_serializable():

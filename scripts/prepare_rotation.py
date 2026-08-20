@@ -38,7 +38,7 @@ def main():
         write_json(
             regression_path,
             {
-                "format_version": 1,
+                "format_version": 2,
                 "purpose": "base_vs_rotated_logits_regression",
                 "model_name": cfg["experiment"]["model_name"],
                 "rotation_seed": int(cfg["rotation"]["seed"]),
