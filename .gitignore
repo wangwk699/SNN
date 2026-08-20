@@ -16,5 +16,8 @@ datasets/
 
 # result
 artifacts/
+artifacts_old/
+
+configs/generated/
 
 SNN/configs/generated/

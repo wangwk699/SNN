@@ -105,6 +105,9 @@ def main():
                     / "rotation_state.pt",
 
                     layout.rotation_dir
+                    / "rotation_regression.json",
+
+                    layout.rotation_dir
                     / "fused_base"
                     / "config.json",
 
@@ -131,6 +134,32 @@ def main():
                 "Missing required artifacts:\n"
                 + "\n".join(missing)
             )
+
+        if cfg["rotation"]["enabled"]:
+            regression_path = layout.rotation_dir / "rotation_regression.json"
+            regression = read_json(regression_path)
+            _require_manifest_flags(
+                regression,
+                {
+                    "purpose": "base_vs_rotated_logits_regression",
+                    "num_samples": 128,
+                    "passed": True,
+                },
+                "Rotation regression",
+            )
+            calibration_manifest = layout.data_dir / "calibration_manifest.json"
+            recorded_manifest = regression.get("calibration_manifest_path")
+            if (
+                not recorded_manifest
+                or Path(recorded_manifest).resolve() != calibration_manifest.resolve()
+            ):
+                raise ValueError(
+                    "Rotation regression does not reference the current task calibration manifest"
+                )
+            if regression.get("calibration_manifest_sha256") != sha256_file(
+                calibration_manifest
+            ):
+                raise ValueError("Rotation regression calibration manifest hash mismatch")
 
         # --------------------------------------------------
         # Prefix KV artifact

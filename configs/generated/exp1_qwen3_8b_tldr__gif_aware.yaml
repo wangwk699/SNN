@@ -23,6 +23,7 @@ rotation:
   fusion_device: cuda
   implementation: fused_weights_plus_online_R3_R4
   fused_weights_are_finetuned: true
+  regression_relative_l2_threshold: 0.01
 prefix:
   enabled: true
   outlier_threshold: 64.0

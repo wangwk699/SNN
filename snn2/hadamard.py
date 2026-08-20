@@ -132,14 +132,28 @@ def _pure_fht(x: torch.Tensor, normalized: bool = True) -> torch.Tensor:
 
 
 def _fast_fht(x: torch.Tensor) -> torch.Tensor:
-    if x.is_cuda:
-        try:
-            from fast_hadamard_transform import hadamard_transform
+    if not x.is_cuda:
+        return _pure_fht(x, normalized=True)
 
-            return hadamard_transform(x.contiguous(), scale=1.0 / math.sqrt(x.shape[-1]))
-        except (ImportError, RuntimeError):
-            pass
-    return _pure_fht(x, normalized=True)
+    try:
+        from fast_hadamard_transform import hadamard_transform
+    except ImportError as exc:
+        raise RuntimeError(
+            "CUDA Hadamard requires fast-hadamard-transform. "
+            "Install the local package with: "
+            "python -m pip install -e ./fast-hadamard-transform --no-build-isolation"
+        ) from exc
+
+    try:
+        return hadamard_transform(
+            x.contiguous(),
+            scale=1.0 / math.sqrt(x.shape[-1]),
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "fast-hadamard-transform failed on CUDA; "
+            "refusing to silently fall back to the PyTorch implementation."
+        ) from exc
 
 
 def structured_hadamard(x: torch.Tensor, factor_k: int, transpose: bool = False) -> torch.Tensor:

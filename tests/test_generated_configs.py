@@ -18,6 +18,7 @@ def test_generated_configs_preserve_qwen3_1_7b_overrides():
     for path in configs:
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert int(cfg["calibration"]["expected_sites_per_layer"]) == SITE_COUNT
+        assert float(cfg["rotation"]["regression_relative_l2_threshold"]) == 0.01
         assert cfg["post_finetuning"] == {
             "rediscover_prefix": True,
             "recalibrate_sites": True,

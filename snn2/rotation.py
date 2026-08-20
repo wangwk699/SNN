@@ -6,7 +6,9 @@ from typing import Any, Iterable
 
 import torch
 from torch import nn
+from torch.utils.data import DataLoader
 
+from .data import CausalLMCollator, tokenize_dataset
 from .hadamard import (
     HadamardSpec,
     make_spec,
@@ -24,6 +26,197 @@ class ModelParts:
     final_norm: nn.Module
     lm_head: nn.Linear
 
+
+class RotationRegressionError(RuntimeError):
+    """Hard failure carrying the serializable regression result for provenance."""
+
+    def __init__(self, result: dict[str, Any]):
+        self.result = result
+        super().__init__(
+            "Rotation logits regression failed: "
+            f"relative_l2_error={result['relative_l2_error']:.6g} exceeds "
+            f"threshold={result['threshold']['relative_l2_error']:.6g}"
+        )
+
+
+class _LogitsErrorAccumulator:
+    def __init__(self) -> None:
+        self.num_samples = 0
+        self.num_tokens = 0
+        self.num_elements = 0
+        self.max_abs_error = 0.0
+        self.sum_abs_error = 0.0
+        self.sum_squared_error = 0.0
+        self.sum_squared_base = 0.0
+        self.sum_squared_rotated = 0.0
+
+    def update(
+        self,
+        base_logits: torch.Tensor,
+        rotated_logits: torch.Tensor,
+        attention_mask: torch.Tensor,
+        *,
+        chunk_tokens: int = 16,
+    ) -> None:
+        if base_logits.shape != rotated_logits.shape:
+            raise ValueError(
+                "Base and rotated logits shapes differ: "
+                f"{tuple(base_logits.shape)} != {tuple(rotated_logits.shape)}"
+            )
+        if attention_mask.shape != base_logits.shape[:2]:
+            raise ValueError("attention_mask must match the logits batch and sequence dimensions")
+        if chunk_tokens <= 0:
+            raise ValueError("chunk_tokens must be positive")
+
+        device = rotated_logits.device
+        mask = attention_mask.to(device=device, dtype=torch.bool)
+        vocab_size = int(base_logits.shape[-1])
+        valid_tokens = int(mask.sum().item())
+        self.num_samples += int(base_logits.shape[0])
+        self.num_tokens += valid_tokens
+        self.num_elements += valid_tokens * vocab_size
+
+        for start in range(0, int(base_logits.shape[1]), chunk_tokens):
+            stop = min(start + chunk_tokens, int(base_logits.shape[1]))
+            chunk_mask = mask[:, start:stop]
+            if not bool(chunk_mask.any()):
+                continue
+            base = base_logits[:, start:stop].to(device=device, dtype=torch.float32)[chunk_mask]
+            rotated = rotated_logits[:, start:stop].to(dtype=torch.float32)[chunk_mask]
+            difference = base - rotated
+            self.max_abs_error = max(
+                self.max_abs_error,
+                float(difference.abs().max().item()),
+            )
+            self.sum_abs_error += float(difference.abs().sum(dtype=torch.float64).item())
+            self.sum_squared_error += float(
+                difference.square().sum(dtype=torch.float64).item()
+            )
+            self.sum_squared_base += float(base.square().sum(dtype=torch.float64).item())
+            self.sum_squared_rotated += float(
+                rotated.square().sum(dtype=torch.float64).item()
+            )
+
+    def metrics(self) -> dict[str, Any]:
+        if self.num_elements == 0:
+            raise RuntimeError("Rotation regression compared no valid logits")
+        return {
+            "num_samples": self.num_samples,
+            "num_tokens_compared": self.num_tokens,
+            "max_abs_error": self.max_abs_error,
+            "mean_abs_error": self.sum_abs_error / self.num_elements,
+            "relative_l2_error": (
+                self.sum_squared_error**0.5 / (self.sum_squared_base**0.5 + 1e-12)
+            ),
+            "base_logits_l2": self.sum_squared_base**0.5,
+            "rotated_logits_l2": self.sum_squared_rotated**0.5,
+        }
+
+
+def compute_logits_error_metrics(
+    base_logits: torch.Tensor,
+    rotated_logits: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> dict[str, Any]:
+    """Compute regression metrics for one synthetic or real logits batch."""
+    accumulator = _LogitsErrorAccumulator()
+    accumulator.update(base_logits, rotated_logits, attention_mask)
+    return accumulator.metrics()
+
+
+def enforce_rotation_regression(
+    result: dict[str, Any], relative_l2_threshold: float
+) -> dict[str, Any]:
+    """Attach the acceptance decision and hard-fail when rotation is not equivalent."""
+    threshold = float(relative_l2_threshold)
+    if threshold <= 0.0:
+        raise ValueError("relative_l2_threshold must be positive")
+    checked = {
+        **result,
+        "threshold": {"relative_l2_error": threshold},
+        "passed": float(result["relative_l2_error"]) <= threshold,
+    }
+    if not checked["passed"]:
+        raise RotationRegressionError(checked)
+    return checked
+
+
+def _model_input_device(model: nn.Module) -> torch.device:
+    return model.get_input_embeddings().weight.device
+
+
+def validate_rotation_logits(
+    original_model: nn.Module,
+    rotated_model: nn.Module,
+    tokenizer: Any,
+    calibration_dataset: Any,
+    cfg: dict[str, Any],
+    controller: Any,
+    *,
+    calibration_manifest_path: str | Path,
+    calibration_manifest_sha256: str,
+) -> dict[str, Any]:
+    """Compare Original Base and fully integrated Rotated Base on calibration data."""
+    expected_samples = int(cfg["calibration"]["num_samples"])
+    if expected_samples != 128 or len(calibration_dataset) != expected_samples:
+        raise RuntimeError(
+            "Rotation regression requires the existing 128-sample calibration selection; "
+            f"config={expected_samples}, dataset={len(calibration_dataset)}"
+        )
+    if getattr(controller, "mode", None) != "identity":
+        raise RuntimeError("Rotation regression requires SiteController(mode='identity')")
+    if not bool(getattr(rotated_model.config, "snn2_site_integration", False)):
+        raise RuntimeError("Rotated model is missing SNN2 model integration")
+    if set(getattr(rotated_model.config, "snn2_online_rotations", [])) != {"R3", "R4"}:
+        raise RuntimeError("Rotated model regression must include online R3 and R4")
+
+    tokenized = tokenize_dataset(calibration_dataset, tokenizer, cfg, prefix_ids=None)
+    loader = DataLoader(
+        tokenized,
+        batch_size=int(cfg["calibration"].get("batch_size", 1)),
+        shuffle=False,
+        collate_fn=CausalLMCollator(tokenizer),
+    )
+    original_model.eval()
+    rotated_model.eval()
+    base_device = _model_input_device(original_model)
+    rotated_device = _model_input_device(rotated_model)
+    accumulator = _LogitsErrorAccumulator()
+
+    with torch.inference_mode():
+        for batch in loader:
+            attention_mask = batch["attention_mask"]
+            base_output = original_model(
+                input_ids=batch["input_ids"].to(base_device),
+                attention_mask=attention_mask.to(base_device),
+                use_cache=False,
+            )
+            # Moving each reference batch to CPU bounds GPU memory while both
+            # 8B models are resident for the strict model-to-model comparison.
+            base_logits = base_output.logits.detach().to("cpu")
+            del base_output
+            rotated_output = rotated_model(
+                input_ids=batch["input_ids"].to(rotated_device),
+                attention_mask=attention_mask.to(rotated_device),
+                use_cache=False,
+            )
+            accumulator.update(base_logits, rotated_output.logits.detach(), attention_mask)
+            del base_logits, rotated_output
+
+    result = {
+        "format_version": 1,
+        "purpose": "base_vs_rotated_logits_regression",
+        "model_name": cfg["experiment"]["model_name"],
+        "rotation_seed": int(cfg["rotation"]["seed"]),
+        "dtype": cfg["training"].get("dtype", "bfloat16"),
+        "calibration_manifest_path": str(Path(calibration_manifest_path).resolve()),
+        "calibration_manifest_sha256": calibration_manifest_sha256,
+        **accumulator.metrics(),
+    }
+    return enforce_rotation_regression(
+        result,
+        float(cfg["rotation"].get("regression_relative_l2_threshold", 0.01)),
+    )
 
 def get_model_parts(model: nn.Module) -> ModelParts:
     backbone = getattr(model, "model", None)

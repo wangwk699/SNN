@@ -111,6 +111,8 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("Main experiments disable GIF MSE scale refinement")
     if mode != "vanilla" and not bool(cfg["rotation"].get("fused_weights_are_finetuned", False)):
         raise ValueError("Rotated modes must fine-tune the fused rotation weights")
+    if float(cfg["rotation"].get("regression_relative_l2_threshold", 0.01)) <= 0.0:
+        raise ValueError("rotation.regression_relative_l2_threshold must be positive")
     for key in ("rediscover_prefix", "recalibrate_sites", "prefix_enabled", "post_finetuning_recalibration"):
         if not bool(cfg["post_finetuning"].get(key, False)):
             raise ValueError(f"Main experiments require post_finetuning.{key}=true")
