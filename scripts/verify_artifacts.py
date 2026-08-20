@@ -38,6 +38,40 @@ def _verify_hashes(manifest, label):
         raise ValueError(f"{label} provenance hash mismatch: source_ann_config_sha256")
 
 
+def _verify_scalar_distribution(
+    distribution,
+    label,
+    *,
+    expected_count=None,
+    include_max=True,
+):
+    if not isinstance(distribution, dict):
+        raise ValueError(f"{label} must be a mapping")
+    fields = ["mean", "p50", "p90", "p99"]
+    if include_max:
+        fields.append("max")
+    if expected_count is not None:
+        try:
+            count = int(distribution.get("count", -1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label} count is invalid") from exc
+        if count != expected_count:
+            raise ValueError(f"{label} count is inconsistent")
+        if expected_count == 0:
+            if any(distribution.get(field) is not None for field in fields):
+                raise ValueError(f"{label} must use null statistics when empty")
+            return
+    if any(field not in distribution for field in fields):
+        raise ValueError(f"{label} is missing scalar statistics")
+    values = {field: float(distribution[field]) for field in fields}
+    if not all(math.isfinite(value) and value >= 0.0 for value in values.values()):
+        raise ValueError(f"{label} must contain finite non-negative statistics")
+    if not values["p50"] <= values["p90"] <= values["p99"]:
+        raise ValueError(f"{label} quantiles are not monotonic")
+    if include_max and values["p99"] > values["max"] + 1e-12:
+        raise ValueError(f"{label} P99 exceeds maximum")
+
+
 def _verify_rotation_regression_metrics(regression):
     required = {
         "num_tokens_compared",
@@ -50,6 +84,7 @@ def _verify_rotation_regression_metrics(regression):
         "top1_agreement_count",
         "top1_disagreement_count",
         "absolute_error_percentile_estimator",
+        "margin_aware_diagnostic",
     }
     missing = sorted(required - regression.keys())
     if missing:
@@ -114,6 +149,90 @@ def _verify_rotation_regression_metrics(regression):
         raise ValueError("Rotation regression lacks the relative-L2 hard threshold")
     if nonnegative_metrics["relative_l2_error"] > float(threshold["relative_l2_error"]):
         raise ValueError("Rotation regression passed flag contradicts its relative-L2 hard gate")
+
+    margin = regression["margin_aware_diagnostic"]
+    if not isinstance(margin, dict):
+        raise ValueError("Rotation regression margin-aware diagnostic must be a mapping")
+    if margin.get("definition") != "base_top1_margin_gt_2x_per_token_max_abs_error":
+        raise ValueError("Rotation regression has an unknown margin-safe definition")
+    required_margin_fields = (
+        "margin_safe_token_count",
+        "margin_unsafe_token_count",
+        "margin_safe_agreement_count",
+        "margin_safe_disagreement_count",
+        "margin_unsafe_agreement_count",
+        "margin_unsafe_disagreement_count",
+        "margin_safe_fraction",
+        "disagreement_margin_unsafe_fraction",
+        "base_top1_margin_all_tokens",
+        "per_token_max_abs_error_all_tokens",
+        "base_top1_margin_disagreement_tokens",
+        "per_token_max_abs_error_disagreement_tokens",
+        "stability_ratio_disagreement_tokens",
+    )
+    if any(key not in margin for key in required_margin_fields):
+        raise ValueError("Rotation regression margin-aware diagnostic is incomplete")
+    required_margin_counts = required_margin_fields[:6]
+    safe, unsafe, safe_agree, safe_disagree, unsafe_agree, unsafe_disagree = (
+        int(margin[key]) for key in required_margin_counts
+    )
+    if any(value < 0 for value in (safe, unsafe, safe_agree, safe_disagree, unsafe_agree, unsafe_disagree)):
+        raise ValueError("Rotation regression margin-aware counts must be non-negative")
+    if safe + unsafe != num_tokens:
+        raise ValueError("Rotation regression margin-safe partition does not match tokens")
+    if safe_agree + safe_disagree != safe or unsafe_agree + unsafe_disagree != unsafe:
+        raise ValueError("Rotation regression margin agreement partitions are inconsistent")
+    if safe_agree + unsafe_agree != agreement_count:
+        raise ValueError("Rotation regression margin agreement count mismatches Top-1")
+    if safe_disagree + unsafe_disagree != disagreement_count:
+        raise ValueError("Rotation regression margin disagreement count mismatches Top-1")
+    if safe_disagree != 0:
+        raise ValueError("Margin-safe token changed Top-1; regression metrics are misaligned")
+    expected_safe_fraction = safe / num_tokens
+    if abs(float(margin.get("margin_safe_fraction", float("nan"))) - expected_safe_fraction) > 1e-12:
+        raise ValueError("Rotation regression margin_safe_fraction is inconsistent")
+    expected_unsafe_disagreement_fraction = (
+        1.0 if disagreement_count == 0 else unsafe_disagree / disagreement_count
+    )
+    if (
+        abs(
+            float(margin.get("disagreement_margin_unsafe_fraction", float("nan")))
+            - expected_unsafe_disagreement_fraction
+        )
+        > 1e-12
+    ):
+        raise ValueError("Rotation regression disagreement margin-unsafe fraction is inconsistent")
+
+    _verify_scalar_distribution(
+        margin.get("base_top1_margin_all_tokens"),
+        "All-token Base Top-1 margin distribution",
+    )
+    _verify_scalar_distribution(
+        margin.get("per_token_max_abs_error_all_tokens"),
+        "All-token per-token maximum error distribution",
+    )
+    delta_max = float(margin["per_token_max_abs_error_all_tokens"]["max"])
+    if abs(delta_max - nonnegative_metrics["max_abs_error"]) > 1e-6:
+        raise ValueError("Per-token maximum error distribution disagrees with root maximum")
+    _verify_scalar_distribution(
+        margin.get("base_top1_margin_disagreement_tokens"),
+        "Disagreement Base Top-1 margin distribution",
+        expected_count=disagreement_count,
+    )
+    _verify_scalar_distribution(
+        margin.get("per_token_max_abs_error_disagreement_tokens"),
+        "Disagreement per-token maximum error distribution",
+        expected_count=disagreement_count,
+    )
+    ratio = margin.get("stability_ratio_disagreement_tokens")
+    if not isinstance(ratio, dict) or ratio.get("definition") != "2_delta_over_base_top1_margin_plus_1e-12":
+        raise ValueError("Rotation regression disagreement stability-ratio definition is invalid")
+    _verify_scalar_distribution(
+        ratio,
+        "Disagreement stability-ratio distribution",
+        expected_count=disagreement_count,
+        include_max=False,
+    )
 
 
 def main():
@@ -221,7 +340,7 @@ def main():
             _require_manifest_flags(
                 regression,
                 {
-                    "format_version": 2,
+                    "format_version": 3,
                     "purpose": "base_vs_rotated_logits_regression",
                     "num_samples": 128,
                     "passed": True,

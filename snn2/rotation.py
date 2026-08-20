@@ -101,6 +101,52 @@ class _StreamingAbsErrorHistogram:
         return float((index + 1) * bin_width)
 
 
+def _exact_scalar_distribution(
+    values: torch.Tensor,
+    *,
+    include_max: bool = True,
+) -> dict[str, float]:
+    values = values.detach().double().cpu().flatten()
+    if values.numel() == 0:
+        raise ValueError("Expected non-empty scalar diagnostic")
+    if not bool(torch.isfinite(values).all()):
+        raise RuntimeError("Non-finite scalar diagnostic")
+    if bool((values < 0).any()):
+        raise RuntimeError("Negative scalar diagnostic")
+    result = {
+        "mean": float(values.mean().item()),
+        "p50": float(torch.quantile(values, 0.50, interpolation="linear").item()),
+        "p90": float(torch.quantile(values, 0.90, interpolation="linear").item()),
+        "p99": float(torch.quantile(values, 0.99, interpolation="linear").item()),
+    }
+    if include_max:
+        result["max"] = float(values.max().item())
+    return result
+
+
+def _optional_exact_scalar_distribution(
+    chunks: list[torch.Tensor],
+    expected_count: int,
+    *,
+    include_max: bool = True,
+) -> dict[str, float | int | None]:
+    if expected_count == 0:
+        result: dict[str, float | int | None] = {
+            "count": 0,
+            "mean": None,
+            "p50": None,
+            "p90": None,
+            "p99": None,
+        }
+        if include_max:
+            result["max"] = None
+        return result
+    values = torch.cat(chunks)
+    if values.numel() != expected_count:
+        raise RuntimeError("Scalar diagnostic count does not match its token partition")
+    return {"count": expected_count, **_exact_scalar_distribution(values, include_max=include_max)}
+
+
 class _LogitsErrorAccumulator:
     def __init__(self) -> None:
         self.num_samples = 0
@@ -117,6 +163,17 @@ class _LogitsErrorAccumulator:
             num_bins=8192,
             initial_max=1.0,
         )
+        self.margin_safe_token_count = 0
+        self.margin_unsafe_token_count = 0
+        self.margin_safe_agreement_count = 0
+        self.margin_safe_disagreement_count = 0
+        self.margin_unsafe_agreement_count = 0
+        self.margin_unsafe_disagreement_count = 0
+        self.base_top1_margin_chunks: list[torch.Tensor] = []
+        self.per_token_max_abs_error_chunks: list[torch.Tensor] = []
+        self.disagreement_base_top1_margin_chunks: list[torch.Tensor] = []
+        self.disagreement_per_token_max_abs_error_chunks: list[torch.Tensor] = []
+        self.disagreement_stability_ratio_chunks: list[torch.Tensor] = []
 
     def update(
         self,
@@ -139,6 +196,8 @@ class _LogitsErrorAccumulator:
         device = rotated_logits.device
         mask = attention_mask.to(device=device, dtype=torch.bool)
         vocab_size = int(base_logits.shape[-1])
+        if vocab_size < 2:
+            raise RuntimeError("Margin-aware regression requires vocabulary size >= 2")
         valid_tokens = int(mask.sum().item())
         self.num_samples += int(base_logits.shape[0])
         self.num_tokens += valid_tokens
@@ -178,6 +237,68 @@ class _LogitsErrorAccumulator:
             )
             self.abs_error_histogram.update(absolute_error)
 
+            top2 = torch.topk(base, k=2, dim=-1, largest=True, sorted=True)
+            base_top1_margin = top2.values[:, 0] - top2.values[:, 1]
+            per_token_max_abs_error = absolute_error.amax(dim=-1)
+            if not bool(torch.isfinite(base_top1_margin).all()) or bool(
+                (base_top1_margin < 0).any()
+            ):
+                raise RuntimeError("Base Top-1 margin is invalid")
+            if not bool(torch.isfinite(per_token_max_abs_error).all()) or bool(
+                (per_token_max_abs_error < 0).any()
+            ):
+                raise RuntimeError("Per-token maximum absolute error is invalid")
+
+            chunk_mask_cpu = mask_cpu[:, start:stop]
+            base_top1_valid = base_top1[:, start:stop][chunk_mask_cpu]
+            rotated_top1_valid = rotated_top1[:, start:stop][chunk_mask_cpu]
+            disagreement_mask = (base_top1_valid != rotated_top1_valid).to(device=device)
+            if (
+                disagreement_mask.numel() != base_top1_margin.numel()
+                or disagreement_mask.numel() != per_token_max_abs_error.numel()
+            ):
+                raise RuntimeError("Margin diagnostics are misaligned with Top-1 decisions")
+
+            margin_safe = base_top1_margin > 2.0 * per_token_max_abs_error
+            margin_unsafe = ~margin_safe
+            agreement_mask = ~disagreement_mask
+            self.margin_safe_token_count += int(margin_safe.sum().item())
+            self.margin_unsafe_token_count += int(margin_unsafe.sum().item())
+            self.margin_safe_agreement_count += int(
+                (margin_safe & agreement_mask).sum().item()
+            )
+            self.margin_safe_disagreement_count += int(
+                (margin_safe & disagreement_mask).sum().item()
+            )
+            self.margin_unsafe_agreement_count += int(
+                (margin_unsafe & agreement_mask).sum().item()
+            )
+            self.margin_unsafe_disagreement_count += int(
+                (margin_unsafe & disagreement_mask).sum().item()
+            )
+            self.base_top1_margin_chunks.append(base_top1_margin.detach().float().cpu())
+            self.per_token_max_abs_error_chunks.append(
+                per_token_max_abs_error.detach().float().cpu()
+            )
+            if bool(disagreement_mask.any()):
+                disagreement_margin = base_top1_margin[disagreement_mask]
+                disagreement_delta = per_token_max_abs_error[disagreement_mask]
+                disagreement_ratio = (
+                    2.0 * disagreement_delta.double()
+                    / (disagreement_margin.double() + 1e-12)
+                )
+                if not bool(torch.isfinite(disagreement_ratio).all()):
+                    raise RuntimeError("Non-finite margin stability ratio")
+                self.disagreement_base_top1_margin_chunks.append(
+                    disagreement_margin.detach().float().cpu()
+                )
+                self.disagreement_per_token_max_abs_error_chunks.append(
+                    disagreement_delta.detach().float().cpu()
+                )
+                self.disagreement_stability_ratio_chunks.append(
+                    disagreement_ratio.detach().cpu()
+                )
+
     def metrics(self) -> dict[str, Any]:
         if self.num_elements == 0:
             raise RuntimeError("Rotation regression compared no valid logits")
@@ -186,6 +307,72 @@ class _LogitsErrorAccumulator:
         top1_total = self.top1_agreement_count + self.top1_disagreement_count
         if top1_total != self.num_tokens:
             raise RuntimeError("Top-1 counts do not match compared tokens")
+        if self.margin_safe_token_count + self.margin_unsafe_token_count != self.num_tokens:
+            raise RuntimeError("Margin-safe and margin-unsafe counts do not match tokens")
+        if (
+            self.margin_safe_agreement_count + self.margin_safe_disagreement_count
+            != self.margin_safe_token_count
+        ):
+            raise RuntimeError("Margin-safe agreement counts are inconsistent")
+        if (
+            self.margin_unsafe_agreement_count + self.margin_unsafe_disagreement_count
+            != self.margin_unsafe_token_count
+        ):
+            raise RuntimeError("Margin-unsafe agreement counts are inconsistent")
+        if (
+            self.margin_safe_agreement_count + self.margin_unsafe_agreement_count
+            != self.top1_agreement_count
+        ):
+            raise RuntimeError("Margin agreement counts do not match Top-1 agreement")
+        if (
+            self.margin_safe_disagreement_count + self.margin_unsafe_disagreement_count
+            != self.top1_disagreement_count
+        ):
+            raise RuntimeError("Margin disagreement counts do not match Top-1 disagreement")
+        if self.margin_safe_disagreement_count != 0:
+            raise RuntimeError(
+                "Margin-safe token changed Top-1 despite m_t > 2*delta_t; "
+                "metric alignment is inconsistent"
+            )
+
+        all_margin = torch.cat(self.base_top1_margin_chunks)
+        all_delta = torch.cat(self.per_token_max_abs_error_chunks)
+        if all_margin.numel() != self.num_tokens or all_delta.numel() != self.num_tokens:
+            raise RuntimeError("All-token margin diagnostics do not match compared tokens")
+        disagreement_count = self.top1_disagreement_count
+        margin_aware_diagnostic = {
+            "definition": "base_top1_margin_gt_2x_per_token_max_abs_error",
+            "margin_safe_token_count": self.margin_safe_token_count,
+            "margin_unsafe_token_count": self.margin_unsafe_token_count,
+            "margin_safe_fraction": self.margin_safe_token_count / self.num_tokens,
+            "margin_safe_agreement_count": self.margin_safe_agreement_count,
+            "margin_safe_disagreement_count": self.margin_safe_disagreement_count,
+            "margin_unsafe_agreement_count": self.margin_unsafe_agreement_count,
+            "margin_unsafe_disagreement_count": self.margin_unsafe_disagreement_count,
+            "disagreement_margin_unsafe_fraction": (
+                1.0
+                if disagreement_count == 0
+                else self.margin_unsafe_disagreement_count / disagreement_count
+            ),
+            "base_top1_margin_all_tokens": _exact_scalar_distribution(all_margin),
+            "per_token_max_abs_error_all_tokens": _exact_scalar_distribution(all_delta),
+            "base_top1_margin_disagreement_tokens": _optional_exact_scalar_distribution(
+                self.disagreement_base_top1_margin_chunks,
+                disagreement_count,
+            ),
+            "per_token_max_abs_error_disagreement_tokens": _optional_exact_scalar_distribution(
+                self.disagreement_per_token_max_abs_error_chunks,
+                disagreement_count,
+            ),
+            "stability_ratio_disagreement_tokens": {
+                "definition": "2_delta_over_base_top1_margin_plus_1e-12",
+                **_optional_exact_scalar_distribution(
+                    self.disagreement_stability_ratio_chunks,
+                    disagreement_count,
+                    include_max=False,
+                ),
+            },
+        }
         return {
             "num_samples": self.num_samples,
             "num_tokens_compared": self.num_tokens,
@@ -208,6 +395,7 @@ class _LogitsErrorAccumulator:
                 "reported_value": "bin_upper_edge",
                 "exact": False,
             },
+            "margin_aware_diagnostic": margin_aware_diagnostic,
         }
 
 
@@ -302,7 +490,7 @@ def validate_rotation_logits(
             del base_logits, rotated_output
 
     result = {
-        "format_version": 2,
+        "format_version": 3,
         "purpose": "base_vs_rotated_logits_regression",
         "model_name": cfg["experiment"]["model_name"],
         "rotation_seed": int(cfg["rotation"]["seed"]),

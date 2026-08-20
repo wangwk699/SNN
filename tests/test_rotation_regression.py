@@ -108,6 +108,105 @@ def test_fuse_rmsnorm_scale_supports_cross_device_linear():
     torch.testing.assert_close(norm.weight.detach().cpu(), torch.ones(3))
 
 
+def test_margin_safe_token_has_top1_stability_guarantee():
+    metrics = compute_logits_error_metrics(
+        torch.tensor([[[10.0, 0.0, -1.0]]]),
+        torch.tensor([[[9.5, 0.5, -1.0]]]),
+        torch.tensor([[1]]),
+    )
+    diagnostic = metrics["margin_aware_diagnostic"]
+
+    assert diagnostic["margin_safe_token_count"] == 1
+    assert diagnostic["margin_unsafe_token_count"] == 0
+    assert diagnostic["margin_safe_agreement_count"] == 1
+    assert diagnostic["margin_safe_disagreement_count"] == 0
+    assert diagnostic["margin_safe_fraction"] == pytest.approx(1.0)
+    assert diagnostic["base_top1_margin_all_tokens"]["mean"] == pytest.approx(10.0)
+    assert diagnostic["per_token_max_abs_error_all_tokens"]["max"] == pytest.approx(0.5)
+    assert diagnostic["base_top1_margin_disagreement_tokens"] == {
+        "count": 0,
+        "mean": None,
+        "p50": None,
+        "p90": None,
+        "p99": None,
+        "max": None,
+    }
+    assert diagnostic["stability_ratio_disagreement_tokens"] == {
+        "definition": "2_delta_over_base_top1_margin_plus_1e-12",
+        "count": 0,
+        "mean": None,
+        "p50": None,
+        "p90": None,
+        "p99": None,
+    }
+    json.dumps(metrics)
+
+
+def test_margin_unsafe_tokens_can_disagree_or_still_agree():
+    base = torch.tensor([[[10.0, 9.9, 0.0], [10.0, 9.9, 0.0]]])
+    rotated = torch.tensor([[[9.9, 10.0, 0.0], [10.2, 9.8, 0.0]]])
+    metrics = compute_logits_error_metrics(base, rotated, torch.tensor([[1, 1]]))
+    diagnostic = metrics["margin_aware_diagnostic"]
+
+    assert diagnostic["margin_safe_token_count"] == 0
+    assert diagnostic["margin_unsafe_token_count"] == 2
+    assert diagnostic["margin_unsafe_agreement_count"] == 1
+    assert diagnostic["margin_unsafe_disagreement_count"] == 1
+    assert diagnostic["margin_safe_disagreement_count"] == 0
+    assert diagnostic["disagreement_margin_unsafe_fraction"] == pytest.approx(1.0)
+    assert diagnostic["base_top1_margin_disagreement_tokens"]["count"] == 1
+    assert diagnostic["per_token_max_abs_error_disagreement_tokens"]["count"] == 1
+    ratio = diagnostic["stability_ratio_disagreement_tokens"]
+    assert ratio["count"] == 1
+    assert ratio["mean"] == pytest.approx(2.0)
+
+
+def test_margin_diagnostics_exclude_padding_and_reconcile_partitions():
+    base = torch.tensor(
+        [[[10.0, 0.0, -1.0], [100.0, 0.0, -1.0], [20.0, 19.9, 0.0]]]
+    )
+    rotated = torch.tensor(
+        [[[9.5, 0.5, -1.0], [0.0, 200.0, -1.0], [19.8, 20.1, 0.0]]]
+    )
+    metrics = compute_logits_error_metrics(base, rotated, torch.tensor([[1, 0, 1]]))
+    diagnostic = metrics["margin_aware_diagnostic"]
+
+    assert metrics["num_tokens_compared"] == 2
+    assert metrics["top1_agreement_count"] == 1
+    assert metrics["top1_disagreement_count"] == 1
+    assert diagnostic["margin_safe_token_count"] == 1
+    assert diagnostic["margin_unsafe_token_count"] == 1
+    assert diagnostic["margin_safe_agreement_count"] == 1
+    assert diagnostic["margin_safe_disagreement_count"] == 0
+    assert diagnostic["margin_unsafe_agreement_count"] == 0
+    assert diagnostic["margin_unsafe_disagreement_count"] == 1
+    assert (
+        diagnostic["margin_safe_token_count"] + diagnostic["margin_unsafe_token_count"]
+        == metrics["num_tokens_compared"]
+    )
+    assert (
+        diagnostic["margin_safe_agreement_count"]
+        + diagnostic["margin_unsafe_agreement_count"]
+        == metrics["top1_agreement_count"]
+    )
+    assert (
+        diagnostic["margin_safe_disagreement_count"]
+        + diagnostic["margin_unsafe_disagreement_count"]
+        == metrics["top1_disagreement_count"]
+    )
+    all_delta = diagnostic["per_token_max_abs_error_all_tokens"]
+    assert all_delta["max"] == pytest.approx(metrics["max_abs_error"])
+    disagreement_distributions = (
+        diagnostic["base_top1_margin_disagreement_tokens"],
+        diagnostic["per_token_max_abs_error_disagreement_tokens"],
+        diagnostic["stability_ratio_disagreement_tokens"],
+    )
+    for distribution in disagreement_distributions:
+        assert distribution["count"] == metrics["top1_disagreement_count"]
+        assert distribution["p50"] <= distribution["p90"] <= distribution["p99"]
+    assert all_delta["p50"] <= all_delta["p90"] <= all_delta["p99"] <= all_delta["max"]
+
+
 def test_rotation_regression_passes_at_threshold_and_is_serializable():
     result = enforce_rotation_regression(
         {"relative_l2_error": 0.005, "num_samples": 128},
