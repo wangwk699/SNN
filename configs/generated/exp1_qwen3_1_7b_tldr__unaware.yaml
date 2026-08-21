@@ -92,6 +92,8 @@ training:
   logging_steps: 10
   deepspeed_config: configs/deepspeed_zero3.json
   resume_from_checkpoint: null
+  tldr_train_samples: null
+  tldr_train_seed: 42
 evaluation:
   batch_size: 32
   max_new_tokens: 32

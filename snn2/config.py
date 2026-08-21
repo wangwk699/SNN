@@ -92,6 +92,14 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("Packing must be disabled")
     if not bool(cfg["data"].get("truncation", False)):
         raise ValueError("Truncation must be enabled")
+    if cfg["experiment"].get("task") == "tldr":
+        configured_train_samples = cfg["training"].get("tldr_train_samples")
+        if configured_train_samples is not None and int(configured_train_samples) <= 0:
+            raise ValueError(
+                "training.tldr_train_samples must be a positive integer or null"
+            )
+        int(cfg["training"].get("tldr_train_seed", 42))
+
     if int(cfg["phase"]["T"]) <= 0 or int(cfg["mtn"]["T"]) <= 0:
         raise ValueError("Neuron timesteps must be positive")
     if int(cfg["mtn"]["K"]) <= 0:

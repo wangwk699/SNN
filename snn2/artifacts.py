@@ -22,6 +22,18 @@ class ArtifactLayout:
         model_root = task_root / model
         seed = f"seed{int(exp['seed'])}"
         learning_rate = f"lr{cfg['training']['learning_rate']}"
+        if exp["task"] == "tldr":
+            configured_train_samples = cfg["training"].get("tldr_train_samples")
+            if configured_train_samples is None:
+                train_samples = "full"
+            else:
+                configured_train_samples = int(configured_train_samples)
+                if configured_train_samples <= 0:
+                    raise ValueError(
+                        "training.tldr_train_samples must be a positive integer or null"
+                    )
+                train_samples = str(configured_train_samples)
+            learning_rate = f"{learning_rate}_train_samples_{train_samples}"
 
         self.model_root = model_root
         self.seed_name = seed

@@ -118,6 +118,10 @@ model_runs:
         train_split: train
         validation_split: validation
         evaluation_split: test
+      training:
+        # null: 使用完整 TL;DR train split；int: 按 tldr_train_seed 从完整 train split 固定随机、无放回抽取指定数量样本
+        tldr_train_samples: null
+        tldr_train_seed: 42
       evaluation:
         batch_size: 32
     mode_overrides:
@@ -136,6 +140,10 @@ model_runs:
         train_split: train
         validation_split: validation
         evaluation_split: test
+      training:
+        # null: 使用完整 TL;DR train split；int: 按 tldr_train_seed 从完整 train split 固定随机、无放回抽取指定数量样本
+        tldr_train_samples: null
+        tldr_train_seed: 42
   - name: exp2_llama3_8b_tulu3
     config:
       experiment:

@@ -20,6 +20,20 @@ def test_stage_specific_artifact_paths():
     assert "post_finetuning/conversion_calibration/sites" in str(layout.post_finetuning_site_dir)
 
 
+@pytest.mark.parametrize(
+    ("configured", "suffix"),
+    [
+        (None, "lr1e-06_train_samples_full/seed42"),
+        (128, "lr1e-06_train_samples_128/seed42"),
+    ],
+)
+def test_tldr_training_sample_count_is_part_of_run_path(configured, suffix):
+    cfg = _cfg("vanilla")
+    cfg["experiment"]["task"] = "tldr"
+    cfg["training"]["tldr_train_samples"] = configured
+    assert str(ArtifactLayout(cfg).root).endswith(suffix)
+
+
 def test_vanilla_prefix_policy_and_shared_analysis_paths():
     cfg = _cfg("vanilla")
     layout = ArtifactLayout(cfg)

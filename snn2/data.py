@@ -72,12 +72,37 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         train_indices = permutation[:train_size]
         validation_indices = permutation[train_size : train_size + validation_size]
         validation_split = train_split
-    else:
-        train_indices = list(range(len(raw_train)))
+    elif task == "tldr":
+        configured_train_samples = cfg["training"].get("tldr_train_samples")
+        train_seed = int(cfg["training"].get("tldr_train_seed", 42))
+        if configured_train_samples is None:
+            train_indices = list(range(len(raw_train)))
+            train_sampling = "full_split"
+        else:
+            requested_train_samples = int(configured_train_samples)
+            if requested_train_samples <= 0:
+                raise ValueError(
+                    "training.tldr_train_samples must be a positive integer or null"
+                )
+            if requested_train_samples >= len(raw_train):
+                train_indices = list(range(len(raw_train)))
+                train_sampling = "full_split"
+            else:
+                train_rng = random.Random(train_seed)
+                train_indices = train_rng.sample(
+                    range(len(raw_train)), k=requested_train_samples
+                )
+                train_indices.sort()
+                train_sampling = "seeded_random_without_replacement"
         validation_split = data_cfg.get("validation_split", "validation")
         raw_validation = raw[validation_split]
         validation_indices = list(range(len(raw_validation)))
+    else:
+        train_indices = list(range(len(raw_train)))
 
+        validation_split = data_cfg.get("validation_split", "validation")
+        raw_validation = raw[validation_split]
+        validation_indices = list(range(len(raw_validation)))
     # calibration_rng = random.Random(int(cfg["calibration"]["seed"]))
     # draws = int(cfg["calibration"]["num_samples"])
     # calibration_positions = [calibration_rng.randrange(len(train_indices)) for _ in range(draws)]
@@ -118,7 +143,19 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         "train": {
             **common,
             "split": train_split,
-            "sampling": "full_split" if task != "tulu3" else "seeded_without_replacement",
+            "sampling": (
+                train_sampling
+                if task == "tldr"
+                else "seeded_without_replacement" if task == "tulu3" else "full_split"
+            ),
+            **(
+                {
+                    "tldr_train_samples": cfg["training"].get("tldr_train_samples"),
+                    "tldr_train_seed": int(cfg["training"].get("tldr_train_seed", 42)),
+                }
+                if task == "tldr"
+                else {}
+            ),
             "indices": train_indices,
             "record_ids": _record_ids(raw_train, train_indices),
         },
