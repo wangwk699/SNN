@@ -4,7 +4,10 @@ from types import SimpleNamespace
 from snn2.data import prepare_manifests
 import pytest
 
-from snn2.evaluation import resolve_tldr_evaluation_layout
+from snn2.evaluation import (
+    resolve_tldr_evaluation_layout,
+    rotated_pre_finetuning_prefix_dirname,
+)
 
 
 @pytest.mark.parametrize(
@@ -28,6 +31,19 @@ def test_resolve_tldr_evaluation_layout(configured, selected, is_full, dirname):
 def test_resolve_tldr_evaluation_layout_rejects_non_positive_counts(configured):
     with pytest.raises(ValueError):
         resolve_tldr_evaluation_layout(6553, configured)
+
+@pytest.mark.parametrize(
+    ("configured", "enabled", "path"),
+    [
+        (128, True, "test_samples_128/prefix_enabled_ture"),
+        (128, False, "test_samples_128/prefix_enabled_false"),
+        (None, True, "test_samples_6553_full/prefix_enabled_ture"),
+        (None, False, "test_samples_6553_full/prefix_enabled_false"),
+    ],
+)
+def test_rotated_pre_finetuning_prefix_result_path(configured, enabled, path):
+    layout = resolve_tldr_evaluation_layout(6553, configured)
+    assert f"{layout['dirname']}/{rotated_pre_finetuning_prefix_dirname(enabled)}" == path
 
 
 

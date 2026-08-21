@@ -26,6 +26,7 @@ def test_generated_configs_preserve_qwen3_1_7b_overrides():
             "prefix_enabled": True,
             "post_finetuning_recalibration": True,
         }
+        assert cfg["rotated_pre_finetuning"] == {"prefix_enabled": True}
     for name, (learning_rate, batch_size) in expected.items():
         cfg = yaml.safe_load((root / name).read_text(encoding="utf-8"))
         assert float(cfg["training"]["learning_rate"]) == learning_rate

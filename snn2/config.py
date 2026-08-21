@@ -35,6 +35,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     cfg = copy.deepcopy(raw)
+    cfg.setdefault("rotated_pre_finetuning", {})
+    cfg["rotated_pre_finetuning"].setdefault("prefix_enabled", True)
     mode = cfg["experiment"]["ann_mode"]
     if mode == "vanilla":
         cfg["rotation"]["enabled"] = False
@@ -139,6 +141,11 @@ def training_prefix_enabled(cfg: dict[str, Any]) -> bool:
 
 def post_finetuning_prefix_enabled(cfg: dict[str, Any]) -> bool:
     return bool(cfg.get("post_finetuning", {}).get("prefix_enabled", True))
+
+def rotated_pre_finetuning_prefix_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(
+        cfg.get("rotated_pre_finetuning", {}).get("prefix_enabled", True)
+    )
 
 
 def post_finetuning_recalibration_enabled(cfg: dict[str, Any]) -> bool:

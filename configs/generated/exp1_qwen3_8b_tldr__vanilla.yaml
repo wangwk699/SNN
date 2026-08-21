@@ -67,6 +67,8 @@ replacement:
   train_mode: none
   outer_clip_backward: hard_clip
   clip_rule: phase_mtn_gif_low_high_common_intersection
+rotated_pre_finetuning:
+  prefix_enabled: true
 training:
   num_train_epochs: 1
   per_device_train_batch_size: 1

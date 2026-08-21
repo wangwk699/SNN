@@ -11,8 +11,13 @@ from _common import parser, setup
 from tqdm.auto import tqdm
 from snn2.artifacts import read_json, write_json
 from snn2.controller import SiteController
+from snn2.config import rotated_pre_finetuning_prefix_enabled
 from snn2.data import _as_text, load_selected_raw
-from snn2.evaluation import greedy_generate, resolve_tldr_evaluation_layout
+from snn2.evaluation import (
+    greedy_generate,
+    resolve_tldr_evaluation_layout,
+    rotated_pre_finetuning_prefix_dirname,
+)
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
 from snn2.sites import SITE_COUNT, SITE_TOPOLOGY_VERSION
@@ -50,18 +55,24 @@ def _validate_rotated_pre_finetuning_dependencies(cfg, layout) -> None:
 
     fused_config = layout.rotation_dir / "fused_base" / "config.json"
     rotation_state_path = layout.rotation_dir / "rotation_state.pt"
-    prefix_state_path = layout.rotated_pre_finetuning_prefix_dir / "prefix_state.json"
     missing = [
-        path for path in (fused_config, rotation_state_path, prefix_state_path) if not path.exists()
+        path for path in (fused_config, rotation_state_path) if not path.exists()
     ]
     if missing:
-        hint = (
-            "Run `python scripts/discover_prefix.py --config ... "
-            "--stage rotated_pre_finetuning` after prepare_rotation."
-        )
         raise FileNotFoundError(
-            "Rotated pre-finetuning evaluation requires its own rotation and Prefix artifacts. "
-            f"{hint} Missing: {', '.join(str(path) for path in missing)}"
+            "Rotated pre-finetuning evaluation requires rotation artifacts. "
+            f"Run `python scripts/prepare_rotation.py --config ...` first. Missing: {', '.join(str(path) for path in missing)}"
+        )
+
+    if not rotated_pre_finetuning_prefix_enabled(cfg):
+        return
+
+    prefix_state_path = layout.rotated_pre_finetuning_prefix_dir / "prefix_state.json"
+    if not prefix_state_path.exists():
+        raise FileNotFoundError(
+            "Rotated pre-finetuning Prefix is enabled but its state is missing. "
+            "Run `python scripts/discover_prefix.py --config ... "
+            "--stage rotated_pre_finetuning`."
         )
 
     state = read_json(prefix_state_path)
@@ -135,6 +146,11 @@ def main():
             raise ValueError("--rotated-pre-finetuning can only be used with --neuron ann")
         _validate_rotated_pre_finetuning_dependencies(cfg, layout)
 
+    rotated_prefix_enabled = (
+        rotated_pre_finetuning_prefix_enabled(cfg)
+        if args.rotated_pre_finetuning
+        else None
+    )
     rank = int(
         os.environ.get(
             "RANK",
@@ -498,7 +514,7 @@ def main():
                     "prefix_stage": prefix_stage,
                     "prefix_root": (
                         None
-                        if args.base
+                        if args.base or (args.rotated_pre_finetuning and not rotated_prefix_enabled)
                         else str(
                             layout.rotated_pre_finetuning_prefix_dir
                             if args.rotated_pre_finetuning
@@ -580,6 +596,9 @@ def main():
                 }
             )
 
+            if args.rotated_pre_finetuning:
+                metrics["prefix_enabled"] = rotated_prefix_enabled
+
             if args.base:
                 model_output_dir = layout.base_dir
             elif args.rotated_pre_finetuning:
@@ -595,6 +614,10 @@ def main():
                 / "tldr"
                 / test_samples_dirname
             )
+            if args.rotated_pre_finetuning:
+                output_dir = output_dir / rotated_pre_finetuning_prefix_dirname(
+                    bool(rotated_prefix_enabled)
+                )
 
             _write_jsonl(
                 output_dir / "predictions.jsonl",

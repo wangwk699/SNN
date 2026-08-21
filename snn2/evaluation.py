@@ -33,6 +33,10 @@ def resolve_tldr_evaluation_layout(
         "dirname": dirname,
     }
 
+
+def rotated_pre_finetuning_prefix_dirname(enabled: bool) -> str:
+    return "prefix_enabled_ture" if enabled else "prefix_enabled_false"
+
 def _update_execution_counter(
     counter: dict[str, int] | None,
     *,

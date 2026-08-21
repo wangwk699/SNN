@@ -1,7 +1,11 @@
 from _common import parser, setup
 
 from snn2.artifacts import write_json
-from snn2.config import post_finetuning_prefix_enabled, training_prefix_enabled
+from snn2.config import (
+    post_finetuning_prefix_enabled,
+    rotated_pre_finetuning_prefix_enabled,
+    training_prefix_enabled,
+)
 from snn2.controller import SiteController
 from snn2.data import load_selected_raw
 from snn2.logging_utils import StageRun
@@ -36,6 +40,14 @@ def main():
                 raise ValueError("ann_training prefix requires a rotated non-vanilla config")
             output_dir = layout.ann_training_prefix_dir
         elif args.stage == "rotated_pre_finetuning":
+            if not rotated_pre_finetuning_prefix_enabled(cfg):
+                run.event(
+                    "prefix_disabled",
+                    stage=args.stage,
+                    prefix_root=str(layout.rotated_pre_finetuning_prefix_dir),
+                )
+                return
+
             if not bool(cfg["rotation"]["enabled"]):
                 raise ValueError("rotated_pre_finetuning prefix requires rotation.enabled=true")
             fused_config = layout.rotation_dir / "fused_base" / "config.json"

@@ -9,7 +9,11 @@ from .artifacts import ArtifactLayout, read_json
 from .model_integration import register_attention_backend
 from .rotation import load_rotation_state
 from .prefix_cache import load_prefix_key_values
-from .config import post_finetuning_prefix_enabled, training_prefix_enabled
+from .config import (
+    post_finetuning_prefix_enabled,
+    rotated_pre_finetuning_prefix_enabled,
+    training_prefix_enabled,
+)
 
 
 def model_source(cfg: dict[str, Any], layout: ArtifactLayout, ann: bool = False) -> str:
@@ -89,7 +93,10 @@ def prefix_ids_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: 
             return []
         path = layout.post_finetuning_prefix_dir / "prefix_state.json"
     elif stage == "rotated_pre_finetuning":
-        if not bool(cfg["rotation"]["enabled"]):
+        if (
+            not bool(cfg["rotation"]["enabled"])
+            or not rotated_pre_finetuning_prefix_enabled(cfg)
+        ):
             return []
         path = layout.rotated_pre_finetuning_prefix_dir / "prefix_state.json"
     elif stage in {"vanilla_analysis", "base_evaluation"}:
