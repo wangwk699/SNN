@@ -16,6 +16,14 @@ class HadamardSpec:
     signs: torch.Tensor
     factor_k: int
     generator: str = "paley_or_sylvester"
+    orientation: str = "DU"
+
+    def __post_init__(self) -> None:
+        if self.orientation != "DU":
+            raise ValueError(
+                f"Unsupported random Hadamard orientation {self.orientation!r}; "
+                "current artifacts must use Q = D U"
+            )
 
     def state_dict(self) -> dict[str, Any]:
         state = asdict(self)
@@ -180,19 +188,58 @@ def random_hadamard(x: torch.Tensor, spec: HadamardSpec, transpose: bool = False
             f"{spec.name} expects last dimension {spec.dimension}, got {x.shape[-1]}"
         )
     signs = spec.signs.to(device=x.device, dtype=x.dtype)
-    # Q = H diag(sign).  xQ applies H first; xQ^T applies diag(sign) first.
+    # Q = D U, where D = diag(signs) and U is the normalized structured
+    # Hadamard transform. Row-vector xQ applies signs first; xQ^T applies U^T
+    # first and signs last.
     if transpose:
-        return structured_hadamard(x * signs, spec.factor_k, transpose=True)
-    return structured_hadamard(x, spec.factor_k, transpose=False) * signs
+        return structured_hadamard(x, spec.factor_k, transpose=True) * signs
+    return structured_hadamard(x * signs, spec.factor_k, transpose=False)
 
 
-def transform_weight_right(weight: torch.Tensor, spec: HadamardSpec, device: str) -> torch.Tensor:
+def materialize_random_hadamard_matrix(
+    spec: HadamardSpec,
+    *,
+    device: torch.device | str,
+    dtype: torch.dtype = torch.float64,
+) -> torch.Tensor:
+    """Materialize Q = D U; intended for small/R1 FP64 dense transforms."""
+    eye = torch.eye(spec.dimension, dtype=torch.float64, device="cpu")
+    structured = structured_hadamard(eye, spec.factor_k, transpose=False)
+    signs = spec.signs.to(device=structured.device, dtype=torch.float64)
+    matrix = signs[:, None] * structured
+    return matrix.to(device=device, dtype=dtype)
+
+
+def transform_weight_right_fp64_dense(
+    weight: torch.Tensor,
+    matrix: torch.Tensor,
+) -> torch.Tensor:
+    """Compute weight @ Q in FP64 and cast back to the original placement."""
+    original_device, original_dtype = weight.device, weight.dtype
+    work = weight.to(device=matrix.device, dtype=torch.float64)
+    transformed = torch.matmul(work, matrix.to(dtype=torch.float64))
+    return transformed.to(device=original_device, dtype=original_dtype)
+
+
+def transform_weight_left_transpose_fp64_dense(
+    weight: torch.Tensor,
+    matrix: torch.Tensor,
+) -> torch.Tensor:
+    """Compute Q^T @ weight in FP64 and cast back to original placement."""
+    original_device, original_dtype = weight.device, weight.dtype
+    work = weight.to(device=matrix.device, dtype=torch.float64)
+    transformed = torch.matmul(matrix.to(dtype=torch.float64).T, work)
+    return transformed.to(device=original_device, dtype=original_dtype)
+
+
+def transform_weight_right_fp32_fht(
+    weight: torch.Tensor,
+    spec: HadamardSpec,
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Compute weight @ Q through the FP32 FHT path and cast back."""
     original_device, original_dtype = weight.device, weight.dtype
     work = weight.to(device=device, dtype=torch.float32)
     transformed = random_hadamard(work, spec)
     return transformed.to(device=original_device, dtype=original_dtype)
-
-
-def transform_weight_left_transpose(weight: torch.Tensor, spec: HadamardSpec, device: str) -> torch.Tensor:
-    return transform_weight_right(weight.T, spec, device).T
 

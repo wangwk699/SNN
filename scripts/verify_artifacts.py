@@ -246,6 +246,94 @@ def _verify_rotation_regression_metrics(regression):
     )
 
 
+def _verify_prompt_end_metrics(metrics, *, expected_prompts: int) -> None:
+    required = {
+        "num_prompts_compared",
+        "relative_l2_error",
+        "max_abs_error",
+        "mean_abs_error",
+        "top1_agreement",
+        "top1_agreement_count",
+        "top1_disagreement_count",
+        "reference_top1_margin",
+        "per_prompt_max_abs_error",
+        "gating",
+    }
+    missing = sorted(required - metrics.keys())
+    if missing:
+        raise ValueError(f"Prompt-end diagnostic is missing required metrics: {missing}")
+    if int(metrics["num_prompts_compared"]) != expected_prompts:
+        raise ValueError("Prompt-end diagnostic must compare all 128 prompts")
+    agreement = float(metrics["top1_agreement"])
+    agreement_count = int(metrics["top1_agreement_count"])
+    disagreement_count = int(metrics["top1_disagreement_count"])
+    if not 0.0 <= agreement <= 1.0:
+        raise ValueError("Prompt-end top1_agreement must be in [0, 1]")
+    if agreement_count + disagreement_count != expected_prompts:
+        raise ValueError("Prompt-end Top-1 counts do not match prompts")
+    if abs(agreement - agreement_count / expected_prompts) > 1e-12:
+        raise ValueError("Prompt-end Top-1 agreement is inconsistent with counts")
+    for name in ("relative_l2_error", "max_abs_error", "mean_abs_error"):
+        value = float(metrics[name])
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"Prompt-end {name} must be finite and non-negative")
+    if metrics["gating"] is not False:
+        raise ValueError("Prompt-end diagnostic must not gate this protocol")
+    _verify_scalar_distribution(
+        metrics["reference_top1_margin"], "Prompt-end reference Top-1 margin"
+    )
+    _verify_scalar_distribution(
+        metrics["per_prompt_max_abs_error"], "Prompt-end per-prompt maximum error"
+    )
+
+
+def _verify_rotation_regression_suite(regression) -> None:
+    _require_manifest_flags(
+        regression,
+        {
+            "format_version": 4,
+            "purpose": "three_way_rotation_regression",
+            "status": "passed",
+            "num_samples": 128,
+            "passed": True,
+        },
+        "Rotation regression",
+    )
+    implementation = regression.get("rotation_implementation")
+    if not isinstance(implementation, dict):
+        raise ValueError("Rotation regression lacks implementation metadata")
+    if implementation.get("random_hadamard_orientation") != "DU":
+        raise ValueError("Rotation regression must use random Hadamard orientation DU")
+    if implementation.get("precision_policy") != "roste_aligned_v1":
+        raise ValueError("Rotation regression must use precision policy roste_aligned_v1")
+    hard_gate = regression.get("hard_gate")
+    if not isinstance(hard_gate, dict) or hard_gate.get("scope") != "all_tokens_only":
+        raise ValueError("Rotation regression hard gate must be all-token only")
+    if hard_gate.get("prompt_end_is_gating") is not False:
+        raise ValueError("Prompt-end diagnostic must not be a hard gate")
+
+    comparisons = regression.get("comparisons")
+    if not isinstance(comparisons, dict):
+        raise ValueError("Rotation regression lacks comparisons")
+    names = ("A_vs_B", "B_vs_C", "A_vs_C")
+    if set(comparisons) != set(names):
+        raise ValueError("Rotation regression must contain exactly A_vs_B, B_vs_C, A_vs_C")
+    for name in names:
+        pair = comparisons[name]
+        if not isinstance(pair, dict) or "all_tokens" not in pair or "prompt_end" not in pair:
+            raise ValueError(f"Rotation comparison {name} is incomplete")
+        _verify_rotation_regression_metrics(pair["all_tokens"])
+        _verify_prompt_end_metrics(pair["prompt_end"], expected_prompts=128)
+        if bool(pair.get("passed")) != bool(pair["all_tokens"].get("passed")):
+            raise ValueError(f"Rotation comparison {name} passed flag is inconsistent")
+    expected_passed = all(bool(comparisons[name]["passed"]) for name in names)
+    if bool(regression["passed"]) != expected_passed:
+        raise ValueError("Rotation suite passed flag contradicts its three comparisons")
+    diagnosis = regression.get("diagnosis")
+    if not isinstance(diagnosis, dict) or not diagnosis.get("code"):
+        raise ValueError("Rotation regression lacks structured diagnosis")
+
+
 def main():
     args = parser(
         "Verify required artifacts for one ANN run"
@@ -318,6 +406,9 @@ def main():
                     / "rotation_regression.json",
 
                     layout.rotation_dir
+                    / "rotation_summary.json",
+
+                    layout.rotation_dir
                     / "fused_base"
                     / "config.json",
 
@@ -348,17 +439,14 @@ def main():
         if cfg["rotation"]["enabled"]:
             regression_path = layout.rotation_dir / "rotation_regression.json"
             regression = read_json(regression_path)
-            _require_manifest_flags(
-                regression,
-                {
-                    "format_version": 3,
-                    "purpose": "base_vs_rotated_logits_regression",
-                    "num_samples": 128,
-                    "passed": True,
-                },
-                "Rotation regression",
-            )
-            _verify_rotation_regression_metrics(regression)
+            _verify_rotation_regression_suite(regression)
+            summary = read_json(layout.rotation_dir / "rotation_summary.json")
+            if (
+                summary.get("random_hadamard_orientation") != "DU"
+                or summary.get("precision_policy") != "roste_aligned_v1"
+                or int(summary.get("rotation_regression_format_version", -1)) != 4
+            ):
+                raise ValueError("Rotation summary metadata is incompatible with regression v4")
             calibration_manifest = layout.data_dir / "calibration_manifest.json"
             recorded_manifest = regression.get("calibration_manifest_path")
             if (

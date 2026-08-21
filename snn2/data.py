@@ -235,13 +235,60 @@ def _as_text(value: Any) -> str:
     return str(value)
 
 
-def _encode_tldr(row: dict[str, Any], tokenizer: Any) -> tuple[list[int], list[int]]:
+def tldr_prompt_and_reference(row: dict[str, Any]) -> tuple[str, str]:
     prompt = _as_text(
         row.get("prompt", row.get("pompt", row.get("article", row.get("text", ""))))
     )
-    completion = _as_text(
+    reference = _as_text(
         row.get("completion", row.get("summary", row.get("label", row.get("response", ""))))
     )
+    return prompt, reference
+
+
+def encode_tldr_generation_prompt(
+    row: dict[str, Any], tokenizer: Any, cfg: dict[str, Any]
+) -> list[int]:
+    prompt, _ = tldr_prompt_and_reference(row)
+    return list(
+        tokenizer.encode(
+            prompt,
+            add_special_tokens=True,
+            truncation=True,
+            max_length=int(cfg["evaluation"].get("tldr_input_length", 512)),
+        )
+    )
+
+
+def encode_generation_prompt(
+    row: dict[str, Any], tokenizer: Any, cfg: dict[str, Any]
+) -> list[int]:
+    """Encode only the generation prompt while preserving task-specific evaluation semantics."""
+    if cfg["experiment"]["task"] == "tldr":
+        return encode_tldr_generation_prompt(row, tokenizer, cfg)
+    messages = row.get("messages")
+    if not isinstance(messages, list):
+        instruction = _as_text(row.get("instruction", row.get("prompt", "")))
+        messages = [
+            {"role": "user", "content": instruction},
+            {"role": "assistant", "content": _as_text(
+                row.get("response", row.get("output", row.get("completion", "")))
+            )},
+        ]
+    last_assistant = max(
+        (index for index, message in enumerate(messages) if message.get("role") == "assistant"),
+        default=-1,
+    )
+    if last_assistant < 0:
+        raise ValueError("Tulu generation prompt has no assistant response to exclude")
+    return list(
+        tokenizer.apply_chat_template(
+            messages[:last_assistant], tokenize=True, add_generation_prompt=True
+        )
+    )
+
+
+def _encode_tldr(row: dict[str, Any], tokenizer: Any) -> tuple[list[int], list[int]]:
+    prompt, completion = tldr_prompt_and_reference(row)
     prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
     completion_ids = tokenizer.encode(completion, add_special_tokens=False)
     if tokenizer.eos_token_id is not None:

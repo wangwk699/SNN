@@ -39,10 +39,10 @@ def snn2_eager_attention_forward(
 
     r3: HadamardSpec | None = getattr(module, "_snn2_r3", None)
     if r3 is not None:
-        query_dtype = query.dtype
-        key_dtype = key.dtype
-        query = random_hadamard(query.float(), r3).to(query_dtype)
-        key = random_hadamard(key.float(), r3).to(key_dtype)
+        # RoSTE-aligned R3 preserves the activation dtype. Unsupported CUDA
+        # dtypes fail in the pinned FHT backend instead of silently falling back.
+        query = random_hadamard(query.contiguous(), r3)
+        key = random_hadamard(key.contiguous(), r3)
 
     query = controller.apply(layer_index, 2, query)
 
@@ -111,6 +111,16 @@ def snn2_eager_attention_forward(
 
 
 def register_attention_backend() -> None:
+    # Transformers 4.53+ dispatches causal-mask construction separately from
+    # the attention callable. Without this mapping, custom backends receive no
+    # causal mask and identity integration becomes non-causal.
+    try:
+        from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS, eager_mask
+
+        ALL_MASK_ATTENTION_FUNCTIONS.register("snn2_eager", eager_mask)
+    except ImportError:
+        # Older supported Transformers versions construct eager masks directly.
+        pass
     try:
         from transformers import AttentionInterface
 
@@ -145,7 +155,8 @@ def _make_mlp_forward(controller: SiteController, layer_index: int, r4: Hadamard
         product = gate * up
         if r4 is not None:
             product_dtype = product.dtype
-            product = random_hadamard(product.float(), r4).to(product_dtype)
+            # RoSTE-aligned R4 uses FP32 FHT compute, then casts back.
+            product = random_hadamard(product.to(torch.float32), r4).to(product_dtype)
 
         product = controller.apply(layer_index, 10, product)
         return mlp.down_proj(product)

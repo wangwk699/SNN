@@ -12,7 +12,11 @@ from tqdm.auto import tqdm
 from snn2.artifacts import read_json, write_json
 from snn2.controller import SiteController
 from snn2.config import rotated_pre_finetuning_prefix_enabled
-from snn2.data import _as_text, load_selected_raw
+from snn2.data import (
+    encode_tldr_generation_prompt,
+    load_selected_raw,
+    tldr_prompt_and_reference,
+)
 from snn2.evaluation import (
     greedy_generate,
     resolve_tldr_evaluation_layout,
@@ -30,16 +34,6 @@ from snn2.modeling import (
     rotation_state,
 )
 from snn2.prefix_cache import install_prefix_kv_forward
-
-
-def _prompt_and_reference(row):
-    prompt = _as_text(
-        row.get("prompt", row.get("pompt", row.get("article", row.get("text", ""))))
-    )
-    reference = _as_text(
-        row.get("completion", row.get("summary", row.get("label", row.get("response", ""))))
-    )
-    return prompt, reference
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -311,14 +305,9 @@ def main():
             # 先准备这一整个 batch 的样本
             for index in batch_indices:
                 row = evaluation[index]
-                prompt, reference = _prompt_and_reference(row)
+                prompt, reference = tldr_prompt_and_reference(row)
 
-                prompt_ids = tokenizer.encode(
-                    prompt,
-                    add_special_tokens=True,
-                    truncation=True,
-                    max_length=input_length,
-                )
+                prompt_ids = encode_tldr_generation_prompt(row, tokenizer, cfg)
 
                 batch_input_ids.append(prompt_ids)
                 batch_references.append(reference)

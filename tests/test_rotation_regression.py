@@ -5,13 +5,21 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from snn2.data import encode_generation_prompt, encode_tldr_generation_prompt, tldr_prompt_and_reference
+from snn2.hadamard import make_spec
 from snn2.rotation import (
+    _PromptEndDecisionAccumulator,
+    _last_valid_logits,
+    assess_rotation_regression,
+    diagnose_rotation_comparisons,
+    load_specs,
     RotationRegressionError,
     _StreamingAbsErrorHistogram,
     compute_logits_error_metrics,
     enforce_rotation_regression,
     fuse_rmsnorm_scale,
-    validate_rotation_logits,
+    validate_rotation_regression_suite,
+    RotationRegressionSuiteError,
 )
 
 
@@ -251,39 +259,258 @@ def test_rotation_regression_uses_joint_hard_gates(
         assert "top1_agreement=" in message
 
 
-def test_rotation_regression_requires_identity_controller():
-    cfg = {"calibration": {"num_samples": 128}}
-
-    with pytest.raises(RuntimeError, match=r"SiteController\(mode='identity'\)"):
-        validate_rotation_logits(
-            None,
-            None,
-            None,
-            [None] * 128,
-            cfg,
-            SimpleNamespace(mode="phase"),
-            calibration_manifest_path="calibration_manifest.json",
-            calibration_manifest_sha256="unused",
-        )
+def _comparison(passed, prompt_top1=1.0):
+    return {
+        "passed": passed,
+        "all_tokens": {"passed": passed},
+        "prompt_end": {"top1_agreement": prompt_top1, "gating": False},
+    }
 
 
-def test_rotation_regression_requires_online_r3_and_r4():
-    cfg = {"calibration": {"num_samples": 128}}
-    rotated_model = SimpleNamespace(
-        config=SimpleNamespace(
-            snn2_site_integration=True,
-            snn2_online_rotations=["R3"],
-        )
+@pytest.mark.parametrize(
+    ("states", "code"),
+    [
+        ((True, True, True), "no_regression_detected"),
+        ((False, True, False), "snn2_integration_mismatch"),
+        ((True, False, False), "rotation_mismatch"),
+        ((False, False, False), "integration_and_rotation_mismatch"),
+        ((False, False, True), "integration_and_rotation_mismatch"),
+        ((True, True, False), "end_to_end_accumulation_mismatch"),
+        ((False, True, True), "mixed_regression_failure"),
+    ],
+)
+def test_three_way_diagnosis_mapping_keeps_all_pairs(states, code):
+    comparisons = {
+        name: _comparison(passed)
+        for name, passed in zip(("A_vs_B", "B_vs_C", "A_vs_C"), states)
+    }
+    diagnosis = diagnose_rotation_comparisons(comparisons)
+
+    assert set(diagnosis["pair_pass"]) == {"A_vs_B", "B_vs_C", "A_vs_C"}
+    assert diagnosis["code"] == code
+    if states == (False, False, True):
+        assert "possible cancellation" in diagnosis["summary"]
+
+
+def test_assessment_does_not_raise_on_failure():
+    checked = assess_rotation_regression(
+        {"relative_l2_error": 0.06, "top1_agreement": 0.99},
+        relative_l2_threshold=0.05,
+        top1_agreement_threshold=0.95,
     )
+    assert checked["passed"] is False
 
-    with pytest.raises(RuntimeError, match="online R3 and R4"):
-        validate_rotation_logits(
-            None,
-            rotated_model,
-            None,
-            [None] * 128,
-            cfg,
-            SimpleNamespace(mode="identity"),
-            calibration_manifest_path="calibration_manifest.json",
-            calibration_manifest_sha256="unused",
+
+@pytest.mark.parametrize(
+    ("mask", "expected"),
+    [
+        (torch.tensor([[1, 1, 0, 0], [1, 1, 1, 0]]), torch.tensor([[2.0, -2.0], [7.0, -7.0]])),
+        (torch.tensor([[0, 0, 1, 1], [0, 1, 1, 1]]), torch.tensor([[4.0, -4.0], [8.0, -8.0]])),
+    ],
+)
+def test_prompt_end_selects_last_valid_position_for_both_padding_sides(mask, expected):
+    values = torch.arange(1, 9, dtype=torch.float32).reshape(2, 4)
+    logits = torch.stack((values, -values), dim=-1)
+    torch.testing.assert_close(_last_valid_logits(logits, mask), expected)
+
+
+def test_prompt_end_diagnostic_does_not_gate_pair():
+    accumulator = _PromptEndDecisionAccumulator()
+    accumulator.update(
+        torch.tensor([[10.0, 0.0], [10.0, 0.0]]),
+        torch.tensor([[0.0, 10.0], [9.0, 0.0]]),
+        [0, 1],
+        [100, 101],
+    )
+    prompt_end = accumulator.metrics()
+    all_tokens = assess_rotation_regression(
+        {"relative_l2_error": 0.01, "top1_agreement": 0.99}, 0.05, 0.95
+    )
+    pair = {"all_tokens": all_tokens, "prompt_end": prompt_end, "passed": all_tokens["passed"]}
+
+    assert prompt_end["top1_agreement"] == pytest.approx(0.5)
+    assert prompt_end["gating"] is False
+    assert pair["passed"] is True
+    assert prompt_end["mismatch_examples"][0]["dataset_index"] == 100
+
+
+def test_prompt_only_encoding_excludes_completion_and_uses_evaluation_length():
+    calls = []
+
+    class Tokenizer:
+        def encode(self, text, **kwargs):
+            calls.append((text, kwargs))
+            return [1, 2, 3]
+
+    row = {"prompt": "PROMPT", "completion": "COMPLETION"}
+    cfg = {"evaluation": {"tldr_input_length": 77}, "data": {"max_seq_length": 999}}
+    prompt, reference = tldr_prompt_and_reference(row)
+    ids = encode_tldr_generation_prompt(row, Tokenizer(), cfg)
+
+    assert (prompt, reference) == ("PROMPT", "COMPLETION")
+    assert ids == [1, 2, 3]
+    assert calls == [
+        (
+            "PROMPT",
+            {"add_special_tokens": True, "truncation": True, "max_length": 77},
         )
+    ]
+
+
+def test_rotation_state_rejects_legacy_and_accepts_du_metadata():
+    specs = {name: make_spec(name, 8, seed).state_dict() for name, seed in (("R3", 1), ("R4", 2))}
+    with pytest.raises(RuntimeError, match="Legacy/incompatible"):
+        load_specs({"format_version": 1, "specs": specs})
+
+    loaded = load_specs(
+        {
+            "format_version": 2,
+            "random_hadamard_orientation": "DU",
+            "precision_policy": "roste_aligned_v1",
+            "specs": specs,
+        }
+    )
+    assert set(loaded) == {"R3", "R4"}
+    assert all(spec.orientation == "DU" for spec in loaded.values())
+
+
+class _FakeDataset(list):
+    @property
+    def column_names(self):
+        return list(self[0].keys())
+
+    def map(self, function, remove_columns=None, desc=None):
+        return _FakeDataset(function(row) for row in self)
+
+
+class _FakeTokenizer:
+    pad_token_id = 0
+    eos_token_id = 2
+    padding_side = "right"
+
+    def encode(self, text, add_special_tokens=True, truncation=False, max_length=None):
+        ids = [1, 2] if add_special_tokens else [2]
+        return ids[:max_length] if truncation and max_length is not None else ids
+
+    def pad(self, encoded, padding=True, return_tensors="pt"):
+        rows = encoded["input_ids"]
+        width = max(len(row) for row in rows)
+        padded, masks = [], []
+        for row in rows:
+            count = width - len(row)
+            if self.padding_side == "left":
+                padded.append([0] * count + list(row))
+                masks.append([0] * count + [1] * len(row))
+            else:
+                padded.append(list(row) + [0] * count)
+                masks.append([1] * len(row) + [0] * count)
+        return {"input_ids": torch.tensor(padded), "attention_mask": torch.tensor(masks)}
+
+
+class _FakeRegressionModel(torch.nn.Module):
+    def __init__(self, variant):
+        super().__init__()
+        self.embedding = torch.nn.Embedding(3, 2)
+        self.variant = variant
+        attrs = {}
+        if variant == "B":
+            attrs["snn2_site_integration"] = True
+        if variant == "C":
+            attrs.update(
+                snn2_site_integration=True,
+                snn2_rotation_fused=True,
+                snn2_online_rotations=["R3", "R4"],
+                snn2_rotation_format_version=2,
+                snn2_random_hadamard_orientation="DU",
+                snn2_rotation_precision_policy="roste_aligned_v1",
+            )
+        self.config = SimpleNamespace(**attrs)
+
+    def get_input_embeddings(self):
+        return self.embedding
+
+    def forward(self, input_ids, attention_mask, use_cache=False):
+        leading = 0 if self.variant == "A" else 1
+        logits = torch.zeros((*input_ids.shape, 3), device=input_ids.device)
+        logits[..., leading] = 10.0
+        return SimpleNamespace(logits=logits)
+
+
+def test_three_way_suite_finishes_all_pairs_before_raising(tmp_path):
+    dataset = _FakeDataset(
+        {"prompt": f"prompt {index}", "completion": "completion"}
+        for index in range(128)
+    )
+    manifest = tmp_path / "calibration_manifest.json"
+    manifest.write_text(json.dumps({"indices": list(range(1000, 1128))}), encoding="utf-8")
+    cfg = {
+        "calibration": {"num_samples": 128, "batch_size": 32},
+        "evaluation": {"tldr_input_length": 16},
+        "data": {"max_seq_length": 16, "truncation_side": "right"},
+        "rotation": {
+            "seed": 42,
+            "regression_relative_l2_threshold": 0.05,
+            "regression_top1_agreement_threshold": 0.95,
+        },
+        "training": {"dtype": "float32"},
+        "experiment": {"model_name": "fake", "task": "tldr"},
+    }
+    identity = SimpleNamespace(mode="identity")
+
+    with pytest.raises(RotationRegressionSuiteError) as caught:
+        validate_rotation_regression_suite(
+            _FakeRegressionModel("A"),
+            _FakeRegressionModel("B"),
+            _FakeRegressionModel("C"),
+            _FakeTokenizer(),
+            dataset,
+            cfg,
+            identity,
+            identity,
+            calibration_manifest_path=manifest,
+            calibration_manifest_sha256="hash",
+        )
+
+    result = caught.value.result
+    assert set(result["comparisons"]) == {"A_vs_B", "B_vs_C", "A_vs_C"}
+    assert result["diagnosis"]["code"] == "snn2_integration_mismatch"
+    assert result["comparisons"]["B_vs_C"]["passed"] is True
+    for pair in result["comparisons"].values():
+        assert pair["prompt_end"]["num_prompts_compared"] == 128
+        assert pair["prompt_end"]["gating"] is False
+
+
+def test_prompt_end_identical_tied_logits_use_consistent_argmax():
+    accumulator = _PromptEndDecisionAccumulator()
+    logits = torch.tensor([[1.0, 1.0, 0.0]])
+    accumulator.update(logits, logits.clone(), [0], [42])
+    metrics = accumulator.metrics()
+
+    assert metrics["top1_agreement"] == 1.0
+    assert metrics["top1_disagreement_count"] == 0
+    assert metrics["mismatch_examples"] == []
+
+
+def test_tulu_prompt_encoding_excludes_final_assistant_response():
+    calls = []
+
+    class Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            calls.append((messages, kwargs))
+            return [4, 5]
+
+    row = {
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"},
+        ]
+    }
+    cfg = {"experiment": {"task": "tulu3"}}
+
+    assert encode_generation_prompt(row, Tokenizer(), cfg) == [4, 5]
+    assert calls == [
+        (
+            [{"role": "user", "content": "question"}],
+            {"tokenize": True, "add_generation_prompt": True},
+        )
+    ]

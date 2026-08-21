@@ -98,3 +98,51 @@ def test_deploy_mode_does_not_bypass_site_nine():
     output = _make_mlp_forward(controller, 0, None)(_MLP(), torch.tensor([[2.0]]))
     assert controller.applied == [8, 9, 10]
     torch.testing.assert_close(output, torch.tensor([[400.0]]))
+
+
+def test_r3_preserves_input_dtype(monkeypatch):
+    seen = []
+
+    def recorded(value, spec):
+        seen.append(value.dtype)
+        return value
+
+    monkeypatch.setattr(model_integration, "random_hadamard", recorded)
+    module = type("Attention", (), {})()
+    module._snn2_controller = _Controller()
+    module._snn2_layer_index = 0
+    module._snn2_r3 = object()
+    module.num_key_value_groups = 1
+    module.training = False
+    query = torch.randn(1, 1, 1, 2, dtype=torch.float32)
+    key = torch.randn_like(query)
+    value = torch.randn_like(query)
+
+    model_integration.snn2_eager_attention_forward(
+        module, query, key, value, attention_mask=None
+    )
+
+    assert seen == [torch.float32, torch.float32]
+
+
+def test_r4_uses_fp32_compute_and_casts_back(monkeypatch):
+    seen = []
+
+    def recorded(value, spec):
+        seen.append(value.dtype)
+        return value
+
+    monkeypatch.setattr(model_integration, "random_hadamard", recorded)
+    x = torch.tensor([[2.0]], dtype=torch.bfloat16)
+    output = _make_mlp_forward(_Controller(), 0, object())(_MLP(), x)
+
+    assert seen == [torch.float32]
+    assert output.dtype == torch.bfloat16
+
+
+def test_custom_attention_registers_eager_causal_mask():
+    from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS, eager_mask
+
+    model_integration.register_attention_backend()
+
+    assert ALL_MASK_ATTENTION_FUNCTIONS["snn2_eager"] is eager_mask

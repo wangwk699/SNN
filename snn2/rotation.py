@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,13 +10,15 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from .data import CausalLMCollator, tokenize_dataset
+from .data import CausalLMCollator, encode_generation_prompt, tokenize_dataset
 from .hadamard import (
     HadamardSpec,
     make_spec,
+    materialize_random_hadamard_matrix,
     random_hadamard,
-    transform_weight_left_transpose,
-    transform_weight_right,
+    transform_weight_left_transpose_fp64_dense,
+    transform_weight_right_fp32_fht,
+    transform_weight_right_fp64_dense,
 )
 
 
@@ -29,7 +32,7 @@ class ModelParts:
 
 
 class RotationRegressionError(RuntimeError):
-    """Hard failure carrying the serializable regression result for provenance."""
+    """Hard failure carrying a serializable single-pair result."""
 
     def __init__(self, result: dict[str, Any]):
         self.result = result
@@ -39,6 +42,17 @@ class RotationRegressionError(RuntimeError):
             f"(required <= {result['threshold']['relative_l2_error']:.6g}), "
             f"top1_agreement={result['top1_agreement']:.6g} "
             f"(required > {result['threshold']['top1_agreement']:.6g})"
+        )
+
+
+class RotationRegressionSuiteError(RuntimeError):
+    """Hard failure raised only after every A/B/C comparison is complete."""
+
+    def __init__(self, result: dict[str, Any]):
+        self.result = result
+        failed = [name for name, pair in result["comparisons"].items() if not pair["passed"]]
+        super().__init__(
+            "Three-way rotation regression failed after all comparisons: " + ", ".join(failed)
         )
 
 
@@ -412,12 +426,12 @@ def compute_logits_error_metrics(
     return accumulator.metrics()
 
 
-def enforce_rotation_regression(
+def assess_rotation_regression(
     result: dict[str, Any],
     relative_l2_threshold: float,
     top1_agreement_threshold: float,
 ) -> dict[str, Any]:
-    """Attach the acceptance decision and hard-fail when rotation is not equivalent."""
+    """Attach unchanged all-token hard gates without raising."""
     relative_l2_threshold = float(relative_l2_threshold)
     top1_agreement_threshold = float(top1_agreement_threshold)
     if relative_l2_threshold <= 0.0:
@@ -426,7 +440,7 @@ def enforce_rotation_regression(
         raise ValueError("top1_agreement_threshold must be in [0, 1)")
     relative_l2_passed = float(result["relative_l2_error"]) <= relative_l2_threshold
     top1_passed = float(result["top1_agreement"]) > top1_agreement_threshold
-    checked = {
+    return {
         **result,
         "threshold": {
             "relative_l2_error": relative_l2_threshold,
@@ -434,6 +448,17 @@ def enforce_rotation_regression(
         },
         "passed": relative_l2_passed and top1_passed,
     }
+
+
+def enforce_rotation_regression(
+    result: dict[str, Any],
+    relative_l2_threshold: float,
+    top1_agreement_threshold: float,
+) -> dict[str, Any]:
+    """Compatibility wrapper that raises for a failed single pair."""
+    checked = assess_rotation_regression(
+        result, relative_l2_threshold, top1_agreement_threshold
+    )
     if not checked["passed"]:
         raise RotationRegressionError(checked)
     return checked
@@ -443,30 +468,193 @@ def _model_input_device(model: nn.Module) -> torch.device:
     return model.get_input_embeddings().weight.device
 
 
-def validate_rotation_logits(
-    original_model: nn.Module,
-    rotated_model: nn.Module,
+class _PromptEndDecisionAccumulator:
+    def __init__(self, *, max_mismatch_examples: int = 32) -> None:
+        self.num_prompts = 0
+        self.num_elements = 0
+        self.max_abs_error = 0.0
+        self.sum_abs_error = 0.0
+        self.sum_squared_error = 0.0
+        self.sum_squared_reference = 0.0
+        self.top1_agreement_count = 0
+        self.reference_margin_chunks: list[torch.Tensor] = []
+        self.per_prompt_max_error_chunks: list[torch.Tensor] = []
+        self.mismatch_examples: list[dict[str, int]] = []
+        self.max_mismatch_examples = int(max_mismatch_examples)
+
+    def update(
+        self,
+        reference_logits: torch.Tensor,
+        candidate_logits: torch.Tensor,
+        calibration_positions: list[int],
+        dataset_indices: list[int],
+    ) -> None:
+        if reference_logits.shape != candidate_logits.shape or reference_logits.ndim != 2:
+            raise ValueError("Prompt-end logits must have matching [batch, vocab] shapes")
+        reference = reference_logits.detach().to(device="cpu", dtype=torch.float32)
+        candidate = candidate_logits.detach().to(device="cpu", dtype=torch.float32)
+        difference = reference - candidate
+        absolute_error = difference.abs()
+        batch, vocab = reference.shape
+        self.num_prompts += int(batch)
+        self.num_elements += int(batch * vocab)
+        self.max_abs_error = max(self.max_abs_error, float(absolute_error.max().item()))
+        self.sum_abs_error += float(absolute_error.sum(dtype=torch.float64).item())
+        self.sum_squared_error += float(difference.square().sum(dtype=torch.float64).item())
+        self.sum_squared_reference += float(reference.square().sum(dtype=torch.float64).item())
+
+        reference_top2 = torch.topk(reference, k=2, dim=-1, largest=True, sorted=True)
+        reference_top1 = reference.argmax(dim=-1)
+        candidate_top1 = candidate.argmax(dim=-1)
+        matches = reference_top1 == candidate_top1
+        self.top1_agreement_count += int(matches.sum().item())
+        self.reference_margin_chunks.append(
+            (reference_top2.values[:, 0] - reference_top2.values[:, 1]).cpu()
+        )
+        self.per_prompt_max_error_chunks.append(absolute_error.amax(dim=-1).cpu())
+        for offset in torch.nonzero(~matches, as_tuple=False).flatten().tolist():
+            if len(self.mismatch_examples) >= self.max_mismatch_examples:
+                break
+            self.mismatch_examples.append(
+                {
+                    "calibration_position": int(calibration_positions[offset]),
+                    "dataset_index": int(dataset_indices[offset]),
+                    "reference_top1_token_id": int(reference_top1[offset].item()),
+                    "candidate_top1_token_id": int(candidate_top1[offset].item()),
+                }
+            )
+
+    def metrics(self) -> dict[str, Any]:
+        if self.num_prompts <= 0 or self.num_elements <= 0:
+            raise RuntimeError("Prompt-end regression compared no prompts")
+        disagreement = self.num_prompts - self.top1_agreement_count
+        return {
+            "num_prompts_compared": self.num_prompts,
+            "relative_l2_error": self.sum_squared_error**0.5
+            / (self.sum_squared_reference**0.5 + 1e-12),
+            "max_abs_error": self.max_abs_error,
+            "mean_abs_error": self.sum_abs_error / self.num_elements,
+            "top1_agreement": self.top1_agreement_count / self.num_prompts,
+            "top1_agreement_count": self.top1_agreement_count,
+            "top1_disagreement_count": disagreement,
+            "reference_top1_margin": _exact_scalar_distribution(
+                torch.cat(self.reference_margin_chunks)
+            ),
+            "per_prompt_max_abs_error": _exact_scalar_distribution(
+                torch.cat(self.per_prompt_max_error_chunks)
+            ),
+            "mismatch_examples": self.mismatch_examples,
+            "gating": False,
+        }
+
+
+def _last_valid_logits(logits: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    if attention_mask.shape != logits.shape[:2]:
+        raise ValueError("attention_mask must match logits batch and sequence dimensions")
+    mask = attention_mask.to(device=logits.device, dtype=torch.bool)
+    positions = torch.arange(mask.shape[1], device=logits.device).unsqueeze(0)
+    end_positions = positions.masked_fill(~mask, -1).amax(dim=1)
+    if bool((end_positions < 0).any()):
+        raise ValueError("Every prompt must contain at least one valid token")
+    batch_index = torch.arange(logits.shape[0], device=logits.device)
+    return logits[batch_index, end_positions, :]
+
+
+def diagnose_rotation_comparisons(comparisons: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    pair_pass = {name: bool(comparisons[name]["passed"]) for name in ("A_vs_B", "B_vs_C", "A_vs_C")}
+    ab, bc, ac = pair_pass["A_vs_B"], pair_pass["B_vs_C"], pair_pass["A_vs_C"]
+    if ab and bc and ac:
+        code = "no_regression_detected"
+        summary = "HF Base to SNN2 identity integration and SNN2 identity to Rotation pass all-token hard gates."
+    elif not ab and bc and not ac:
+        code = "snn2_integration_mismatch"
+        summary = "SNN2 identity integration is the primary mismatch; inspect custom attention/MLP integration."
+    elif ab and not bc and not ac:
+        code = "rotation_mismatch"
+        summary = "Rotation is the primary mismatch; inspect Hadamard orientation, fusion, R2/R3/R4, and precision."
+    elif not ab and not bc:
+        code = "integration_and_rotation_mismatch"
+        summary = "Both integration and rotation stages fail their pairwise hard gates."
+        if ac:
+            summary += " A_vs_C passes by possible cancellation; do not interpret it as correctness."
+    elif ab and bc and not ac:
+        code = "end_to_end_accumulation_mismatch"
+        summary = "Both adjacent stages pass, but accumulated end-to-end error exceeds a hard gate."
+    else:
+        code = "mixed_regression_failure"
+        summary = "Mixed pair outcomes: " + ", ".join(
+            f"{name}={'pass' if passed else 'fail'}" for name, passed in pair_pass.items()
+        )
+    return {
+        "code": code,
+        "summary": summary,
+        "pair_pass": pair_pass,
+        "prompt_end_top1_agreement": {
+            name: float(comparisons[name]["prompt_end"]["top1_agreement"])
+            for name in pair_pass
+        },
+    }
+
+
+def _assert_regression_variants(
+    model_a: nn.Module,
+    model_b: nn.Module,
+    model_c: nn.Module,
+    controller_b: Any,
+    controller_c: Any,
+) -> None:
+    if bool(getattr(model_a.config, "snn2_site_integration", False)) or getattr(
+        model_a.config, "snn2_online_rotations", []
+    ):
+        raise RuntimeError("Model A must be the untouched Hugging Face Base")
+    if getattr(controller_b, "mode", None) != "identity":
+        raise RuntimeError("Model B requires SiteController(mode='identity')")
+    if not bool(getattr(model_b.config, "snn2_site_integration", False)):
+        raise RuntimeError("Model B is missing SNN2 identity integration")
+    if getattr(model_b.config, "snn2_online_rotations", []):
+        raise RuntimeError("Model B must not include online rotations")
+    if getattr(controller_c, "mode", None) != "identity":
+        raise RuntimeError("Model C requires SiteController(mode='identity')")
+    if not bool(getattr(model_c.config, "snn2_rotation_fused", False)):
+        raise RuntimeError("Model C is missing fused Rotation")
+    if not bool(getattr(model_c.config, "snn2_site_integration", False)):
+        raise RuntimeError("Model C is missing SNN2 integration")
+    if set(getattr(model_c.config, "snn2_online_rotations", [])) != {"R3", "R4"}:
+        raise RuntimeError("Model C regression must include online R3 and R4")
+    if int(getattr(model_c.config, "snn2_rotation_format_version", -1)) != 2:
+        raise RuntimeError("Model C has an incompatible rotation format")
+    if getattr(model_c.config, "snn2_random_hadamard_orientation", None) != "DU":
+        raise RuntimeError("Model C must use random Hadamard orientation DU")
+    if getattr(model_c.config, "snn2_rotation_precision_policy", None) != "roste_aligned_v1":
+        raise RuntimeError("Model C must use precision policy roste_aligned_v1")
+
+
+def validate_rotation_regression_suite(
+    model_a: nn.Module,
+    model_b: nn.Module,
+    model_c: nn.Module,
     tokenizer: Any,
     calibration_dataset: Any,
     cfg: dict[str, Any],
-    controller: Any,
+    controller_b: Any,
+    controller_c: Any,
     *,
     calibration_manifest_path: str | Path,
     calibration_manifest_sha256: str,
 ) -> dict[str, Any]:
-    """Compare Original Base and fully integrated Rotated Base on calibration data."""
+    """Run all-token and prompt-end A/B/C comparisons before raising."""
     expected_samples = int(cfg["calibration"]["num_samples"])
     if expected_samples != 128 or len(calibration_dataset) != expected_samples:
         raise RuntimeError(
-            "Rotation regression requires the existing 128-sample calibration selection; "
+            "Three-way rotation regression requires the existing 128-sample calibration selection; "
             f"config={expected_samples}, dataset={len(calibration_dataset)}"
         )
-    if getattr(controller, "mode", None) != "identity":
-        raise RuntimeError("Rotation regression requires SiteController(mode='identity')")
-    if not bool(getattr(rotated_model.config, "snn2_site_integration", False)):
-        raise RuntimeError("Rotated model is missing SNN2 model integration")
-    if set(getattr(rotated_model.config, "snn2_online_rotations", [])) != {"R3", "R4"}:
-        raise RuntimeError("Rotated model regression must include online R3 and R4")
+    _assert_regression_variants(model_a, model_b, model_c, controller_b, controller_c)
+    for model in (model_a, model_b, model_c):
+        model.eval()
+    devices = [_model_input_device(model) for model in (model_a, model_b, model_c)]
+    pair_names = ("A_vs_B", "B_vs_C", "A_vs_C")
+    all_token_accumulators = {name: _LogitsErrorAccumulator() for name in pair_names}
 
     tokenized = tokenize_dataset(calibration_dataset, tokenizer, cfg, prefix_ids=None)
     loader = DataLoader(
@@ -475,47 +663,115 @@ def validate_rotation_logits(
         shuffle=False,
         collate_fn=CausalLMCollator(tokenizer),
     )
-    original_model.eval()
-    rotated_model.eval()
-    base_device = _model_input_device(original_model)
-    rotated_device = _model_input_device(rotated_model)
-    accumulator = _LogitsErrorAccumulator()
-
     with torch.inference_mode():
         for batch in loader:
             attention_mask = batch["attention_mask"]
-            base_output = original_model(
-                input_ids=batch["input_ids"].to(base_device),
-                attention_mask=attention_mask.to(base_device),
-                use_cache=False,
-            )
-            # Moving each reference batch to CPU bounds GPU memory while both
-            # 8B models are resident for the strict model-to-model comparison.
-            base_logits = base_output.logits.detach().to("cpu")
-            del base_output
-            rotated_output = rotated_model(
-                input_ids=batch["input_ids"].to(rotated_device),
-                attention_mask=attention_mask.to(rotated_device),
-                use_cache=False,
-            )
-            accumulator.update(base_logits, rotated_output.logits.detach(), attention_mask)
-            del base_logits, rotated_output
+            logits: list[torch.Tensor] = []
+            for model, device in zip((model_a, model_b, model_c), devices):
+                output = model(
+                    input_ids=batch["input_ids"].to(device),
+                    attention_mask=attention_mask.to(device),
+                    use_cache=False,
+                )
+                logits.append(output.logits.detach().to("cpu"))
+                del output
+            all_token_accumulators["A_vs_B"].update(logits[0], logits[1], attention_mask)
+            all_token_accumulators["B_vs_C"].update(logits[1], logits[2], attention_mask)
+            all_token_accumulators["A_vs_C"].update(logits[0], logits[2], attention_mask)
+            del logits
 
+    manifest = json.loads(Path(calibration_manifest_path).read_text(encoding="utf-8"))
+    manifest_indices = [int(value) for value in manifest.get("indices", range(expected_samples))]
+    if len(manifest_indices) != expected_samples:
+        raise RuntimeError("Calibration manifest indices do not match the selected 128 rows")
+    prompt_accumulators = {name: _PromptEndDecisionAccumulator() for name in pair_names}
+    prompt_batch_size = int(cfg["calibration"].get("batch_size", 1))
+    old_padding_side = tokenizer.padding_side
+    try:
+        tokenizer.padding_side = "left"
+        with torch.inference_mode():
+            for start in range(0, expected_samples, prompt_batch_size):
+                stop = min(start + prompt_batch_size, expected_samples)
+                rows = [calibration_dataset[index] for index in range(start, stop)]
+                prompt_ids = [encode_generation_prompt(row, tokenizer, cfg) for row in rows]
+                padded = tokenizer.pad(
+                    {"input_ids": prompt_ids}, padding=True, return_tensors="pt"
+                )
+                attention_mask = padded["attention_mask"]
+                end_logits: list[torch.Tensor] = []
+                for model, device in zip((model_a, model_b, model_c), devices):
+                    output = model(
+                        input_ids=padded["input_ids"].to(device),
+                        attention_mask=attention_mask.to(device),
+                        use_cache=False,
+                    )
+                    end_logits.append(
+                        _last_valid_logits(output.logits.detach(), attention_mask).to("cpu")
+                    )
+                    del output
+                positions = list(range(start, stop))
+                dataset_indices = manifest_indices[start:stop]
+                prompt_accumulators["A_vs_B"].update(end_logits[0], end_logits[1], positions, dataset_indices)
+                prompt_accumulators["B_vs_C"].update(end_logits[1], end_logits[2], positions, dataset_indices)
+                prompt_accumulators["A_vs_C"].update(end_logits[0], end_logits[2], positions, dataset_indices)
+                del end_logits
+    finally:
+        tokenizer.padding_side = old_padding_side
+
+    relative_l2_threshold = float(cfg["rotation"].get("regression_relative_l2_threshold", 0.05))
+    top1_threshold = float(cfg["rotation"].get("regression_top1_agreement_threshold", 0.95))
+    labels = {
+        "A_vs_B": ("A_original_hf_base", "B_base_snn2_identity_no_rotation"),
+        "B_vs_C": ("B_base_snn2_identity_no_rotation", "C_rotated_snn2_identity"),
+        "A_vs_C": ("A_original_hf_base", "C_rotated_snn2_identity"),
+    }
+    comparisons: dict[str, dict[str, Any]] = {}
+    for name in pair_names:
+        all_tokens = assess_rotation_regression(
+            all_token_accumulators[name].metrics(), relative_l2_threshold, top1_threshold
+        )
+        comparisons[name] = {
+            "reference": labels[name][0],
+            "candidate": labels[name][1],
+            "all_tokens": all_tokens,
+            "prompt_end": prompt_accumulators[name].metrics(),
+            "passed": bool(all_tokens["passed"]),
+        }
+    overall_passed = all(pair["passed"] for pair in comparisons.values())
     result = {
-        "format_version": 3,
-        "purpose": "base_vs_rotated_logits_regression",
+        "format_version": 4,
+        "purpose": "three_way_rotation_regression",
+        "status": "passed" if overall_passed else "failed",
         "model_name": cfg["experiment"]["model_name"],
+        "model_revision": cfg["experiment"].get("model_revision"),
         "rotation_seed": int(cfg["rotation"]["seed"]),
         "dtype": cfg["training"].get("dtype", "bfloat16"),
+        "num_samples": expected_samples,
         "calibration_manifest_path": str(Path(calibration_manifest_path).resolve()),
         "calibration_manifest_sha256": calibration_manifest_sha256,
-        **accumulator.metrics(),
+        "hard_gate": {
+            "scope": "all_tokens_only",
+            "relative_l2_error": relative_l2_threshold,
+            "top1_agreement": top1_threshold,
+            "prompt_end_is_gating": False,
+        },
+        "rotation_implementation": {
+            "random_hadamard_orientation": "DU",
+            "precision_policy": "roste_aligned_v1",
+        },
+        "models": {
+            "A": {"label": "original_hf_base", "snn2_integration": False, "rotation": False},
+            "B": {"label": "base_snn2_identity_no_rotation", "snn2_integration": True, "controller": "identity", "rotation": False},
+            "C": {"label": "rotated_snn2_identity", "snn2_integration": True, "controller": "identity", "rotation": True, "online_rotations": ["R3", "R4"]},
+        },
+        "comparisons": comparisons,
+        "diagnosis": diagnose_rotation_comparisons(comparisons),
+        "passed": overall_passed,
     }
-    return enforce_rotation_regression(
-        result,
-        float(cfg["rotation"].get("regression_relative_l2_threshold", 0.05)),
-        float(cfg["rotation"].get("regression_top1_agreement_threshold", 0.95)),
-    )
+    if not overall_passed:
+        raise RotationRegressionSuiteError(result)
+    return result
+
 
 def get_model_parts(model: nn.Module) -> ModelParts:
     backbone = getattr(model, "model", None)
@@ -549,33 +805,44 @@ def untie_input_output_embeddings(parts: ModelParts, config: Any) -> bool:
     return True
 
 
-def _rotate_output_bias(linear: nn.Linear, spec: HadamardSpec, device: str) -> None:
+def _rotate_output_bias_fp64(
+    linear: nn.Linear, matrix: torch.Tensor
+) -> None:
     if linear.bias is not None:
-        rotated = transform_weight_right(linear.bias.data.unsqueeze(0), spec, device).squeeze(0)
+        rotated = transform_weight_right_fp64_dense(
+            linear.bias.data.unsqueeze(0), matrix
+        ).squeeze(0)
         linear.bias.data.copy_(rotated)
 
 
-def _rotate_value_projection(attn: nn.Module, spec: HadamardSpec, device: str) -> None:
+def _rotate_value_projection(
+    attn: nn.Module, spec: HadamardSpec, matrix: torch.Tensor
+) -> None:
+    """RoSTE-aligned R2 value/output-side FP64 block transform."""
     v_proj = attn.v_proj
     kv_heads = int(attn.config.num_key_value_heads)
-    head_dim = int(getattr(attn, "head_dim", attn.config.hidden_size // attn.config.num_attention_heads))
+    head_dim = int(
+        getattr(attn, "head_dim", attn.config.hidden_size // attn.config.num_attention_heads)
+    )
     weight = v_proj.weight.data.reshape(kv_heads, head_dim, -1)
-    chunks = [transform_weight_left_transpose(chunk, spec, device) for chunk in weight]
+    chunks = [
+        transform_weight_left_transpose_fp64_dense(chunk, matrix) for chunk in weight
+    ]
     v_proj.weight.data.copy_(torch.stack(chunks).reshape_as(v_proj.weight.data))
     if v_proj.bias is not None:
         bias = v_proj.bias.data.reshape(kv_heads, head_dim)
-        bias = random_hadamard(bias.to(device=device, dtype=torch.float32), spec)
+        bias = transform_weight_right_fp64_dense(bias, matrix)
         v_proj.bias.data.copy_(bias.to(v_proj.bias.data))
 
 
 def _rotate_o_projection_input(attn: nn.Module, spec: HadamardSpec, device: str) -> None:
+    """R2 o_proj/input-side follows RoSTE active FP32 FHT precision."""
     o_proj = attn.o_proj
     heads = int(attn.config.num_attention_heads)
     head_dim = int(getattr(attn, "head_dim", attn.config.hidden_size // heads))
     weight = o_proj.weight.data.reshape(o_proj.out_features, heads, head_dim)
-    work = weight.to(device=device, dtype=torch.float32)
-    work = random_hadamard(work, spec)
-    o_proj.weight.data.copy_(work.to(o_proj.weight.data).reshape_as(o_proj.weight.data))
+    transformed = transform_weight_right_fp32_fht(weight, spec, device)
+    o_proj.weight.data.copy_(transformed.reshape_as(o_proj.weight.data))
 
 
 @torch.no_grad()
@@ -597,8 +864,6 @@ def fuse_rotations(model: nn.Module, seed: int = 42, device: str = "cuda") -> di
     }
 
     embeddings_were_untied = untie_input_output_embeddings(parts, config)
-
-    # RMSNorm scales must be absorbed before residual-space rotation.
     for layer in parts.layers:
         fuse_rmsnorm_scale(
             layer.input_layernorm,
@@ -611,29 +876,51 @@ def fuse_rotations(model: nn.Module, seed: int = 42, device: str = "cuda") -> di
     fuse_rmsnorm_scale(parts.final_norm, [parts.lm_head])
 
     r1, r2, r4 = specs["R1"], specs["R2"], specs["R4"]
-    parts.embedding.weight.data.copy_(transform_weight_right(parts.embedding.weight.data, r1, device))
-    parts.lm_head.weight.data.copy_(transform_weight_right(parts.lm_head.weight.data, r1, device))
+    r1_matrix_fp64 = materialize_random_hadamard_matrix(
+        r1, device=device, dtype=torch.float64
+    )
+    r2_matrix_fp64 = materialize_random_hadamard_matrix(
+        r2, device=device, dtype=torch.float64
+    )
+    parts.embedding.weight.data.copy_(
+        transform_weight_right_fp64_dense(parts.embedding.weight.data, r1_matrix_fp64)
+    )
+    parts.lm_head.weight.data.copy_(
+        transform_weight_right_fp64_dense(parts.lm_head.weight.data, r1_matrix_fp64)
+    )
 
     for layer in parts.layers:
         attn, mlp = layer.self_attn, layer.mlp
         for linear in (attn.q_proj, attn.k_proj, attn.v_proj, mlp.gate_proj, mlp.up_proj):
-            linear.weight.data.copy_(transform_weight_right(linear.weight.data, r1, device))
+            linear.weight.data.copy_(
+                transform_weight_right_fp64_dense(linear.weight.data, r1_matrix_fp64)
+            )
         for linear in (attn.o_proj, mlp.down_proj):
-            linear.weight.data.copy_(transform_weight_left_transpose(linear.weight.data, r1, device))
-            _rotate_output_bias(linear, r1, device)
+            linear.weight.data.copy_(
+                transform_weight_left_transpose_fp64_dense(
+                    linear.weight.data, r1_matrix_fp64
+                )
+            )
+            _rotate_output_bias_fp64(linear, r1_matrix_fp64)
 
-        _rotate_value_projection(attn, r2, device)
+        _rotate_value_projection(attn, r2, r2_matrix_fp64)
         _rotate_o_projection_input(attn, r2, device)
+        # RoSTE-aligned R4 offline remains FP32 FHT, not dense FP64.
         mlp.down_proj.weight.data.copy_(
-            transform_weight_right(mlp.down_proj.weight.data, r4, device)
+            transform_weight_right_fp32_fht(mlp.down_proj.weight.data, r4, device)
         )
 
     model.config.snn2_rotation_fused = True
     model.config.snn2_rotation_seed = int(seed)
     model.config.snn2_online_rotations = ["R3", "R4"]
+    model.config.snn2_rotation_format_version = 2
+    model.config.snn2_random_hadamard_orientation = "DU"
+    model.config.snn2_rotation_precision_policy = "roste_aligned_v1"
     return {
-        "format_version": 1,
+        "format_version": 2,
         "seed": int(seed),
+        "random_hadamard_orientation": "DU",
+        "precision_policy": "roste_aligned_v1",
         "sharing": {
             "R1": "global residual hidden dimension, shared across layers",
             "R2": "global head dimension, shared across heads and layers",
@@ -653,9 +940,24 @@ def save_rotation_state(state: dict[str, Any], path: str | Path) -> None:
     torch.save(state, path)
 
 
+def _validate_rotation_state(state: dict[str, Any]) -> None:
+    if (
+        int(state.get("format_version", -1)) != 2
+        or state.get("random_hadamard_orientation") != "DU"
+        or state.get("precision_policy") != "roste_aligned_v1"
+    ):
+        raise RuntimeError(
+            "Legacy/incompatible rotation artifact detected. "
+            "Re-run scripts/prepare_rotation.py with the current code."
+        )
+
+
 def load_rotation_state(path: str | Path) -> dict[str, Any]:
-    return torch.load(path, map_location="cpu", weights_only=False)
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    _validate_rotation_state(state)
+    return state
 
 
 def load_specs(state: dict[str, Any]) -> dict[str, HadamardSpec]:
+    _validate_rotation_state(state)
     return {name: HadamardSpec.from_state_dict(spec) for name, spec in state["specs"].items()}
