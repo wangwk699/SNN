@@ -1,7 +1,7 @@
 import random
 from types import SimpleNamespace
 
-from snn2.data import prepare_manifests
+from snn2.data import load_selected_raw, prepare_manifests
 import pytest
 
 from snn2.evaluation import (
@@ -81,3 +81,65 @@ def test_tldr_train_subset_is_fixed_random_without_replacement(monkeypatch, tmp_
     assert manifests["train"]["sampling"] == "seeded_random_without_replacement"
     assert manifests["train"]["tldr_train_seed"] == 42
     assert set(manifests["calibration"]["indices"]) <= set(expected)
+
+
+def test_ann_training_subset_uses_current_config_even_when_shared_manifest_is_full(
+    monkeypatch, tmp_path
+):
+    raw = {
+        "train": _Dataset({"value": index} for index in range(20)),
+        "validation": _Dataset({"value": index} for index in range(5)),
+        "test": _Dataset({"value": index} for index in range(6)),
+    }
+    monkeypatch.setattr("snn2.data._load_raw", lambda cfg: raw)
+    cfg = {
+        "experiment": {"task": "tldr", "seed": 7},
+        "data": {
+            "dataset_name": "fake/tldr",
+            "train_split": "train",
+            "validation_split": "validation",
+            "evaluation_split": "test",
+        },
+        "training": {"tldr_train_samples": None, "tldr_train_seed": 42},
+        "calibration": {"seed": 42, "num_samples": 4, "with_replacement": False},
+    }
+    layout = SimpleNamespace(data_dir=tmp_path)
+    prepare_manifests(cfg, layout)
+    assert len(load_selected_raw(cfg, layout).train) == 20
+
+    cfg["training"]["tldr_train_samples"] = 8
+    bundle = load_selected_raw(cfg, layout, use_configured_train_subset=True)
+    expected = random.Random(42).sample(range(20), k=8)
+    expected.sort()
+
+    assert len(bundle.train) == 8
+    assert [row["value"] for row in bundle.train] == expected
+    assert bundle.manifests["train"]["indices"] == expected
+    assert bundle.manifests["train"]["selection_scope"] == "current_ann_training_config"
+    assert len(bundle.calibration) == 4
+
+
+def test_ann_training_subset_rejects_more_rows_than_raw_split(monkeypatch, tmp_path):
+    raw = {
+        "train": _Dataset({"value": index} for index in range(5)),
+        "validation": _Dataset({"value": index} for index in range(2)),
+        "test": _Dataset({"value": index} for index in range(2)),
+    }
+    monkeypatch.setattr("snn2.data._load_raw", lambda cfg: raw)
+    cfg = {
+        "experiment": {"task": "tldr", "seed": 7},
+        "data": {
+            "dataset_name": "fake/tldr",
+            "train_split": "train",
+            "validation_split": "validation",
+            "evaluation_split": "test",
+        },
+        "training": {"tldr_train_samples": None, "tldr_train_seed": 42},
+        "calibration": {"seed": 42, "num_samples": 2, "with_replacement": False},
+    }
+    layout = SimpleNamespace(data_dir=tmp_path)
+    prepare_manifests(cfg, layout)
+    cfg["training"]["tldr_train_samples"] = 6
+
+    with pytest.raises(ValueError, match="contains only 5 rows"):
+        load_selected_raw(cfg, layout, use_configured_train_subset=True)

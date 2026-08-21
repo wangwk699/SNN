@@ -51,6 +51,28 @@ def _record_ids(dataset: Any, indices: list[int]) -> list[Any]:
     return list(dataset.select(indices)[id_column])
 
 
+def _tldr_train_selection(
+    raw_train: Any, cfg: dict[str, Any]
+) -> tuple[list[int], str]:
+    configured = cfg["training"].get("tldr_train_samples")
+    if configured is None:
+        return list(range(len(raw_train))), "full_split"
+    requested = int(configured)
+    if requested <= 0:
+        raise ValueError("training.tldr_train_samples must be a positive integer or null")
+    if requested > len(raw_train):
+        raise ValueError(
+            f"Requested {requested} TL;DR training samples, but the train split "
+            f"contains only {len(raw_train)} rows"
+        )
+    if requested == len(raw_train):
+        return list(range(len(raw_train))), "full_split"
+    rng = random.Random(int(cfg["training"].get("tldr_train_seed", 42)))
+    indices = rng.sample(range(len(raw_train)), k=requested)
+    indices.sort()
+    return indices, "seeded_random_without_replacement"
+
+
 def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, dict[str, Any]]:
     raw = _load_raw(cfg)
     data_cfg = cfg["data"]
@@ -73,27 +95,7 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         validation_indices = permutation[train_size : train_size + validation_size]
         validation_split = train_split
     elif task == "tldr":
-        configured_train_samples = cfg["training"].get("tldr_train_samples")
-        train_seed = int(cfg["training"].get("tldr_train_seed", 42))
-        if configured_train_samples is None:
-            train_indices = list(range(len(raw_train)))
-            train_sampling = "full_split"
-        else:
-            requested_train_samples = int(configured_train_samples)
-            if requested_train_samples <= 0:
-                raise ValueError(
-                    "training.tldr_train_samples must be a positive integer or null"
-                )
-            if requested_train_samples >= len(raw_train):
-                train_indices = list(range(len(raw_train)))
-                train_sampling = "full_split"
-            else:
-                train_rng = random.Random(train_seed)
-                train_indices = train_rng.sample(
-                    range(len(raw_train)), k=requested_train_samples
-                )
-                train_indices.sort()
-                train_sampling = "seeded_random_without_replacement"
+        train_indices, train_sampling = _tldr_train_selection(raw_train, cfg)
         validation_split = data_cfg.get("validation_split", "validation")
         raw_validation = raw[validation_split]
         validation_indices = list(range(len(raw_validation)))
@@ -210,12 +212,35 @@ def load_manifests(layout: ArtifactLayout) -> dict[str, dict[str, Any]]:
     return result
 
 
-def load_selected_raw(cfg: dict[str, Any], layout: ArtifactLayout) -> DatasetBundle:
+def load_selected_raw(
+    cfg: dict[str, Any],
+    layout: ArtifactLayout,
+    *,
+    use_configured_train_subset: bool = False,
+) -> DatasetBundle:
     manifests = load_manifests(layout)
     raw = _load_raw(cfg)
     selected = {}
     for name, manifest in manifests.items():
-        selected[name] = raw[manifest["split"]].select(manifest["indices"])
+        if (
+            name == "train"
+            and use_configured_train_subset
+            and cfg["experiment"]["task"] == "tldr"
+        ):
+            raw_train = raw[manifest["split"]]
+            indices, sampling = _tldr_train_selection(raw_train, cfg)
+            selected[name] = raw_train.select(indices)
+            manifests[name] = {
+                **manifest,
+                "indices": indices,
+                "record_ids": _record_ids(raw_train, indices),
+                "sampling": sampling,
+                "tldr_train_samples": cfg["training"].get("tldr_train_samples"),
+                "tldr_train_seed": int(cfg["training"].get("tldr_train_seed", 42)),
+                "selection_scope": "current_ann_training_config",
+            }
+        else:
+            selected[name] = raw[manifest["split"]].select(manifest["indices"])
     return DatasetBundle(
         train=selected["train"],
         validation=selected["validation"],
@@ -363,12 +388,19 @@ def tokenize_row(
     return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
 
 
-def tokenize_dataset(dataset: Any, tokenizer: Any, cfg: dict[str, Any], prefix_ids=None):
+def tokenize_dataset(
+    dataset: Any,
+    tokenizer: Any,
+    cfg: dict[str, Any],
+    prefix_ids=None,
+    *,
+    desc: str = "Tokenizing SNN2 dataset",
+):
     columns = list(dataset.column_names)
     return dataset.map(
         lambda row: tokenize_row(row, tokenizer, cfg, prefix_ids),
         remove_columns=columns,
-        desc="Tokenizing SNN2 dataset",
+        desc=desc,
     )
 
 

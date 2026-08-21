@@ -59,12 +59,36 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         report_to=[],
         ddp_find_unused_parameters=False,
     )
-    bundle = load_selected_raw(cfg, layout)
+    bundle = load_selected_raw(
+        cfg, layout, use_configured_train_subset=True
+    )
+    configured_train_samples = training_cfg.get("tldr_train_samples")
+    if (
+        cfg["experiment"]["task"] == "tldr"
+        and configured_train_samples is not None
+        and len(bundle.train) != int(configured_train_samples)
+    ):
+        raise RuntimeError(
+            "TL;DR ANN training selection count mismatch: "
+            f"configured={configured_train_samples}, selected={len(bundle.train)}"
+        )
     prefixes = prefix_ids_for_stage(cfg, layout, stage="ann_training")
     install_prefix_kv_forward(model, prefix_key_values_for_stage(cfg, layout, stage="ann_training"))
     with arguments.main_process_first(desc="tokenize train and validation datasets"):
-        train_dataset = tokenize_dataset(bundle.train, tokenizer, cfg, prefix_ids=None)
-        validation_dataset = tokenize_dataset(bundle.validation, tokenizer, cfg, prefix_ids=None)
+        train_dataset = tokenize_dataset(
+            bundle.train,
+            tokenizer,
+            cfg,
+            prefix_ids=None,
+            desc=f"Tokenizing SNN2 training dataset ({len(bundle.train)} samples)",
+        )
+        validation_dataset = tokenize_dataset(
+            bundle.validation,
+            tokenizer,
+            cfg,
+            prefix_ids=None,
+            desc=f"Tokenizing SNN2 validation dataset ({len(bundle.validation)} samples)",
+        )
     if int(os.environ.get("RANK", "0")) == 0:
         template = getattr(tokenizer, "chat_template", None) or ""
         write_json(
@@ -81,6 +105,10 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
                 "prefix_loss_masked": "not_applicable_prefix_not_in_labels",
                 "chat_template": template,
                 "chat_template_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest(),
+                "configured_tldr_train_samples": training_cfg.get("tldr_train_samples"),
+                "tldr_train_seed": int(training_cfg.get("tldr_train_seed", 42)),
+                "actual_train_samples": len(train_dataset),
+                "train_sampling": bundle.manifests["train"].get("sampling"),
             },
         )
     trainer = Trainer(
