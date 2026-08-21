@@ -70,7 +70,7 @@ replacement:
   outer_clip_backward: hard_clip
   clip_rule: phase_mtn_gif_low_high_common_intersection
 rotated_pre_finetuning:
-  prefix_enabled: false
+  prefix_enabled: true
 training:
   num_train_epochs: 1
   per_device_train_batch_size: 1
@@ -96,14 +96,14 @@ training:
   logging_steps: 10
   deepspeed_config: configs/deepspeed_zero3.json
   resume_from_checkpoint: null
-  tldr_train_samples: 1024
+  tldr_train_samples: null
   tldr_train_seed: 42
 evaluation:
   prefix_enabled: true
   batch_size: 32
   max_new_tokens: 32
   tldr_input_length: 512
-  tldr_test_samples: 128
+  tldr_test_samples: null
   tldr_test_seed: 42
   rouge_types:
   - rouge1

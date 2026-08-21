@@ -49,8 +49,7 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     mode = cfg["experiment"]["ann_mode"]
     if mode == "vanilla":
         cfg["rotation"]["enabled"] = False
-        cfg["ann_training"]["prefix_enabled"] = False
-        cfg["prefix"]["enabled"] = False
+        cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
         cfg["replacement"]["train_mode"] = "none"
     elif mode == "unaware":
         cfg["rotation"]["enabled"] = True
@@ -150,7 +149,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
 
 
 def training_prefix_enabled(cfg: dict[str, Any]) -> bool:
-    return cfg["experiment"]["ann_mode"] != "vanilla" and bool(
+    return bool(
         cfg.get("ann_training", {}).get(
             "prefix_enabled", cfg["prefix"].get("enabled", False)
         )

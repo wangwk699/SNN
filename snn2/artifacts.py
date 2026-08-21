@@ -47,7 +47,7 @@ class ArtifactLayout:
             cfg.get("ann_training", {}).get(
                 "prefix_enabled", cfg.get("prefix", {}).get("enabled", False)
             )
-        ) and exp["ann_mode"] != "vanilla"
+        )
         self.root = (
             model_root
             / exp["ann_mode"]
@@ -106,7 +106,7 @@ class ArtifactLayout:
 
     @property
     def ann_training_prefix_dir(self) -> Path:
-        return self.shared_model_root / "rotated_prefix" / "pre_finetuning_prefix"
+        return self.policy_root / "pre_finetuning_prefix"
 
     @property
     def rotated_pre_finetuning_dir(self) -> Path:

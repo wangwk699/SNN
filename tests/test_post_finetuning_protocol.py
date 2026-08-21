@@ -8,7 +8,7 @@ from snn2.conversion import validate_post_finetuning_prefix
 
 
 def _cfg(mode):
-    return {"experiment": {"id": "e", "task": "t", "model_name": "m", "seed": 42, "output_root": "artifacts", "ann_mode": mode}, "training": {"learning_rate": 1e-6}, "rotation": {"enabled": mode != "vanilla"}, "prefix": {"enabled": mode != "vanilla"}, "post_finetuning": {"prefix_enabled": True}}
+    return {"experiment": {"id": "e", "task": "t", "model_name": "m", "seed": 42, "output_root": "artifacts", "ann_mode": mode}, "training": {"learning_rate": 1e-6}, "rotation": {"enabled": mode != "vanilla"}, "prefix": {"enabled": True}, "post_finetuning": {"prefix_enabled": True}}
 
 
 def test_stage_specific_artifact_paths():
@@ -23,8 +23,8 @@ def test_stage_specific_artifact_paths():
 @pytest.mark.parametrize(
     ("configured", "suffix"),
     [
-        (None, "lr1e-06_train_samples_full/prefix_enabled_false/seed42"),
-        (128, "lr1e-06_train_samples_128/prefix_enabled_false/seed42"),
+        (None, "lr1e-06_train_samples_full/prefix_enabled_ture/seed42"),
+        (128, "lr1e-06_train_samples_128/prefix_enabled_ture/seed42"),
     ],
 )
 def test_tldr_training_sample_count_is_part_of_run_path(configured, suffix):
@@ -37,7 +37,7 @@ def test_tldr_training_sample_count_is_part_of_run_path(configured, suffix):
 def test_vanilla_prefix_policy_and_shared_analysis_paths():
     cfg = _cfg("vanilla")
     layout = ArtifactLayout(cfg)
-    assert not training_prefix_enabled(cfg)
+    assert training_prefix_enabled(cfg)
     assert post_finetuning_prefix_enabled(cfg)
     assert str(layout.policy_root).endswith("vanilla_original")
     assert "_shared" in str(layout.policy_config_dir)

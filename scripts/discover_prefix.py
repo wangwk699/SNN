@@ -28,11 +28,15 @@ def main():
     logs_dir = layout.policy_logs_dir if canonical_stage == "pre_finetuning" else layout.logs_dir
     with StageRun(f"discover_prefix_{args.stage}", logs_dir, cfg["experiment"]) as run:
         if canonical_stage == "pre_finetuning":
-            if not bool(cfg["rotation"]["enabled"]):
-                raise ValueError("pre_finetuning prefix requires rotation.enabled=true")
-            fused_config = layout.rotation_dir / "fused_base" / "config.json"
-            rotation_state_path = layout.rotation_dir / "rotation_state.pt"
-            missing = [path for path in (fused_config, rotation_state_path) if not path.exists()]
+            missing = []
+            if bool(cfg["rotation"]["enabled"]):
+                fused_config = layout.rotation_dir / "fused_base" / "config.json"
+                rotation_state_path = layout.rotation_dir / "rotation_state.pt"
+                missing = [
+                    path
+                    for path in (fused_config, rotation_state_path)
+                    if not path.exists()
+                ]
             if missing:
                 raise FileNotFoundError(
                     "Pre-finetuning prefix requires rotation artifacts. "

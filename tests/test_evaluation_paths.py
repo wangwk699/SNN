@@ -52,6 +52,31 @@ class _Dataset(list):
         return _Dataset(self[index] for index in indices)
 
 
+def test_tulu_full_training_uses_all_rows_except_fixed_validation(monkeypatch, tmp_path):
+    raw = {"train": _Dataset({"value": index} for index in range(20))}
+    monkeypatch.setattr("snn2.data._load_raw", lambda cfg: raw)
+    cfg = {
+        "experiment": {"task": "tulu3", "seed": 7},
+        "data": {
+            "dataset_name": "fake/tulu",
+            "train_split": "train",
+            "train_size": None,
+            "validation_size": 5,
+        },
+        "training": {},
+        "calibration": {"seed": 42, "num_samples": 4, "with_replacement": False},
+    }
+    manifests = prepare_manifests(cfg, SimpleNamespace(data_dir=tmp_path))
+    assert len(manifests["train"]["indices"]) == 15
+    assert len(manifests["validation"]["indices"]) == 5
+    assert set(manifests["train"]["indices"]).isdisjoint(
+        manifests["validation"]["indices"]
+    )
+    assert set(manifests["train"]["indices"]) | set(
+        manifests["validation"]["indices"]
+    ) == set(range(20))
+
+
 def test_tldr_train_subset_is_fixed_random_without_replacement(monkeypatch, tmp_path):
     raw = {
         "train": _Dataset({} for _ in range(20)),

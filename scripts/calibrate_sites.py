@@ -14,11 +14,9 @@ def main():
     args = arg_parser.parse_args()
     scope = "policy_shared" if args.stage in {"ann_training", "vanilla_analysis"} else "run"
     cfg, layout = setup(args.config, config_scope=scope)
-    if args.stage == "ann_training" and not cfg["rotation"]["enabled"]:
-        raise ValueError("ann_training calibration requires a rotated config")
     if args.stage == "vanilla_analysis":
-        if (cfg["experiment"]["ann_mode"] != "vanilla" or cfg["rotation"]["enabled"] or cfg["prefix"]["enabled"]):
-            raise ValueError("vanilla_analysis calibration requires a vanilla config with rotation/prefix disabled")
+        if (cfg["experiment"]["ann_mode"] != "vanilla" or cfg["rotation"]["enabled"]):
+            raise ValueError("vanilla_analysis calibration requires a vanilla config with rotation disabled")
     site_root = {"ann_training": layout.ann_training_site_dir, "vanilla_analysis": layout.vanilla_analysis_site_dir, "post_finetuning": layout.post_finetuning_site_dir}[args.stage]
     purpose = {"ann_training": "ann_training_calibration", "vanilla_analysis": "vanilla_analysis_calibration", "post_finetuning": "post_finetuning_conversion_calibration"}[args.stage]
     source = model_source_for_stage(cfg, layout, stage=args.stage)

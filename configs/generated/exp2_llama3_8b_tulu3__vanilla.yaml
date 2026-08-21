@@ -15,7 +15,7 @@ data:
   dataset_name: allenai/tulu-3-sft-mixture
   dataset_revision: 3c09be1fe3882f2b1cb5a42ab26ceeab3dc9c6ea
   train_split: train
-  train_size: 100000
+  train_size: null
   validation_size: 1000
   chat_template_override: true
   chat_template: '{{ bos_token }}{% for message in messages %}{{ ''<|start_header_id|>''
@@ -33,12 +33,12 @@ rotation:
   regression_relative_l2_threshold: 0.05
   regression_top1_agreement_threshold: 0.95
 prefix:
-  enabled: false
+  enabled: true
   outlier_threshold: 64.0
   detection_activation: down_proj_input
   loss_masked: true
 ann_training:
-  prefix_enabled: false
+  prefix_enabled: true
 post_finetuning:
   rediscover_prefix: true
   recalibrate_sites: true

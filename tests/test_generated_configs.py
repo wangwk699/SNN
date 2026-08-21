@@ -5,7 +5,7 @@ import yaml
 from snn2.sites import SITE_COUNT
 
 
-def test_generated_configs_preserve_qwen3_1_7b_overrides():
+def test_generated_configs_use_full_data_and_enable_all_prefix_stages():
     root = Path(__file__).resolve().parents[1] / "configs" / "generated"
     expected = {
         "exp1_qwen3_1_7b_tldr__vanilla.yaml": (1e-6, 32),
@@ -26,9 +26,15 @@ def test_generated_configs_preserve_qwen3_1_7b_overrides():
             "prefix_enabled": True,
             "post_finetuning_recalibration": True,
         }
-        assert isinstance(cfg["rotated_pre_finetuning"]["prefix_enabled"], bool)
-        assert isinstance(cfg["ann_training"]["prefix_enabled"], bool)
-        assert isinstance(cfg["evaluation"]["prefix_enabled"], bool)
+        assert cfg["ann_training"]["prefix_enabled"] is True
+        assert cfg["rotated_pre_finetuning"]["prefix_enabled"] is True
+        assert cfg["evaluation"]["prefix_enabled"] is True
+        if cfg["experiment"]["task"] == "tldr":
+            assert cfg["training"]["tldr_train_samples"] is None
+            assert cfg["evaluation"]["tldr_test_samples"] is None
+        else:
+            assert cfg["data"]["train_size"] is None
+            assert cfg["evaluation"]["limit"] is None
     for name, (learning_rate, batch_size) in expected.items():
         cfg = yaml.safe_load((root / name).read_text(encoding="utf-8"))
         assert float(cfg["training"]["learning_rate"]) == learning_rate

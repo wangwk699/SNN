@@ -83,16 +83,25 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
     task = cfg["experiment"]["task"]
 
     if task == "tulu3":
-        train_size = int(data_cfg.get("train_size", 100_000))
+        configured_train_size = data_cfg.get("train_size")
         validation_size = int(data_cfg.get("validation_size", 1_000))
-        if len(raw_train) < train_size + validation_size:
+        if validation_size <= 0 or len(raw_train) <= validation_size:
             raise ValueError(
-                f"Tulu 3 requires at least {train_size + validation_size} rows, got {len(raw_train)}"
+                "Tulu 3 validation_size must be positive and smaller than the source split"
             )
         permutation = list(range(len(raw_train)))
         rng.shuffle(permutation)
-        train_indices = permutation[:train_size]
-        validation_indices = permutation[train_size : train_size + validation_size]
+        if configured_train_size is None:
+            validation_indices = permutation[:validation_size]
+            train_indices = permutation[validation_size:]
+        else:
+            train_size = int(configured_train_size)
+            if train_size <= 0 or len(raw_train) < train_size + validation_size:
+                raise ValueError(
+                    "Tulu 3 train_size must be positive and leave enough rows for validation"
+                )
+            train_indices = permutation[:train_size]
+            validation_indices = permutation[train_size : train_size + validation_size]
         validation_split = train_split
     elif task == "tldr":
         train_indices, train_sampling = _tldr_train_selection(raw_train, cfg)
