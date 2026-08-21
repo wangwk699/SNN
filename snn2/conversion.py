@@ -5,6 +5,7 @@ from typing import Any
 
 import torch
 
+from .config import post_finetuning_prefix_enabled
 from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
 from .sites import SITE_COUNT, SITE_TOPOLOGY_VERSION, topology_metadata, validate_site_topology
 from .controller import SiteController
@@ -37,7 +38,14 @@ def validate_calibration(site_root: str | Path) -> dict[str, Any]:
     }
 
 
-def validate_post_finetuning_prefix(layout: ArtifactLayout) -> dict[str, Any]:
+def validate_post_finetuning_prefix(layout: ArtifactLayout, enabled: bool = True) -> dict[str, Any]:
+    if not enabled:
+        return {
+            "prefix_root": None,
+            "prefix_token_ids": [],
+            "prefix_state_sha256": None,
+            "prefix_kv_sha256": None,
+        }
     root = layout.post_finetuning_prefix_dir
     state_path = root / "prefix_state.json"
     if not state_path.exists():
@@ -57,7 +65,8 @@ def validate_post_finetuning_prefix(layout: ArtifactLayout) -> dict[str, Any]:
     }
 
 def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) -> dict[str, Any]:
-    prefix = validate_post_finetuning_prefix(layout)
+    prefix_enabled = post_finetuning_prefix_enabled(cfg)
+    prefix = validate_post_finetuning_prefix(layout, enabled=prefix_enabled)
     validation = validate_calibration(layout.post_finetuning_site_dir)
     ann_checkpoint = layout.ann_checkpoint_dir
     ann_config = ann_checkpoint / "config.json"
@@ -72,11 +81,22 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
             f"Calibration state manifest is missing: {calibration_manifest}"
         )
     manifest = read_json(calibration_manifest)
-    if manifest.get("purpose") != "post_finetuning_conversion_calibration" or not manifest.get("eligible_for_conversion") or not manifest.get("post_finetuning_recalibration"):
-        raise ValueError("Conversion requires post_finetuning_conversion_calibration eligible for conversion")
+    if (
+        manifest.get("purpose") != "post_finetuning_conversion_calibration"
+        or not manifest.get("eligible_for_conversion")
+        or not manifest.get("post_finetuning_recalibration")
+    ):
+        raise ValueError(
+            "Conversion requires post_finetuning_conversion_calibration eligible for conversion"
+        )
+    if manifest.get("prefix_enabled") != prefix_enabled:
+        raise ValueError(
+            "Conversion calibration prefix_enabled does not match "
+            "post_finetuning.prefix_enabled"
+        )
     controller = SiteController(site_root=layout.post_finetuning_site_dir)
     steps = controller.set_deployment(neuron)
-    output = layout.snn_dir(neuron)
+    output = layout.snn_conversion_dir(neuron)
     output.mkdir(parents=True, exist_ok=True)
     rotation_path = layout.rotation_dir / "rotation_state.pt"
     metadata = {
@@ -90,7 +110,7 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
         "full_temporal_steps": steps,
         "gif_local_decomposition_steps": 2 ** int(cfg["gif"]["add_bits"]),
         "rotation_enabled": bool(cfg["rotation"]["enabled"]),
-        "prefix_enabled": True,
+        "prefix_enabled": prefix_enabled,
         "prefix_token_ids": prefix["prefix_token_ids"],
         "rotation_state_sha256": (
             sha256_file(rotation_path) if bool(cfg["rotation"]["enabled"]) else None

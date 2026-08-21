@@ -6,7 +6,6 @@ from snn2.data import load_selected_raw
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
 from snn2.modeling import load_model, load_tokenizer, model_source_for_stage, prefix_key_values_for_stage, rotation_state
-from snn2.config import training_prefix_enabled
 
 
 def main():
@@ -15,9 +14,8 @@ def main():
     args = arg_parser.parse_args()
     scope = "policy_shared" if args.stage in {"ann_training", "vanilla_analysis"} else "run"
     cfg, layout = setup(args.config, config_scope=scope)
-    if args.stage == "ann_training":
-        if (not cfg["rotation"]["enabled"] or not training_prefix_enabled(cfg)):
-            raise ValueError("ann_training calibration requires a rotated non-vanilla config")
+    if args.stage == "ann_training" and not cfg["rotation"]["enabled"]:
+        raise ValueError("ann_training calibration requires a rotated config")
     if args.stage == "vanilla_analysis":
         if (cfg["experiment"]["ann_mode"] != "vanilla" or cfg["rotation"]["enabled"] or cfg["prefix"]["enabled"]):
             raise ValueError("vanilla_analysis calibration requires a vanilla config with rotation/prefix disabled")

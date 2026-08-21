@@ -9,12 +9,18 @@ from typing import Any
 from .config import save_yaml
 
 
+def prefix_enabled_dirname(enabled: bool) -> str:
+    """Stable artifact suffix (the historical ``ture`` spelling is intentional)."""
+    return "prefix_enabled_ture" if enabled else "prefix_enabled_false"
+
+
 def safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
 
 
 class ArtifactLayout:
     def __init__(self, cfg: dict[str, Any]):
+        self._cfg = cfg
         exp = cfg["experiment"]
         model = safe_name(exp["model_name"])
         experiment_root = Path(exp["output_root"]) / exp["id"]
@@ -37,7 +43,18 @@ class ArtifactLayout:
 
         self.model_root = model_root
         self.seed_name = seed
-        self.root = model_root / exp["ann_mode"] / learning_rate / seed
+        ann_prefix = bool(
+            cfg.get("ann_training", {}).get(
+                "prefix_enabled", cfg.get("prefix", {}).get("enabled", False)
+            )
+        ) and exp["ann_mode"] != "vanilla"
+        self.root = (
+            model_root
+            / exp["ann_mode"]
+            / learning_rate
+            / prefix_enabled_dirname(ann_prefix)
+            / seed
+        )
         # 原始 Base 模型独立目录：
         # 不依赖 ann_mode，也不依赖 learning_rate
         self.base_root = model_root / "base" / seed
@@ -89,7 +106,7 @@ class ArtifactLayout:
 
     @property
     def ann_training_prefix_dir(self) -> Path:
-        return self.shared_model_root / "rotated_prefix" / "ann_training_prefix"
+        return self.shared_model_root / "rotated_prefix" / "pre_finetuning_prefix"
 
     @property
     def rotated_pre_finetuning_dir(self) -> Path:
@@ -106,7 +123,8 @@ class ArtifactLayout:
 
     @property
     def rotated_pre_finetuning_prefix_dir(self) -> Path:
-        return self.rotated_pre_finetuning_dir / "prefix"
+        """Alias of the Prefix used by ANN training; these are one object."""
+        return self.ann_training_prefix_dir
 
     @property
     def rotated_pre_finetuning_evaluation_dir(self) -> Path:
@@ -114,7 +132,17 @@ class ArtifactLayout:
 
     @property
     def ann_training_calibration_dir(self) -> Path:
-        return self.shared_model_root / "rotated_prefix" / "ann_training_calibration"
+        enabled = bool(
+            self._cfg.get("ann_training", {}).get(
+                "prefix_enabled", self._cfg.get("prefix", {}).get("enabled", False)
+            )
+        )
+        return (
+            self.shared_model_root
+            / "rotated_prefix"
+            / "ann_training_calibration"
+            / prefix_enabled_dirname(enabled)
+        )
 
     @property
     def ann_training_site_dir(self) -> Path:
@@ -161,7 +189,14 @@ class ArtifactLayout:
 
     @property
     def post_finetuning_conversion_calibration_dir(self) -> Path:
-        return self.post_finetuning_dir / "conversion_calibration"
+        enabled = bool(
+            self._cfg.get("post_finetuning", {}).get("prefix_enabled", True)
+        )
+        return (
+            self.post_finetuning_dir
+            / "conversion_calibration"
+            / prefix_enabled_dirname(enabled)
+        )
 
     @property
     def post_finetuning_site_dir(self) -> Path:
@@ -173,6 +208,12 @@ class ArtifactLayout:
 
     def snn_dir(self, neuron: str) -> Path:
         return self.root / "snn" / neuron
+
+    def snn_conversion_dir(self, neuron: str) -> Path:
+        enabled = bool(
+            self._cfg.get("post_finetuning", {}).get("prefix_enabled", True)
+        )
+        return self.snn_dir(neuron) / "conversion" / prefix_enabled_dirname(enabled)
 
     def ensure(self) -> None:
         for path in (

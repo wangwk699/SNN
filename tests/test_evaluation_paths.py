@@ -4,10 +4,8 @@ from types import SimpleNamespace
 from snn2.data import load_selected_raw, prepare_manifests
 import pytest
 
-from snn2.evaluation import (
-    resolve_tldr_evaluation_layout,
-    rotated_pre_finetuning_prefix_dirname,
-)
+from snn2.artifacts import prefix_enabled_dirname
+from snn2.evaluation import resolve_tldr_evaluation_layout
 
 
 @pytest.mark.parametrize(
@@ -43,7 +41,7 @@ def test_resolve_tldr_evaluation_layout_rejects_non_positive_counts(configured):
 )
 def test_rotated_pre_finetuning_prefix_result_path(configured, enabled, path):
     layout = resolve_tldr_evaluation_layout(6553, configured)
-    assert f"{layout['dirname']}/{rotated_pre_finetuning_prefix_dirname(enabled)}" == path
+    assert f"{layout['dirname']}/{prefix_enabled_dirname(enabled)}" == path
 
 
 

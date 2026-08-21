@@ -9,9 +9,9 @@ import torch
 
 from _common import parser, setup
 from tqdm.auto import tqdm
-from snn2.artifacts import read_json, write_json
+from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
 from snn2.controller import SiteController
-from snn2.config import rotated_pre_finetuning_prefix_enabled
+from snn2.config import evaluation_prefix_enabled, rotated_pre_finetuning_prefix_enabled
 from snn2.data import (
     encode_tldr_generation_prompt,
     load_selected_raw,
@@ -20,7 +20,6 @@ from snn2.data import (
 from snn2.evaluation import (
     greedy_generate,
     resolve_tldr_evaluation_layout,
-    rotated_pre_finetuning_prefix_dirname,
 )
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
@@ -66,7 +65,7 @@ def _validate_rotated_pre_finetuning_dependencies(cfg, layout) -> None:
         raise FileNotFoundError(
             "Rotated pre-finetuning Prefix is enabled but its state is missing. "
             "Run `python scripts/discover_prefix.py --config ... "
-            "--stage rotated_pre_finetuning`."
+            "--stage pre_finetuning`."
         )
 
     state = read_json(prefix_state_path)
@@ -76,7 +75,7 @@ def _validate_rotated_pre_finetuning_dependencies(cfg, layout) -> None:
         raise FileNotFoundError(
             "Rotated pre-finetuning Prefix is non-empty but its fixed KV cache is missing. "
             "Run `python scripts/discover_prefix.py --config ... "
-            "--stage rotated_pre_finetuning`."
+            "--stage pre_finetuning`."
         )
 
 
@@ -145,6 +144,11 @@ def main():
         if args.rotated_pre_finetuning
         else None
     )
+    final_evaluation_prefix_enabled = (
+        evaluation_prefix_enabled(cfg)
+        if not args.base and not args.rotated_pre_finetuning
+        else None
+    )
     rank = int(
         os.environ.get(
             "RANK",
@@ -210,7 +214,7 @@ def main():
             else (
                 "rotated_pre_finetuning"
                 if args.rotated_pre_finetuning
-                else "post_finetuning"
+                else "final_evaluation"
             )
         )
         controller = SiteController(
@@ -503,7 +507,7 @@ def main():
                     "prefix_stage": prefix_stage,
                     "prefix_root": (
                         None
-                        if args.base or (args.rotated_pre_finetuning and not rotated_prefix_enabled)
+                        if args.base or (args.rotated_pre_finetuning and not rotated_prefix_enabled) or (not args.rotated_pre_finetuning and not final_evaluation_prefix_enabled)
                         else str(
                             layout.rotated_pre_finetuning_prefix_dir
                             if args.rotated_pre_finetuning
@@ -585,8 +589,12 @@ def main():
                 }
             )
 
-            if args.rotated_pre_finetuning:
-                metrics["prefix_enabled"] = rotated_prefix_enabled
+            if not args.base:
+                metrics["prefix_enabled"] = (
+                    rotated_prefix_enabled
+                    if args.rotated_pre_finetuning
+                    else final_evaluation_prefix_enabled
+                )
 
             if args.base:
                 model_output_dir = layout.base_dir
@@ -603,9 +611,13 @@ def main():
                 / "tldr"
                 / test_samples_dirname
             )
-            if args.rotated_pre_finetuning:
-                output_dir = output_dir / rotated_pre_finetuning_prefix_dirname(
-                    bool(rotated_prefix_enabled)
+            if not args.base:
+                output_dir = output_dir / prefix_enabled_dirname(
+                    bool(
+                        rotated_prefix_enabled
+                        if args.rotated_pre_finetuning
+                        else final_evaluation_prefix_enabled
+                    )
                 )
 
             _write_jsonl(

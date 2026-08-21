@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
+from .config import post_finetuning_prefix_enabled, training_prefix_enabled
 from .data import CausalLMCollator, tokenize_dataset
 from .sites import SITE_COUNT, SITE_TOPOLOGY_VERSION, topology_metadata, validate_site_topology
 from .stats import StatisticsStore
@@ -24,8 +25,15 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "vanilla_analysis": "vanilla_analysis_calibration",
         "post_finetuning": "post_finetuning_conversion_calibration",
     }[stage]
-    prefix_dir = None if stage == "vanilla_analysis" else (
-        layout.ann_training_prefix_dir if stage == "ann_training" else layout.post_finetuning_prefix_dir
+    prefix_enabled = (
+        training_prefix_enabled(cfg)
+        if stage == "ann_training"
+        else (post_finetuning_prefix_enabled(cfg) if stage == "post_finetuning" else False)
+    )
+    prefix_dir = (
+        layout.ann_training_prefix_dir
+        if stage == "ann_training" and prefix_enabled
+        else (layout.post_finetuning_prefix_dir if stage == "post_finetuning" and prefix_enabled else None)
     )
     prefix_state = prefix_dir / "prefix_state.json" if prefix_dir else None
     if prefix_state and not prefix_state.exists():
@@ -56,8 +64,8 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "source_ann_config_sha256": sha256_file(ann_config) if ann_config else None,
         "calibration_data_manifest_path": str(data_manifest.resolve()),
         "calibration_data_manifest_sha256": sha256_file(data_manifest),
-        "prefix_protocol_enabled": prefix_dir is not None,
-        "prefix_enabled": prefix_dir is not None,
+        "prefix_protocol_enabled": prefix_enabled,
+        "prefix_enabled": prefix_enabled,
         "prefix_token_ids": prefix_ids,
         "prefix_kv_present": prefix_kv is not None,
         "prefix_state_path": str(prefix_state.resolve()) if prefix_state else None,

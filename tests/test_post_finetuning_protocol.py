@@ -13,18 +13,18 @@ def _cfg(mode):
 
 def test_stage_specific_artifact_paths():
     layout = ArtifactLayout(_cfg("phase_aware"))
-    assert "ann_training_prefix" in str(layout.ann_training_prefix_dir)
-    assert "ann_training_calibration/sites" in str(layout.ann_training_site_dir)
+    assert "pre_finetuning_prefix" in str(layout.ann_training_prefix_dir)
+    assert "ann_training_calibration/prefix_enabled_ture/sites" in str(layout.ann_training_site_dir)
     assert "vanilla_analysis_calibration/sites" in str(layout.vanilla_analysis_site_dir)
     assert "post_finetuning/prefix" in str(layout.post_finetuning_prefix_dir)
-    assert "post_finetuning/conversion_calibration/sites" in str(layout.post_finetuning_site_dir)
+    assert "post_finetuning/conversion_calibration/prefix_enabled_ture/sites" in str(layout.post_finetuning_site_dir)
 
 
 @pytest.mark.parametrize(
     ("configured", "suffix"),
     [
-        (None, "lr1e-06_train_samples_full/seed42"),
-        (128, "lr1e-06_train_samples_128/seed42"),
+        (None, "lr1e-06_train_samples_full/prefix_enabled_false/seed42"),
+        (128, "lr1e-06_train_samples_128/prefix_enabled_false/seed42"),
     ],
 )
 def test_tldr_training_sample_count_is_part_of_run_path(configured, suffix):

@@ -3,7 +3,8 @@ import math
 from pathlib import Path
 from _common import parser, setup
 
-from snn2.artifacts import read_json, sha256_file, write_json
+from snn2.artifacts import prefix_enabled_dirname, read_json, sha256_file, write_json
+from snn2.config import evaluation_prefix_enabled, post_finetuning_prefix_enabled, training_prefix_enabled
 from snn2.conversion import validate_calibration
 from snn2.sites import topology_metadata
 from snn2.evaluation import resolve_tldr_evaluation_layout
@@ -381,6 +382,7 @@ def main():
             directory = root / "evaluation" / eval_dir_name
             if evaluation_subdir is not None:
                 directory = directory / evaluation_subdir
+            directory = directory / prefix_enabled_dirname(evaluation_prefix_enabled(cfg))
             return [directory / name for name in evaluation_files]
 
         required.extend(evaluation_paths(layout.ann_dir))
@@ -390,10 +392,11 @@ def main():
         # --------------------------------------------------
         prefix_state_path = layout.post_finetuning_prefix_dir / "prefix_state.json"
         required.extend([
-            prefix_state_path,
             layout.post_finetuning_site_dir / "calibration_state_manifest.json",
             layout.vanilla_analysis_site_dir / "statistics_manifest.json",
         ])
+        if post_finetuning_prefix_enabled(cfg) or evaluation_prefix_enabled(cfg):
+            required.append(prefix_state_path)
 
         if cfg["rotation"]["enabled"]:
 
@@ -412,11 +415,12 @@ def main():
                     / "fused_base"
                     / "config.json",
 
-                    layout.ann_training_prefix_dir / "prefix_state.json",
                     layout.ann_training_site_dir / "calibration_state_manifest.json",
 
                 ]
             )
+            if training_prefix_enabled(cfg):
+                required.append(layout.ann_training_prefix_dir / "prefix_state.json")
 
         # --------------------------------------------------
         # First existence check.
@@ -475,7 +479,7 @@ def main():
         # --------------------------------------------------
         prefix_token_ids = []
 
-        if prefix_state_path is not None:
+        if prefix_state_path in required:
             prefix_state = read_json(
                 prefix_state_path
             )
@@ -521,10 +525,10 @@ def main():
         _verify_hashes(vanilla_manifest, "Vanilla analysis calibration")
         if cfg["rotation"]["enabled"]:
             ann_manifest = read_json(layout.ann_training_site_dir / "calibration_state_manifest.json")
-            _require_manifest_flags(ann_manifest, {"purpose": "ann_training_calibration", "analysis_only": False, "eligible_for_ann_training": True, "eligible_for_conversion": False, "post_finetuning_recalibration": False, "rotation_enabled": True, "prefix_protocol_enabled": True}, "ANN-training")
+            _require_manifest_flags(ann_manifest, {"purpose": "ann_training_calibration", "analysis_only": False, "eligible_for_ann_training": True, "eligible_for_conversion": False, "post_finetuning_recalibration": False, "rotation_enabled": True, "prefix_protocol_enabled": training_prefix_enabled(cfg)}, "ANN-training")
             _verify_hashes(ann_manifest,"ANN-training calibration")
         post_manifest = read_json(layout.post_finetuning_site_dir / "calibration_state_manifest.json")
-        _require_manifest_flags(post_manifest, {"purpose": "post_finetuning_conversion_calibration", "analysis_only": False, "eligible_for_ann_training": False, "eligible_for_conversion": True, "post_finetuning_recalibration": True, "prefix_protocol_enabled": True}, "Post-finetuning")
+        _require_manifest_flags(post_manifest, {"purpose": "post_finetuning_conversion_calibration", "analysis_only": False, "eligible_for_ann_training": False, "eligible_for_conversion": True, "post_finetuning_recalibration": True, "prefix_protocol_enabled": post_finetuning_prefix_enabled(cfg)}, "Post-finetuning")
         if not post_manifest.get("source_ann_checkpoint") or not post_manifest.get("source_ann_config_sha256") or not post_manifest.get("calibration_data_manifest_sha256"):
             raise ValueError("Post-finetuning calibration lacks required final-ANN or data provenance")
         expected_rotation = bool(cfg["rotation"]["enabled"])
@@ -540,7 +544,7 @@ def main():
             "mtn",
         ):
             path = (
-                layout.snn_dir(neuron)
+                layout.snn_conversion_dir(neuron)
                 / "conversion_metadata.json"
             )
 
@@ -567,8 +571,12 @@ def main():
             )
 
         for neuron in ("phase", "gif", "mtn"):
-            metadata = read_json(layout.snn_dir(neuron) / "conversion_metadata.json")
-            if not metadata.get("post_finetuning_recalibration") or "post_finetuning/conversion_calibration/sites" not in metadata.get("calibration_root", ""):
+            metadata = read_json(layout.snn_conversion_dir(neuron) / "conversion_metadata.json")
+            if (
+                not metadata.get("post_finetuning_recalibration")
+                or Path(metadata.get("calibration_root", "")).resolve() != layout.post_finetuning_site_dir.resolve()
+                or metadata.get("prefix_enabled") != post_finetuning_prefix_enabled(cfg)
+            ):
                 raise ValueError(f"Conversion does not use run-specific post-finetuning calibration: {neuron}")
 
         if tldr_layout is not None:

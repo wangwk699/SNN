@@ -35,24 +35,34 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     cfg = copy.deepcopy(raw)
+    cfg.setdefault("ann_training", {})
     cfg.setdefault("rotated_pre_finetuning", {})
     cfg["rotated_pre_finetuning"].setdefault("prefix_enabled", True)
+    cfg["ann_training"].setdefault(
+        "prefix_enabled", bool(cfg.get("prefix", {}).get("enabled", True))
+    )
+    cfg.setdefault("evaluation", {})
+    cfg["evaluation"].setdefault(
+        "prefix_enabled",
+        bool(cfg.get("post_finetuning", {}).get("prefix_enabled", True)),
+    )
     mode = cfg["experiment"]["ann_mode"]
     if mode == "vanilla":
         cfg["rotation"]["enabled"] = False
+        cfg["ann_training"]["prefix_enabled"] = False
         cfg["prefix"]["enabled"] = False
         cfg["replacement"]["train_mode"] = "none"
     elif mode == "unaware":
         cfg["rotation"]["enabled"] = True
-        cfg["prefix"]["enabled"] = True
+        cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
         cfg["replacement"]["train_mode"] = "none"
     elif mode == "phase_aware":
         cfg["rotation"]["enabled"] = True
-        cfg["prefix"]["enabled"] = True
+        cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
         cfg["replacement"]["train_mode"] = "phase"
     elif mode == "gif_aware":
         cfg["rotation"]["enabled"] = True
-        cfg["prefix"]["enabled"] = True
+        cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
         cfg["replacement"]["train_mode"] = "gif"
     return cfg
 
@@ -130,13 +140,21 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError(
             "rotation.regression_top1_agreement_threshold must be in [0, 1)"
         )
-    for key in ("rediscover_prefix", "recalibrate_sites", "prefix_enabled", "post_finetuning_recalibration"):
+    for key in ("rediscover_prefix", "recalibrate_sites", "post_finetuning_recalibration"):
         if not bool(cfg["post_finetuning"].get(key, False)):
             raise ValueError(f"Main experiments require post_finetuning.{key}=true")
+    for section in ("ann_training", "rotated_pre_finetuning", "post_finetuning", "evaluation"):
+        value = cfg[section].get("prefix_enabled")
+        if not isinstance(value, bool):
+            raise ValueError(f"{section}.prefix_enabled must be true or false")
 
 
 def training_prefix_enabled(cfg: dict[str, Any]) -> bool:
-    return cfg["experiment"]["ann_mode"] != "vanilla" and bool(cfg["prefix"].get("enabled", False))
+    return cfg["experiment"]["ann_mode"] != "vanilla" and bool(
+        cfg.get("ann_training", {}).get(
+            "prefix_enabled", cfg["prefix"].get("enabled", False)
+        )
+    )
 
 
 def post_finetuning_prefix_enabled(cfg: dict[str, Any]) -> bool:
@@ -145,6 +163,14 @@ def post_finetuning_prefix_enabled(cfg: dict[str, Any]) -> bool:
 def rotated_pre_finetuning_prefix_enabled(cfg: dict[str, Any]) -> bool:
     return bool(
         cfg.get("rotated_pre_finetuning", {}).get("prefix_enabled", True)
+    )
+
+
+def evaluation_prefix_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(
+        cfg.get("evaluation", {}).get(
+            "prefix_enabled", post_finetuning_prefix_enabled(cfg)
+        )
     )
 
 

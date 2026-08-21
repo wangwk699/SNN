@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import ArtifactLayout, write_json
+from .config import training_prefix_enabled
 from .controller import SiteController
 from .data import CausalLMCollator, load_selected_raw, tokenize_dataset
 from .model_integration import install_model_integration
@@ -101,6 +102,7 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
                 "packing": False,
                 "loss_tokens": "assistant/completion plus EOS only",
                 "prefix_mode": "fixed_past_key_values",
+                "prefix_enabled": training_prefix_enabled(cfg),
                 "prefix_token_ids": prefixes,
                 "prefix_loss_masked": "not_applicable_prefix_not_in_labels",
                 "chat_template": template,
@@ -132,6 +134,7 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             "best_metric": trainer.state.best_metric,
             "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
             "fused_rotation_weights_trained": bool(cfg["rotation"]["enabled"]),
+            "prefix_enabled": training_prefix_enabled(cfg),
             "train_samples": len(train_dataset),
             "validation_samples": len(validation_dataset),
             "world_size": int(os.environ.get("WORLD_SIZE", "1")),

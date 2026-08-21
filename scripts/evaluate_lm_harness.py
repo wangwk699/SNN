@@ -6,7 +6,8 @@ import torch
 
 from _common import parser, setup
 
-from snn2.artifacts import write_json
+from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
+from snn2.config import evaluation_prefix_enabled, rotated_pre_finetuning_prefix_enabled
 from snn2.controller import SiteController
 from snn2.evaluation import EvaluationModelProxy
 from snn2.logging_utils import StageRun
@@ -30,13 +31,16 @@ def main():
         allow_ann=True,
     )
 
-    eval_parser.add_argument(
+    model_variant_group = eval_parser.add_mutually_exclusive_group()
+    model_variant_group.add_argument(
         "--base",
         action="store_true",
-        help=(
-            "Evaluate the original pretrained Base model instead "
-            "of the fine-tuned ANN checkpoint"
-        ),
+        help="Evaluate the original pretrained Base model",
+    )
+    model_variant_group.add_argument(
+        "--rotated-pre-finetuning",
+        action="store_true",
+        help="Evaluate the rotated fused Base checkpoint before ANN fine-tuning",
     )
 
     args = eval_parser.parse_args()
@@ -48,7 +52,7 @@ def main():
         config_scope=(
             "base"
             if args.base
-            else "run"
+            else ("rotated_pre_finetuning" if args.rotated_pre_finetuning else "run")
         ),
     )
 
@@ -71,6 +75,29 @@ def main():
                 "--base must use a vanilla configuration"
             )
 
+    if args.rotated_pre_finetuning:
+        if args.neuron != "ann":
+            raise ValueError("--rotated-pre-finetuning can only be used with --neuron ann")
+        if not cfg["rotation"]["enabled"]:
+            raise ValueError("--rotated-pre-finetuning requires rotation.enabled=true")
+        required = [
+            layout.rotation_dir / "fused_base" / "config.json",
+            layout.rotation_dir / "rotation_state.pt",
+        ]
+        if rotated_pre_finetuning_prefix_enabled(cfg):
+            state_path = layout.rotated_pre_finetuning_prefix_dir / "prefix_state.json"
+            required.append(state_path)
+            if state_path.exists() and read_json(state_path).get("prefix_token_ids", []):
+                required.append(layout.rotated_pre_finetuning_prefix_dir / "prefixed_key_values.pt")
+        missing = [str(path) for path in required if not path.exists()]
+        if missing:
+            raise FileNotFoundError(
+                "Rotated pre-finetuning evaluation dependencies are missing: "
+                + ", ".join(missing)
+                + ". Run prepare_rotation.py and, when enabled, "
+                + "discover_prefix.py --stage pre_finetuning."
+            )
+
     rank = int(
         os.environ.get(
             "RANK",
@@ -78,10 +105,20 @@ def main():
         )
     )
 
+    active_prefix_enabled = (
+        False
+        if args.base
+        else (
+            rotated_pre_finetuning_prefix_enabled(cfg)
+            if args.rotated_pre_finetuning
+            else evaluation_prefix_enabled(cfg)
+        )
+    )
+
     model_variant = (
         "base"
         if args.base
-        else args.neuron
+        else ("rotated_pre_finetuning_ann" if args.rotated_pre_finetuning else args.neuron)
     )
 
     stage = (
@@ -92,7 +129,7 @@ def main():
     logs_dir = (
         layout.base_logs_dir
         if args.base
-        else layout.logs_dir
+        else (layout.rotated_pre_finetuning_logs_dir if args.rotated_pre_finetuning else layout.logs_dir)
     )
 
     with StageRun(
@@ -136,9 +173,12 @@ def main():
         #     加载 fine-tuned ann/final
         # --------------------------------------------------
         if args.base:
-            source = cfg["experiment"]["model_name"]
+            checkpoint_stage = "base_evaluation"
+        elif args.rotated_pre_finetuning:
+            checkpoint_stage = "rotated_pre_finetuning"
         else:
-            source = model_source_for_stage(cfg, layout, stage="post_finetuning")
+            checkpoint_stage = "post_finetuning"
+        source = model_source_for_stage(cfg, layout, stage=checkpoint_stage)
 
         model = load_model(
             cfg,
@@ -159,7 +199,11 @@ def main():
 
         controller = SiteController(
             mode="identity",
-            site_root=layout.post_finetuning_site_dir if not args.base else None,
+            site_root=(
+                layout.post_finetuning_site_dir
+                if not args.base and not args.rotated_pre_finetuning
+                else None
+            ),
         )
 
         steps = (
@@ -191,14 +235,22 @@ def main():
             )
 
         model_prefix_ids = prefix_ids_for_stage(
-            cfg, layout, stage="base_evaluation" if args.base else "post_finetuning"
+            cfg, layout, stage=(
+                "base_evaluation" if args.base else (
+                    "rotated_pre_finetuning" if args.rotated_pre_finetuning else "final_evaluation"
+                )
+            )
         )
 
         # Base + vanilla 时这里自然为 []
         proxy = EvaluationModelProxy(
             model,
             controller,
-            prefix_key_values_for_stage(cfg, layout, stage="base_evaluation" if args.base else "post_finetuning"),
+            prefix_key_values_for_stage(cfg, layout, stage=(
+                "base_evaluation" if args.base else (
+                    "rotated_pre_finetuning" if args.rotated_pre_finetuning else "final_evaluation"
+                )
+            )),
         )
 
         batch_size = int(
@@ -305,9 +357,13 @@ def main():
                 "base"
                 if args.base
                 else (
+                    "rotated_pre_finetuning_ann"
+                    if args.rotated_pre_finetuning
+                    else (
                     "finetuned_ann"
                     if args.neuron == "ann"
                     else f"snn_{args.neuron}"
+                    )
                 )
             ),
 
@@ -334,9 +390,18 @@ def main():
             "prefix_token_ids": (
                 model_prefix_ids
             ),
-            "prefix_stage": "base_evaluation" if args.base else "post_finetuning",
-            "post_finetuning_recalibration": False if args.base else True,
-            "calibration_root": None if args.base else str(layout.post_finetuning_site_dir),
+            "prefix_stage": (
+                "base_evaluation" if args.base else (
+                    "rotated_pre_finetuning" if args.rotated_pre_finetuning else "final_evaluation"
+                )
+            ),
+            "prefix_enabled": active_prefix_enabled,
+            "post_finetuning_recalibration": not args.base and not args.rotated_pre_finetuning,
+            "calibration_root": (
+                None
+                if args.base or args.rotated_pre_finetuning
+                else str(layout.post_finetuning_site_dir)
+            ),
 
             # 保存全部原始 execution counter
             "execution_counter": (
@@ -378,6 +443,9 @@ def main():
                 layout.base_dir
             )
 
+        elif args.rotated_pre_finetuning:
+            model_output_dir = layout.rotated_pre_finetuning_dir
+
         elif args.neuron == "ann":
             model_output_dir = (
                 layout.ann_dir
@@ -395,6 +463,9 @@ def main():
             / "evaluation"
             / "lm_harness"
         )
+
+        if not args.base:
+            output_dir = output_dir / prefix_enabled_dirname(active_prefix_enabled)
 
         if rank == 0:
             write_json(

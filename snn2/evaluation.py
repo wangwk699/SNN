@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from .artifacts import prefix_enabled_dirname
 from .controller import SiteController
 from .model_integration import temporal_forward
 from .prefix_cache import install_prefix_kv_forward
@@ -35,7 +36,8 @@ def resolve_tldr_evaluation_layout(
 
 
 def rotated_pre_finetuning_prefix_dirname(enabled: bool) -> str:
-    return "prefix_enabled_ture" if enabled else "prefix_enabled_false"
+    """Backward-compatible alias for the general Prefix result suffix."""
+    return prefix_enabled_dirname(enabled)
 
 def _update_execution_counter(
     counter: dict[str, int] | None,

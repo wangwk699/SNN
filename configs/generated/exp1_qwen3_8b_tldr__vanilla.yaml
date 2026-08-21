@@ -30,6 +30,8 @@ prefix:
   outlier_threshold: 64.0
   detection_activation: down_proj_input
   loss_masked: true
+ann_training:
+  prefix_enabled: false
 post_finetuning:
   rediscover_prefix: true
   recalibrate_sites: true
@@ -97,6 +99,7 @@ training:
   tldr_train_samples: null
   tldr_train_seed: 42
 evaluation:
+  prefix_enabled: true
   batch_size: 8
   max_new_tokens: 32
   tldr_input_length: 512

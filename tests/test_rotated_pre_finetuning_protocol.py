@@ -49,10 +49,11 @@ def test_rotated_pre_finetuning_paths_are_model_shared(mode, learning_rate):
     )
     assert layout.rotated_pre_finetuning_config_dir.parent == layout.rotated_pre_finetuning_dir
     assert layout.rotated_pre_finetuning_logs_dir.parent == layout.rotated_pre_finetuning_dir
-    assert layout.rotated_pre_finetuning_prefix_dir.parent == layout.rotated_pre_finetuning_dir
+    assert layout.rotated_pre_finetuning_prefix_dir == layout.ann_training_prefix_dir
+    assert str(layout.ann_training_prefix_dir).endswith("rotated_prefix/pre_finetuning_prefix")
 
 
-def test_rotated_pre_finetuning_stage_uses_only_its_own_prefix(tmp_path):
+def test_rotated_pre_finetuning_stage_uses_shared_pre_finetuning_prefix(tmp_path):
     cfg = _cfg()
     cfg["experiment"]["output_root"] = str(tmp_path)
     layout = ArtifactLayout(cfg)
@@ -71,12 +72,7 @@ def test_rotated_pre_finetuning_stage_uses_only_its_own_prefix(tmp_path):
     (layout.post_finetuning_prefix_dir / "prefix_state.json").write_text(
         json.dumps({"prefix_token_ids": [88]}), encoding="utf-8"
     )
-    layout.rotated_pre_finetuning_prefix_dir.mkdir(parents=True)
-    (layout.rotated_pre_finetuning_prefix_dir / "prefix_state.json").write_text(
-        json.dumps({"prefix_token_ids": [7]}), encoding="utf-8"
-    )
-
-    assert prefix_ids_for_stage(cfg, layout, stage="rotated_pre_finetuning") == [7]
+    assert prefix_ids_for_stage(cfg, layout, stage="rotated_pre_finetuning") == [99]
     with pytest.raises(FileNotFoundError, match="fixed KV cache"):
         prefix_key_values_for_stage(cfg, layout, stage="rotated_pre_finetuning")
 
