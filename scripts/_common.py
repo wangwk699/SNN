@@ -37,6 +37,8 @@ def setup(config_path: str, config_scope: str = "run"):
         config_dir = layout.shared_task_config_dir
     elif config_scope == "policy_shared":
         config_dir = layout.policy_config_dir
+    elif config_scope == "rotated_pre_finetuning":
+        config_dir = layout.rotated_pre_finetuning_config_dir
     elif config_scope == "run":
         config_dir = layout.config_dir
     elif config_scope == "base":

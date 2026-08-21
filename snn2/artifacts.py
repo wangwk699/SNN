@@ -80,6 +80,27 @@ class ArtifactLayout:
         return self.shared_model_root / "rotated_prefix" / "ann_training_prefix"
 
     @property
+    def rotated_pre_finetuning_dir(self) -> Path:
+        """Shared artifacts for evaluating the rotated Base before ANN fine-tuning."""
+        return self.shared_model_root / "rotated_prefix" / "rotated_pre_finetuning"
+
+    @property
+    def rotated_pre_finetuning_config_dir(self) -> Path:
+        return self.rotated_pre_finetuning_dir / "config"
+
+    @property
+    def rotated_pre_finetuning_logs_dir(self) -> Path:
+        return self.rotated_pre_finetuning_dir / "logs"
+
+    @property
+    def rotated_pre_finetuning_prefix_dir(self) -> Path:
+        return self.rotated_pre_finetuning_dir / "prefix"
+
+    @property
+    def rotated_pre_finetuning_evaluation_dir(self) -> Path:
+        return self.rotated_pre_finetuning_dir / "evaluation"
+
+    @property
     def ann_training_calibration_dir(self) -> Path:
         return self.shared_model_root / "rotated_prefix" / "ann_training_calibration"
 
@@ -148,6 +169,10 @@ class ArtifactLayout:
             self.shared_task_logs_dir,
             self.rotation_dir,
             self.ann_training_prefix_dir,
+            self.rotated_pre_finetuning_config_dir,
+            self.rotated_pre_finetuning_logs_dir,
+            self.rotated_pre_finetuning_prefix_dir,
+            self.rotated_pre_finetuning_evaluation_dir,
             self.ann_training_calibration_dir,
             self.ann_training_site_dir,
             self.vanilla_analysis_calibration_dir,

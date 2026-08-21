@@ -19,6 +19,8 @@ def model_source(cfg: dict[str, Any], layout: ArtifactLayout, ann: bool = False)
 def model_source_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: str) -> str:
     if stage in {"ann_training", "pre_finetuning"}:
         return str(layout.rotation_dir / "fused_base") if cfg["rotation"]["enabled"] else cfg["experiment"]["model_name"]
+    if stage == "rotated_pre_finetuning":
+        return str(layout.rotation_dir / "fused_base")
     if stage in {"vanilla_analysis", "base_evaluation"}:
         return cfg["experiment"]["model_name"]
     if stage == "post_finetuning":
@@ -86,6 +88,10 @@ def prefix_ids_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: 
         if not post_finetuning_prefix_enabled(cfg):
             return []
         path = layout.post_finetuning_prefix_dir / "prefix_state.json"
+    elif stage == "rotated_pre_finetuning":
+        if not bool(cfg["rotation"]["enabled"]):
+            return []
+        path = layout.rotated_pre_finetuning_prefix_dir / "prefix_state.json"
     elif stage in {"vanilla_analysis", "base_evaluation"}:
         return []
     else:
@@ -102,7 +108,14 @@ def prefix_key_values_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, 
     ids = prefix_ids_for_stage(cfg, layout, stage=stage)
     if not ids:
         return None
-    directory = layout.ann_training_prefix_dir if stage == "ann_training" else layout.post_finetuning_prefix_dir
+    if stage == "ann_training":
+        directory = layout.ann_training_prefix_dir
+    elif stage == "rotated_pre_finetuning":
+        directory = layout.rotated_pre_finetuning_prefix_dir
+    elif stage == "post_finetuning":
+        directory = layout.post_finetuning_prefix_dir
+    else:
+        raise ValueError(f"Unknown prefix stage: {stage}")
     path = directory / "prefixed_key_values.pt"
     if not path.exists():
         raise FileNotFoundError(f"Prefix is enabled but fixed KV cache is missing: {path}. Re-run scripts/discover_prefix.py.")

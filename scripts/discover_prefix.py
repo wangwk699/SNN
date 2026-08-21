@@ -13,14 +13,41 @@ from snn2.prefix_cache import build_prefix_key_values, save_prefix_key_values
 
 def main():
     arg_parser = parser("Discover fixed PrefixQuant tokens")
-    arg_parser.add_argument("--stage", required=True, choices=("ann_training", "post_finetuning"))
+    arg_parser.add_argument(
+        "--stage",
+        required=True,
+        choices=("ann_training", "rotated_pre_finetuning", "post_finetuning"),
+    )
     args = arg_parser.parse_args()
-    cfg, layout = setup(args.config, config_scope="policy_shared" if args.stage == "ann_training" else "run")
-    with StageRun(f"discover_prefix_{args.stage}", layout.policy_logs_dir if args.stage == "ann_training" else layout.logs_dir, cfg["experiment"]) as run:
+    config_scope = {
+        "ann_training": "policy_shared",
+        "rotated_pre_finetuning": "rotated_pre_finetuning",
+        "post_finetuning": "run",
+    }[args.stage]
+    cfg, layout = setup(args.config, config_scope=config_scope)
+    logs_dir = {
+        "ann_training": layout.policy_logs_dir,
+        "rotated_pre_finetuning": layout.rotated_pre_finetuning_logs_dir,
+        "post_finetuning": layout.logs_dir,
+    }[args.stage]
+    with StageRun(f"discover_prefix_{args.stage}", logs_dir, cfg["experiment"]) as run:
         if args.stage == "ann_training":
             if not cfg["rotation"]["enabled"] or not training_prefix_enabled(cfg):
                 raise ValueError("ann_training prefix requires a rotated non-vanilla config")
             output_dir = layout.ann_training_prefix_dir
+        elif args.stage == "rotated_pre_finetuning":
+            if not bool(cfg["rotation"]["enabled"]):
+                raise ValueError("rotated_pre_finetuning prefix requires rotation.enabled=true")
+            fused_config = layout.rotation_dir / "fused_base" / "config.json"
+            rotation_state_path = layout.rotation_dir / "rotation_state.pt"
+            missing = [path for path in (fused_config, rotation_state_path) if not path.exists()]
+            if missing:
+                raise FileNotFoundError(
+                    "Rotated pre-finetuning prefix requires rotation artifacts. "
+                    "Run `python scripts/prepare_rotation.py --config ...` first. "
+                    f"Missing: {', '.join(str(path) for path in missing)}"
+                )
+            output_dir = layout.rotated_pre_finetuning_prefix_dir
         else:
             if not post_finetuning_prefix_enabled(cfg):
                 raise ValueError("post-finetuning prefix is required by the main protocol")
