@@ -20,22 +20,35 @@ class SiteController:
 
     def _load(self, layer_index: int, site_index: int) -> dict[str, torch.nn.Module]:
         key = site_key(layer_index, site_index)
-        if key in self._modules:
-            return self._modules[key]
         if self.site_root is None:
             raise RuntimeError("A calibration site_root is required for replacement/deployment")
+
+        if self.mode == "phase":
+            required = ("phase", "clip")
+        elif self.mode == "gif":
+            required = ("gif", "clip")
+        elif self.mode.startswith("deploy_"):
+            neuron = self.mode.removeprefix("deploy_")
+            if neuron not in {"phase", "gif", "mtn"}:
+                raise ValueError(f"Unknown deployment neuron: {neuron}")
+            required = (neuron,)
+        else:
+            raise ValueError(f"Mode {self.mode!r} does not load calibration states")
+
         directory = self.site_root / key
-        states = {
-            name: torch.load(directory / f"{name}_state.pt", map_location="cpu", weights_only=False)
-            for name in ("phase", "gif", "mtn", "clip")
+        modules = self._modules.setdefault(key, {})
+        factories = {
+            "phase": PhaseSurrogate,
+            "gif": StaticGIF,
+            "mtn": MultiThresholdNeuron,
+            "clip": Clipper,
         }
-        modules: dict[str, torch.nn.Module] = {
-            "phase": PhaseSurrogate(states["phase"]),
-            "gif": StaticGIF(states["gif"]),
-            "mtn": MultiThresholdNeuron(states["mtn"]),
-            "clip": Clipper(states["clip"]),
-        }
-        self._modules[key] = modules
+        for name in required:
+            if name not in modules:
+                state = torch.load(
+                    directory / f"{name}_state.pt", map_location="cpu", weights_only=False
+                )
+                modules[name] = factories[name](state)
         return modules
 
     def set_deployment(self, neuron: str) -> int:
@@ -44,18 +57,14 @@ class SiteController:
         self.mode = f"deploy_{neuron}"
         if self.site_root is None:
             raise RuntimeError("Deployment requires site_root")
-        first = next(self.site_root.glob("layer_*/site_*/phase_state.pt"), None)
+        state_name = f"{neuron}_state.pt"
+        first = next(self.site_root.glob(f"layer_*/site_*/{state_name}"), None)
         if first is None:
-            raise FileNotFoundError(f"No calibration states under {self.site_root}")
-        directory = first.parent
-        if neuron == "phase":
-            state = torch.load(directory / "phase_state.pt", map_location="cpu", weights_only=False)
-            self.temporal_steps = int(state["T"])
-        elif neuron == "mtn":
-            state = torch.load(directory / "mtn_state.pt", map_location="cpu", weights_only=False)
+            raise FileNotFoundError(f"No {state_name} files under {self.site_root}")
+        state = torch.load(first, map_location="cpu", weights_only=False)
+        if neuron in {"phase", "mtn"}:
             self.temporal_steps = int(state["T"])
         else:
-            state = torch.load(directory / "gif_state.pt", map_location="cpu", weights_only=False)
             self.temporal_steps = 2 ** int(state["add_bits"])
         return self.temporal_steps
 

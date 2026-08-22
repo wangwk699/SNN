@@ -3,12 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import torch
-
-from .config import post_finetuning_prefix_enabled
 from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
-from .sites import SITE_COUNT, SITE_TOPOLOGY_VERSION, topology_metadata, validate_site_topology
+from .config import post_finetuning_prefix_enabled
 from .controller import SiteController
+from .sites import SITE_COUNT, SITE_TOPOLOGY_VERSION, topology_metadata, validate_site_topology
 
 
 def validate_calibration(site_root: str | Path) -> dict[str, Any]:
@@ -16,12 +14,15 @@ def validate_calibration(site_root: str | Path) -> dict[str, Any]:
     site_sets = validate_site_topology(root)
     sites = sorted(path for path in root.glob("layer_*/site_*") if path.is_dir())
     for directory in sites:
-        for name in ("statistics.pt", "phase_state.pt", "gif_state.pt", "mtn_state.pt", "clip_state.pt"):
+        for name in ("statistics.pt", "phase_state.pt", "gif_state.pt", "mtn_state.pt"):
             if not (directory / name).exists():
                 raise FileNotFoundError(directory / name)
-        clip = torch.load(directory / "clip_state.pt", map_location="cpu", weights_only=False)
-        if torch.any(clip["lower"] >= clip["upper"]):
-            raise ValueError(f"Invalid clipping interval: {directory}")
+        clip_path = directory / "clip_state.pt"
+        if clip_path.exists():
+            raise ValueError(
+                "Post-finetuning conversion calibration must not contain "
+                f"clip_state.pt; re-run post_finetuning calibration: {clip_path}"
+            )
     manifest_path = root / "calibration_state_manifest.json"
     if manifest_path.exists():
         manifest = read_json(manifest_path)
@@ -64,6 +65,7 @@ def validate_post_finetuning_prefix(layout: ArtifactLayout, enabled: bool = True
         "prefix_kv_sha256": sha256_file(kv_path) if token_ids else None,
     }
 
+
 def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) -> dict[str, Any]:
     prefix_enabled = post_finetuning_prefix_enabled(cfg)
     prefix = validate_post_finetuning_prefix(layout, enabled=prefix_enabled)
@@ -85,9 +87,11 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
         manifest.get("purpose") != "post_finetuning_conversion_calibration"
         or not manifest.get("eligible_for_conversion")
         or not manifest.get("post_finetuning_recalibration")
+        or manifest.get("state_profile") != "snn_conversion_without_common_clip"
+        or manifest.get("common_clip_required") is not False
     ):
         raise ValueError(
-            "Conversion requires post_finetuning_conversion_calibration eligible for conversion"
+            "Conversion requires post-finetuning calibration without common clipping"
         )
     if manifest.get("prefix_enabled") != prefix_enabled:
         raise ValueError(
@@ -118,6 +122,7 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
         "prefix_state_sha256": prefix["prefix_state_sha256"],
         "prefix_kv_sha256": prefix["prefix_kv_sha256"],
         "post_finetuning_recalibration": True,
+        "common_clip_applied": False,
         "prefix_root": prefix["prefix_root"],
         "calibration_validation": validation,
         **topology_metadata(),
