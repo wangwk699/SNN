@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
 from .config import post_finetuning_prefix_enabled, training_prefix_enabled
 from .data import CausalLMCollator, tokenize_dataset
+from .neurons import gif_high_qmax
 from .sites import SITE_COUNT, SITE_TOPOLOGY_VERSION, topology_metadata, validate_site_topology
 from .stats import StatisticsStore
 from .prefix_cache import install_prefix_kv_forward
@@ -96,8 +97,11 @@ def _group_reduce(vector: torch.Tensor, group_size: int, reduction: str) -> torc
     raise ValueError(reduction)
 
 
-def _qparams(minimum: torch.Tensor, maximum: torch.Tensor, bits: int):
-    qmin, qmax = 0, 2**bits - 1
+def _qparams(
+    minimum: torch.Tensor, maximum: torch.Tensor, bits: int, *, qmax: int | None = None
+):
+    qmin = 0
+    qmax = 2**bits - 1 if qmax is None else int(qmax)
     scale = ((maximum - minimum) / (qmax - qmin)).clamp_min(1e-8)
     zero = torch.round(qmin - minimum / scale).clamp(qmin, qmax)
     representable_min = (qmin - zero) * scale
@@ -143,9 +147,13 @@ def build_site_states(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[s
 
     gif_cfg = cfg["gif"]
     base_bits = int(gif_cfg["base_bits"])
-    high_bits = base_bits + int(gif_cfg["add_bits"])
+    add_bits = int(gif_cfg["add_bits"])
+    high_bits = base_bits + add_bits
+    high_qmax = gif_high_qmax(base_bits, add_bits)
     low_scale, low_zero, low_min, low_max = _qparams(minimum, maximum, base_bits)
-    high_scale, high_zero, high_min, high_max = _qparams(minimum, maximum, high_bits)
+    high_scale, high_zero, high_min, high_max = _qparams(
+        minimum, maximum, high_bits, qmax=high_qmax
+    )
     low_ratio = float(gif_cfg["low_ratio"])
     observed_indices = torch.nonzero(observed, as_tuple=False).flatten()
     low_channels = int(math.floor(low_ratio * observed_indices.numel()))
@@ -160,6 +168,7 @@ def build_site_states(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[s
         "format_version": 1,
         "base_bits": base_bits,
         "add_bits": int(gif_cfg["add_bits"]),
+        "high_qmax": high_qmax,
         "low_ratio": low_ratio,
         "group_size": runtime_group_size,
         "low_scale": low_scale.float(),
@@ -172,7 +181,7 @@ def build_site_states(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[s
         "saliency_observed": observed,
         "variable_key_position_mask": variable_channels,
         "unobserved_position_policy": "low_bit" if variable_channels else "not_applicable",
-        "integer_decomposition": "unsigned_q_in_base_bit_chunks_then_subtract_zero_once",
+        "integer_decomposition": "unsigned_q_capped_to_temporal_capacity_then_subtract_zero_once",
         "scale_initialization": "direct_min_max",
         "mse_refinement": False,
         "original_spikellm_dynamic_quantization": False,

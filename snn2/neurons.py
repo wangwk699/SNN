@@ -7,6 +7,13 @@ import torch
 from torch import nn
 
 
+def gif_high_qmax(base_bits: int, add_bits: int) -> int:
+    """Largest unsigned integer representable by all GIF temporal chunks."""
+    step_qmax = 2**int(base_bits) - 1
+    temporal_steps = 2**int(add_bits)
+    return step_qmax * temporal_steps
+
+
 def _channel_values(x: torch.Tensor, values: torch.Tensor, group_size: int) -> torch.Tensor:
     if group_size <= 0 and values.numel() == 1:
         return values.to(device=x.device, dtype=x.dtype).view(*([1] * x.ndim))
@@ -80,6 +87,13 @@ class StaticGIF(nn.Module):
         self.base_bits = int(state["base_bits"])
         self.add_bits = int(state["add_bits"])
         self.group_size = int(state["group_size"])
+        self.high_qmax = gif_high_qmax(self.base_bits, self.add_bits)
+        configured_high_qmax = int(state.get("high_qmax", self.high_qmax))
+        if configured_high_qmax != self.high_qmax:
+            raise ValueError(
+                f"GIF high_qmax={configured_high_qmax} does not match temporal capacity "
+                f"{self.high_qmax}"
+            )
         self.register_buffer("low_scale", state["low_scale"].float())
         self.register_buffer("low_zero", state["low_zero"].float())
         self.register_buffer("high_scale", state["high_scale"].float())
@@ -91,11 +105,18 @@ class StaticGIF(nn.Module):
         return (x.round() - x).detach() + x
 
     def _quantize(
-        self, x: torch.Tensor, bits: int, scale_values: torch.Tensor, zero_values: torch.Tensor
+        self,
+        x: torch.Tensor,
+        bits: int,
+        scale_values: torch.Tensor,
+        zero_values: torch.Tensor,
+        *,
+        qmax: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         scale = _channel_values(x, scale_values, self.group_size).clamp_min(1e-8)
         zero = _channel_values(x, zero_values, self.group_size)
-        qmin, qmax = 0, 2**bits - 1
+        qmin = 0
+        qmax = 2**bits - 1 if qmax is None else int(qmax)
         q = (self.round_ste(x.float() / scale.float()) + zero.float()).clamp(qmin, qmax)
         dequantized = (q - zero.float()) * scale.float()
         return dequantized.to(x.dtype), q, zero.float()
@@ -103,7 +124,11 @@ class StaticGIF(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         low, _, _ = self._quantize(x, self.base_bits, self.low_scale, self.low_zero)
         high, _, _ = self._quantize(
-            x, self.base_bits + self.add_bits, self.high_scale, self.high_zero
+            x,
+            self.base_bits + self.add_bits,
+            self.high_scale,
+            self.high_zero,
+            qmax=self.high_qmax,
         )
         mask = self.mask_low.to(device=x.device)
         if mask.numel() != x.shape[-1]:
@@ -125,7 +150,11 @@ class StaticGIF(nn.Module):
         x = incoming.sum(dim=0)
         _, low_q, low_zero = self._quantize(x, self.base_bits, self.low_scale, self.low_zero)
         _, high_q, high_zero = self._quantize(
-            x, self.base_bits + self.add_bits, self.high_scale, self.high_zero
+            x,
+            self.base_bits + self.add_bits,
+            self.high_scale,
+            self.high_zero,
+            qmax=self.high_qmax,
         )
         mask = self.mask_low.to(device=x.device)
         if mask.numel() != x.shape[-1]:

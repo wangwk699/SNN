@@ -39,6 +39,26 @@ def test_static_gif_unsigned_temporal_chunks_sum_to_fake_quant():
     torch.testing.assert_close(temporal.sum(dim=0), module(x.sum(dim=0)))
 
 
+def test_static_gif_caps_high_q_to_two_base_bit_chunks():
+    state = {
+        "base_bits": 4,
+        "add_bits": 1,
+        "high_qmax": 30,
+        "group_size": -1,
+        "low_scale": torch.tensor([1.0]),
+        "low_zero": torch.tensor([0.0]),
+        "high_scale": torch.tensor([1.0]),
+        "high_zero": torch.tensor([0.0]),
+        "mask_low": torch.tensor([False]),
+    }
+    module = StaticGIF(state)
+
+    temporal = module.temporal(torch.tensor([[[[31.0]]]]))
+
+    assert temporal[:, 0, 0, 0].tolist() == [15.0, 15.0]
+    torch.testing.assert_close(temporal.sum(dim=0), module(torch.tensor([[[31.0]]])))
+
+
 def test_mtn_rejects_wrong_temporal_length():
     module = MultiThresholdNeuron(
         {
