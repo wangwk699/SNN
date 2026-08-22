@@ -9,6 +9,14 @@ from .artifacts import prefix_enabled_dirname
 from .controller import SiteController
 from .model_integration import temporal_forward
 from .prefix_cache import install_prefix_kv_forward
+from .temporal_ops import temporal_policy_metadata
+
+
+
+def deployment_policy_metadata(controller: SiteController | None) -> dict[str, object]:
+    if controller is None or not controller.mode.startswith("deploy_"):
+        return {}
+    return temporal_policy_metadata()
 
 
 
@@ -265,7 +273,9 @@ class EvaluationModelProxy(nn.Module):
 
         self.model = model
         self.controller = controller
-        install_prefix_kv_forward(self.model, prefix_key_values)
+        install_prefix_kv_forward(
+            self.model, prefix_key_values, controller=self.controller
+        )
 
         self.config = model.config
 

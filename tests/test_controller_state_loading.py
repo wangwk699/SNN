@@ -2,7 +2,45 @@ import pytest
 import torch
 
 from snn2.controller import SiteController
-from snn2.sites import site_key
+from snn2.calibration import materialize_calibration_states
+from snn2.sites import SITE_IDS, SITE_NAMES, site_key
+from snn2.temporal_ops import (
+    GIF_INTEGER_DECOMPOSITION,
+    temporal_policy_metadata,
+)
+
+
+def _header(kind):
+    return {
+        "state_kind": kind,
+        "format_version": 2,
+        "temporal_implementation_version": 2,
+    }
+
+
+def _statistics():
+    return {
+        "channels": 3,
+        "value_min": torch.full((3,), -1.0),
+        "value_max": torch.full((3,), 1.0),
+        "saliency_row_count": torch.ones(3, dtype=torch.long),
+        "saliency_sum": torch.arange(3, dtype=torch.float64),
+    }
+
+
+def _write_bundle(root):
+    for index in SITE_IDS:
+        directory = root / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
+        directory.mkdir(parents=True)
+        torch.save(_statistics(), directory / "statistics.pt")
+    cfg = {
+        "calibration": {"group_size": -1, "expected_sites_per_layer": 10},
+        "phase": {"T": 2, "base": 2.0, "surrogate_slope": 4.0, "max_spikes": 2},
+        "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
+        "mtn": {"T": 2, "K": 2, "threshold_factor": 0.75},
+    }
+    materialize_calibration_states(root, cfg, include_clip=True)
+
 
 
 def _site_directory(root):
@@ -13,6 +51,7 @@ def _site_directory(root):
 
 def _phase_state():
     return {
+        **_header("phase"),
         "T": 2,
         "base": 2.0,
         "group_size": -1,
@@ -25,8 +64,17 @@ def _phase_state():
 
 def _gif_state():
     return {
+        **_header("gif"),
         "base_bits": 4,
         "add_bits": 1,
+        "low_qmin": 0,
+        "low_qmax": 15,
+        "high_qmin": 0,
+        "high_qmax": 30,
+        "temporal_steps": 2,
+        "per_step_qmin": 0,
+        "per_step_qmax": 15,
+        "integer_decomposition": GIF_INTEGER_DECOMPOSITION,
         "group_size": -1,
         "low_scale": torch.tensor([0.1]),
         "low_zero": torch.tensor([7.0]),
@@ -38,6 +86,7 @@ def _gif_state():
 
 def _mtn_state():
     return {
+        **_header("mtn"),
         "T": 2,
         "K": 2,
         "group_size": -1,
@@ -48,9 +97,15 @@ def _mtn_state():
 
 def _clip_state():
     return {
+        **_header("clip"),
+        "gif_high_qmax": 30,
+        "gif_per_step_qmax": 15,
+        "gif_integer_decomposition": GIF_INTEGER_DECOMPOSITION,
         "group_size": -1,
         "lower": torch.tensor([-1.0]),
         "upper": torch.tensor([1.0]),
+        "gif_low_range": (torch.tensor([-1.0]), torch.tensor([1.0])),
+        "gif_high_range": (torch.tensor([-1.0]), torch.tensor([1.0])),
     }
 
 
@@ -65,15 +120,14 @@ def _clip_state():
 def test_deployment_loads_only_selected_neuron_state(
     tmp_path, neuron, state, expected_steps
 ):
-    directory = _site_directory(tmp_path)
-    torch.save(state, directory / f"{neuron}_state.pt")
+    _write_bundle(tmp_path)
     controller = SiteController(site_root=tmp_path)
 
     assert controller.set_deployment(neuron) == expected_steps
     output = controller.apply(0, 1, torch.zeros(expected_steps, 1, 3))
 
     assert output.shape == (expected_steps, 1, 3)
-    assert set(controller._modules[site_key(0, 1)]) == {neuron}
+    assert set(controller._modules[site_key(0, 1)]) == {neuron, "clip"}
 
 
 @pytest.mark.parametrize(
@@ -103,3 +157,24 @@ def test_ann_gif_still_applies_common_clip(tmp_path):
     assert torch.all(output <= 1.0)
     assert torch.all(output >= -1.0)
     assert set(controller._modules[site_key(0, 1)]) == {"gif", "clip"}
+
+def test_deployment_rejects_cross_site_temporal_step_mismatch(tmp_path):
+    _write_bundle(tmp_path)
+    path = tmp_path / site_key(0, 2) / "phase_state.pt"
+    state = torch.load(path, weights_only=False)
+    state["T"] = 3
+    torch.save(state, path)
+    with pytest.raises(ValueError, match="Inconsistent temporal steps"):
+        SiteController(site_root=tmp_path).set_deployment("phase")
+
+
+def test_deployment_rejects_manifest_policy_mismatch(tmp_path):
+    import json
+
+    _write_bundle(tmp_path)
+    path = tmp_path / "calibration_state_manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["prefix_temporal_policy"] = "full_prefix_each_timestep"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="incompatible legacy temporal"):
+        SiteController(site_root=tmp_path).set_deployment("phase")

@@ -52,6 +52,12 @@ experiments:
       group_size: -1
       expected_sites_per_layer: 10
       device_map: auto
+    deployment:
+      temporal_implementation: sparse_llm_temporal_v2
+      temporal_layout: time_major_flattened_TB
+      linear_bias_policy: first_timestep_once
+      prefix_temporal_policy: uniform_kv_divide_by_T
+      common_clip_temporal_policy: cumulative_then_difference
     phase:
       T: 4
       base: 2.0
@@ -66,6 +72,9 @@ experiments:
     gif:
       base_bits: 4
       add_bits: 1
+      high_qmax: 30
+      temporal_steps: 2
+      per_step_qmax: 15
       low_ratio: 0.9
       salient_ratio: 0.1
       scale_initialization: direct_min_max
@@ -103,14 +112,14 @@ experiments:
       logging_steps: 10
       deepspeed_config: configs/deepspeed_zero3.json
       resume_from_checkpoint: null
-      tldr_train_samples: null
+      tldr_train_samples: 10000
       tldr_train_seed: 42
     evaluation:
       prefix_enabled: true
       batch_size: 32
       max_new_tokens: 32
       tldr_input_length: 512
-      tldr_test_samples: null
+      tldr_test_samples: 128
       tldr_test_seed: 42
       rouge_types:
       - rouge1
@@ -198,6 +207,12 @@ experiments:
       group_size: -1
       expected_sites_per_layer: 10
       device_map: auto
+    deployment:
+      temporal_implementation: sparse_llm_temporal_v2
+      temporal_layout: time_major_flattened_TB
+      linear_bias_policy: first_timestep_once
+      prefix_temporal_policy: uniform_kv_divide_by_T
+      common_clip_temporal_policy: cumulative_then_difference
     phase:
       T: 4
       base: 2.0
@@ -212,6 +227,9 @@ experiments:
     gif:
       base_bits: 4
       add_bits: 1
+      high_qmax: 30
+      temporal_steps: 2
+      per_step_qmax: 15
       low_ratio: 0.9
       salient_ratio: 0.1
       scale_initialization: direct_min_max
@@ -249,7 +267,7 @@ experiments:
       logging_steps: 10
       deepspeed_config: configs/deepspeed_zero3.json
       resume_from_checkpoint: null
-      tldr_train_samples: null
+      tldr_train_samples: 10000
       tldr_train_seed: 42
     evaluation:
       prefix_enabled: true
@@ -346,6 +364,12 @@ experiments:
       group_size: -1
       expected_sites_per_layer: 10
       device_map: auto
+    deployment:
+      temporal_implementation: sparse_llm_temporal_v2
+      temporal_layout: time_major_flattened_TB
+      linear_bias_policy: first_timestep_once
+      prefix_temporal_policy: uniform_kv_divide_by_T
+      common_clip_temporal_policy: cumulative_then_difference
     phase:
       T: 4
       base: 2.0
@@ -360,6 +384,9 @@ experiments:
     gif:
       base_bits: 4
       add_bits: 1
+      high_qmax: 30
+      temporal_steps: 2
+      per_step_qmax: 15
       low_ratio: 0.9
       salient_ratio: 0.1
       scale_initialization: direct_min_max

@@ -9,6 +9,10 @@ from snn2.conversion import validate_calibration
 from snn2.sites import topology_metadata
 from snn2.evaluation import resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
+from snn2.temporal_ops import (
+    CONVERSION_METADATA_FORMAT_VERSION,
+    validate_temporal_policy,
+)
 
 
 def _require_manifest_flags(manifest, expected, label):
@@ -527,14 +531,16 @@ def main():
             ann_manifest = read_json(layout.ann_training_site_dir / "calibration_state_manifest.json")
             _require_manifest_flags(ann_manifest, {"purpose": "ann_training_calibration", "analysis_only": False, "eligible_for_ann_training": True, "eligible_for_conversion": False, "post_finetuning_recalibration": False, "state_profile": "ann_training_with_common_clip", "common_clip_required": True, "rotation_enabled": True, "prefix_protocol_enabled": training_prefix_enabled(cfg)}, "ANN-training")
             _verify_hashes(ann_manifest,"ANN-training calibration")
+            validate_temporal_policy(ann_manifest, context="ANN-training calibration manifest")
         post_manifest = read_json(layout.post_finetuning_site_dir / "calibration_state_manifest.json")
-        _require_manifest_flags(post_manifest, {"purpose": "post_finetuning_conversion_calibration", "analysis_only": False, "eligible_for_ann_training": False, "eligible_for_conversion": True, "post_finetuning_recalibration": True, "state_profile": "snn_conversion_without_common_clip", "common_clip_required": False, "prefix_protocol_enabled": post_finetuning_prefix_enabled(cfg)}, "Post-finetuning")
+        _require_manifest_flags(post_manifest, {"purpose": "post_finetuning_conversion_calibration", "analysis_only": False, "eligible_for_ann_training": False, "eligible_for_conversion": True, "post_finetuning_recalibration": True, "state_profile": "snn_conversion_with_common_clip", "common_clip_required": True, "prefix_protocol_enabled": post_finetuning_prefix_enabled(cfg)}, "Post-finetuning")
         if not post_manifest.get("source_ann_checkpoint") or not post_manifest.get("source_ann_config_sha256") or not post_manifest.get("calibration_data_manifest_sha256"):
             raise ValueError("Post-finetuning calibration lacks required final-ANN or data provenance")
         expected_rotation = bool(cfg["rotation"]["enabled"])
         if post_manifest.get("rotation_enabled") != expected_rotation:
             raise ValueError("Post-finetuning calibration rotation provenance disagrees with config")
         _verify_hashes(post_manifest, "Post-finetuning calibration")
+        validate_temporal_policy(post_manifest, context="Post-finetuning calibration manifest")
 
         conversions = {}
 
@@ -571,14 +577,36 @@ def main():
             )
 
         for neuron in ("phase", "gif", "mtn"):
-            metadata = read_json(layout.snn_conversion_dir(neuron) / "conversion_metadata.json")
+            metadata_path = layout.snn_conversion_dir(neuron) / "conversion_metadata.json"
+            metadata = read_json(metadata_path)
+            validate_temporal_policy(metadata, context=str(metadata_path))
             if (
-                not metadata.get("post_finetuning_recalibration")
-                or Path(metadata.get("calibration_root", "")).resolve() != layout.post_finetuning_site_dir.resolve()
-                or metadata.get("prefix_enabled") != post_finetuning_prefix_enabled(cfg)
-                or metadata.get("common_clip_applied") is not False
+                metadata.get("format_version") != CONVERSION_METADATA_FORMAT_VERSION
+                or not metadata.get("post_finetuning_recalibration")
+                or Path(metadata.get("calibration_root", "")).resolve()
+                != layout.post_finetuning_site_dir.resolve()
+                or metadata.get("calibration_state_manifest_sha256")
+                != sha256_file(layout.post_finetuning_site_dir / "calibration_state_manifest.json")
+                or metadata.get("prefix_enabled")
+                != post_finetuning_prefix_enabled(cfg)
+                or metadata.get("common_clip_applied") is not True
+                or metadata.get("deployment_neuron") != neuron
+                or int(metadata.get("full_temporal_steps", -1))
+                != int(calibration["temporal_steps"][neuron])
             ):
-                raise ValueError(f"Conversion does not use run-specific post-finetuning calibration: {neuron}")
+                raise ValueError(
+                    f"Conversion has incompatible temporal/calibration metadata: {neuron}"
+                )
+            metrics_path = evaluation_paths(layout.snn_dir(neuron))[0]
+            metrics = read_json(metrics_path)
+            policy_source = metrics.get("snn2_metadata", metrics)
+            validate_temporal_policy(policy_source, context=str(metrics_path))
+            if (
+                policy_source.get("neuron") != neuron
+                or int(policy_source.get("full_temporal_steps", -1))
+                != int(metadata["full_temporal_steps"])
+            ):
+                raise ValueError(f"SNN metrics disagree with conversion: {metrics_path}")
 
         if tldr_layout is not None:
             expected_count = int(tldr_layout["selected_test_samples"])

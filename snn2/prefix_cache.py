@@ -97,17 +97,55 @@ def _align_prefix_key_values(model, prefix_key_values, fallback):
     )
 
 
-def _fresh_dynamic_cache(prefix_key_values, batch_size: int):
+def _prefix_for_logical_batch(
+    tensor: torch.Tensor, logical_batch_size: int
+) -> torch.Tensor:
+    saved_batch = int(tensor.shape[0])
+    if saved_batch == 1:
+        return tensor.expand(logical_batch_size, *tensor.shape[1:])
+    if saved_batch != logical_batch_size:
+        raise ValueError(
+            f"Prefix cache batch={saved_batch} is incompatible with logical "
+            f"batch={logical_batch_size}"
+        )
+    return tensor
+
+
+def _fresh_dynamic_cache(
+    prefix_key_values,
+    *,
+    logical_batch_size: int,
+    temporal_steps: int | None = None,
+):
     from transformers.cache_utils import DynamicCache
 
-    repeated = tuple(
-        (
-            key.repeat_interleave(batch_size, dim=0),
-            value.repeat_interleave(batch_size, dim=0),
+    logical_batch_size = int(logical_batch_size)
+    if logical_batch_size <= 0:
+        raise ValueError("logical_batch_size must be positive")
+    steps = None if temporal_steps is None else int(temporal_steps)
+    if steps is not None and steps <= 0:
+        raise ValueError("temporal_steps must be positive")
+    expanded = []
+    for key, value in prefix_key_values:
+        base_key = _prefix_for_logical_batch(key, logical_batch_size)
+        base_value = _prefix_for_logical_batch(value, logical_batch_size)
+        if steps is None:
+            expanded.append((base_key, base_value))
+            continue
+        temporal_key = (
+            base_key.unsqueeze(0)
+            .expand(steps, logical_batch_size, *base_key.shape[1:])
+            .div(steps)
+            .reshape(steps * logical_batch_size, *base_key.shape[1:])
         )
-        for key, value in prefix_key_values
-    )
-    return DynamicCache.from_legacy_cache(repeated)
+        temporal_value = (
+            base_value.unsqueeze(0)
+            .expand(steps, logical_batch_size, *base_value.shape[1:])
+            .div(steps)
+            .reshape(steps * logical_batch_size, *base_value.shape[1:])
+        )
+        expanded.append((temporal_key, temporal_value))
+    return DynamicCache.from_legacy_cache(tuple(expanded))
 
 
 def _extend_attention_mask(
@@ -136,7 +174,9 @@ def _extend_attention_mask(
     return torch.cat((prefix_mask, attention_mask), dim=-1)
 
 
-def install_prefix_kv_forward(model: torch.nn.Module, prefix_key_values) -> None:
+def install_prefix_kv_forward(
+    model: torch.nn.Module, prefix_key_values, *, controller: Any | None = None
+) -> None:
     """Inject fixed Prefix K/V while leaving input_ids unchanged."""
     if not prefix_key_values:
         return
@@ -176,7 +216,20 @@ def install_prefix_kv_forward(model: torch.nn.Module, prefix_key_values) -> None
         if aligned is None:
             aligned = _align_prefix_key_values(model, frozen, device)
 
-        kwargs["past_key_values"] = _fresh_dynamic_cache(aligned, batch_size)
+        temporal_steps = None
+        logical_batch_size = batch_size
+        if controller is not None and controller.mode.startswith("deploy_"):
+            temporal_steps = int(controller.temporal_steps or 0)
+            if temporal_steps <= 0 or batch_size % temporal_steps != 0:
+                raise ValueError(
+                    "Temporal Prefix batch is incompatible with deployment steps"
+                )
+            logical_batch_size = batch_size // temporal_steps
+        kwargs["past_key_values"] = _fresh_dynamic_cache(
+            aligned,
+            logical_batch_size=logical_batch_size,
+            temporal_steps=temporal_steps,
+        )
         kwargs["attention_mask"] = _extend_attention_mask(
             kwargs.get("attention_mask"),
             batch_size=batch_size,

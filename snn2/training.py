@@ -84,7 +84,11 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             f"configured={configured_train_samples}, selected={len(bundle.train)}"
         )
     prefixes = prefix_ids_for_stage(cfg, layout, stage="ann_training")
-    install_prefix_kv_forward(model, prefix_key_values_for_stage(cfg, layout, stage="ann_training"))
+    install_prefix_kv_forward(
+        model,
+        prefix_key_values_for_stage(cfg, layout, stage="ann_training"),
+        controller=controller,
+    )
     with arguments.main_process_first(desc="tokenize train and validation datasets"):
         train_dataset = tokenize_dataset(
             bundle.train,

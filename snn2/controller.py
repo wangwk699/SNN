@@ -8,6 +8,8 @@ import torch
 from .neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, StaticGIF
 from .sites import site_key
 from .stats import StatisticsStore
+from .state_validation import validate_site_state_bundle
+from .temporal_ops import from_temporal, to_temporal
 
 
 class SiteController:
@@ -31,7 +33,7 @@ class SiteController:
             neuron = self.mode.removeprefix("deploy_")
             if neuron not in {"phase", "gif", "mtn"}:
                 raise ValueError(f"Unknown deployment neuron: {neuron}")
-            required = (neuron,)
+            required = (neuron, "clip")
         else:
             raise ValueError(f"Mode {self.mode!r} does not load calibration states")
 
@@ -54,18 +56,14 @@ class SiteController:
     def set_deployment(self, neuron: str) -> int:
         if neuron not in {"phase", "gif", "mtn"}:
             raise ValueError(neuron)
-        self.mode = f"deploy_{neuron}"
         if self.site_root is None:
             raise RuntimeError("Deployment requires site_root")
-        state_name = f"{neuron}_state.pt"
-        first = next(self.site_root.glob(f"layer_*/site_*/{state_name}"), None)
-        if first is None:
-            raise FileNotFoundError(f"No {state_name} files under {self.site_root}")
-        state = torch.load(first, map_location="cpu", weights_only=False)
-        if neuron in {"phase", "mtn"}:
-            self.temporal_steps = int(state["T"])
-        else:
-            self.temporal_steps = 2 ** int(state["add_bits"])
+        validation = validate_site_state_bundle(
+            self.site_root, require_clip=True
+        )
+        self.mode = f"deploy_{neuron}"
+        self.temporal_steps = int(validation["temporal_steps"][neuron])
+        self._bundle_validation = validation
         return self.temporal_steps
 
     def record_saliency(self, layer_index: int, site_index: int, score: torch.Tensor) -> None:
@@ -102,13 +100,17 @@ class SiteController:
         if self.mode.startswith("deploy_"):
             if self.temporal_steps is None:
                 raise RuntimeError("Call set_deployment before a temporal forward")
-            if x.shape[0] % self.temporal_steps != 0:
-                raise ValueError(
-                    f"Batch dimension {x.shape[0]} is not divisible by T={self.temporal_steps}"
-                )
-            batch = x.shape[0] // self.temporal_steps
-            temporal = x.reshape(self.temporal_steps, batch, *x.shape[1:])
+            temporal = to_temporal(x, self.temporal_steps)
             neuron = self.mode.removeprefix("deploy_")
             output = modules[neuron].temporal(temporal)
-            return output.reshape_as(x)
+            if output.shape != temporal.shape:
+                raise ValueError(
+                    f"{neuron} temporal output shape {output.shape} != input {temporal.shape}"
+                )
+            output = modules["clip"].temporal(output)
+            if output.shape != temporal.shape:
+                raise ValueError("Temporal Clip changed the site tensor shape")
+            if output.dtype != x.dtype or output.device != x.device:
+                raise ValueError("Deployment site changed dtype or device")
+            return from_temporal(output)
         raise ValueError(f"Unknown controller mode: {self.mode}")

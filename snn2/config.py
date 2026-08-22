@@ -9,6 +9,18 @@ from typing import Any
 import yaml
 
 from .sites import SITE_COUNT
+from .temporal_ops import (
+    COMMON_CLIP_TEMPORAL_POLICY,
+    GIF_ADD_BITS,
+    GIF_BASE_BITS,
+    GIF_HIGH_QMAX,
+    GIF_LOCAL_STEPS,
+    GIF_STEP_QMAX,
+    PREFIX_TEMPORAL_POLICY,
+    TEMPORAL_IMPLEMENTATION,
+    TEMPORAL_LAYOUT,
+    TEMPORAL_LINEAR_BIAS_POLICY,
+)
 
 
 ANN_MODES = {"vanilla", "unaware", "phase_aware", "gif_aware"}
@@ -73,6 +85,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
         "rotation",
         "prefix",
         "calibration",
+        "deployment",
         "phase",
         "mtn",
         "gif",
@@ -110,6 +123,38 @@ def validate_config(cfg: dict[str, Any]) -> None:
                 "training.tldr_train_samples must be a positive integer or null"
             )
         int(cfg["training"].get("tldr_train_seed", 42))
+
+    deployment = cfg["deployment"]
+    expected_deployment = {
+        "temporal_implementation": TEMPORAL_IMPLEMENTATION,
+        "temporal_layout": TEMPORAL_LAYOUT,
+        "linear_bias_policy": TEMPORAL_LINEAR_BIAS_POLICY,
+        "prefix_temporal_policy": PREFIX_TEMPORAL_POLICY,
+        "common_clip_temporal_policy": COMMON_CLIP_TEMPORAL_POLICY,
+    }
+    mismatched_deployment = {
+        key: (expected, deployment.get(key))
+        for key, expected in expected_deployment.items()
+        if deployment.get(key) != expected
+    }
+    if mismatched_deployment:
+        raise ValueError(
+            f"Unsupported temporal deployment policy: {mismatched_deployment}"
+        )
+    gif_policy = {
+        "base_bits": GIF_BASE_BITS,
+        "add_bits": GIF_ADD_BITS,
+        "high_qmax": GIF_HIGH_QMAX,
+        "temporal_steps": GIF_LOCAL_STEPS,
+        "per_step_qmax": GIF_STEP_QMAX,
+    }
+    mismatched_gif = {
+        key: (expected, cfg["gif"].get(key))
+        for key, expected in gif_policy.items()
+        if cfg["gif"].get(key) != expected
+    }
+    if mismatched_gif or 2 * int(cfg["gif"].get("per_step_qmax", -1)) != GIF_HIGH_QMAX:
+        raise ValueError(f"Unsupported GIF qmax/chunk policy: {mismatched_gif}")
 
     if int(cfg["phase"]["T"]) <= 0 or int(cfg["mtn"]["T"]) <= 0:
         raise ValueError("Neuron timesteps must be positive")

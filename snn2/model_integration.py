@@ -10,6 +10,15 @@ import torch.nn.functional as F
 from .controller import SiteController
 from .hadamard import HadamardSpec, random_hadamard
 from .rotation import get_model_parts, load_specs
+from .temporal_model import deployment_attention_forward
+from .temporal_ops import (
+    from_temporal,
+    temporal_bias_once,
+    temporal_rmsnorm,
+    temporal_silu,
+    temporal_symmetric_hadamard,
+    to_temporal,
+)
 
 
 def repeat_kv(hidden_states: torch.Tensor, groups: int) -> torch.Tensor:
@@ -43,6 +52,21 @@ def snn2_eager_attention_forward(
         # dtypes fail in the pinned FHT backend instead of silently falling back.
         query = random_hadamard(query.contiguous(), r3)
         key = random_hadamard(key.contiguous(), r3)
+
+    if controller.mode.startswith("deploy_"):
+        return deployment_attention_forward(
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            scaling=scaling,
+            dropout=dropout,
+            controller=controller,
+            layer_index=layer_index,
+            repeat_kv=repeat_kv,
+            softcap=kwargs.get("softcap"),
+        )
 
     query = controller.apply(layer_index, 2, query)
 
@@ -144,27 +168,38 @@ def register_attention_backend() -> None:
 
 def _make_mlp_forward(controller: SiteController, layer_index: int, r4: HadamardSpec | None):
     def forward(mlp, x: torch.Tensor):
-        gate = mlp.act_fn(mlp.gate_proj(x))
-        gate = controller.apply(layer_index, 8, gate)
-        up = mlp.up_proj(x)
-        up = controller.apply(layer_index, 9, up)
-        if controller.mode == "collect":
-            product_saliency = gate.square() * up.square()
-            controller.record_saliency(layer_index, 8, product_saliency)
-            controller.record_saliency(layer_index, 9, product_saliency)
-        product = gate * up
+        if controller.mode.startswith("deploy_"):
+            steps = int(controller.temporal_steps or 0)
+            gate = from_temporal(temporal_silu(to_temporal(mlp.gate_proj(x), steps)))
+            gate = controller.apply(layer_index, 8, gate)
+            up = controller.apply(layer_index, 9, mlp.up_proj(x))
+            product = from_temporal(
+                temporal_symmetric_hadamard(
+                    to_temporal(gate, steps), to_temporal(up, steps)
+                )
+            )
+        else:
+            gate = mlp.act_fn(mlp.gate_proj(x))
+            gate = controller.apply(layer_index, 8, gate)
+            up = mlp.up_proj(x)
+            up = controller.apply(layer_index, 9, up)
+            if controller.mode == "collect":
+                product_saliency = gate.square() * up.square()
+                controller.record_saliency(layer_index, 8, product_saliency)
+                controller.record_saliency(layer_index, 9, product_saliency)
+            product = gate * up
         if r4 is not None:
             product_dtype = product.dtype
-            # RoSTE-aligned R4 uses FP32 FHT compute, then casts back.
             product = random_hadamard(product.to(torch.float32), r4).to(product_dtype)
-
         product = controller.apply(layer_index, 10, product)
         return mlp.down_proj(product)
 
     return forward
 
 
-def _linear_score(inputs: torch.Tensor, output: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+def _linear_score(
+    inputs: torch.Tensor, output: torch.Tensor, weight: torch.Tensor
+) -> torch.Tensor:
     return inputs * torch.matmul(output, weight)
 
 
@@ -179,6 +214,24 @@ def record_down_proj_saliency(
     controller.record_saliency(layer_index, 10, _linear_score(inputs[0], output, weight))
 
 
+def _install_temporal_rmsnorm(
+    norm: torch.nn.Module, controller: SiteController
+) -> None:
+    if hasattr(norm, "_snn2_original_forward"):
+        raise RuntimeError("Temporal RMSNorm integration is already installed")
+    original_forward = norm.forward
+
+    def forward(module, x: torch.Tensor, *args: Any, **kwargs: Any):
+        if not controller.mode.startswith("deploy_"):
+            return original_forward(x, *args, **kwargs)
+        steps = int(controller.temporal_steps or 0)
+        return from_temporal(temporal_rmsnorm(to_temporal(x, steps), module))
+
+    norm._snn2_original_forward = original_forward
+    norm.forward = types.MethodType(forward, norm)
+
+
+
 def install_model_integration(
     model: torch.nn.Module,
     controller: SiteController,
@@ -191,6 +244,42 @@ def install_model_integration(
     handles = getattr(model, "_snn2_handles", [])
     if handles:
         raise RuntimeError("SNN2 model integration is already installed")
+
+    wrapped_norms = []
+    seen_norms: set[int] = set()
+    norm_candidates = [parts.final_norm]
+    for layer in parts.layers:
+        norm_candidates.extend(
+            [
+                layer.input_layernorm,
+                layer.post_attention_layernorm,
+                getattr(layer.self_attn, "q_norm", None),
+                getattr(layer.self_attn, "k_norm", None),
+            ]
+        )
+    for norm in norm_candidates:
+        if norm is None or id(norm) in seen_norms:
+            continue
+        seen_norms.add(id(norm))
+        _install_temporal_rmsnorm(norm, controller)
+        wrapped_norms.append(norm)
+
+    def temporal_linear_bias_hook(module, _inputs, output):
+        if not controller.mode.startswith("deploy_") or module.bias is None:
+            return output
+        return temporal_bias_once(
+            output, module.bias, int(controller.temporal_steps or 0)
+        )
+
+    seen_linears: set[int] = set()
+    for module in model.modules():
+        if (
+            isinstance(module, torch.nn.Linear)
+            and module.bias is not None
+            and id(module) not in seen_linears
+        ):
+            seen_linears.add(id(module))
+            handles.append(module.register_forward_hook(temporal_linear_bias_hook))
 
     def temporal_embedding_hook(_module, _inputs, output):
         if not controller.mode.startswith("deploy_"):
@@ -251,6 +340,7 @@ def install_model_integration(
         layer.mlp.forward = types.MethodType(_make_mlp_forward(controller, layer_index, r4), layer.mlp)
 
     model._snn2_handles = handles
+    model._snn2_wrapped_norms = wrapped_norms
     model.config._attn_implementation = "snn2_eager"
     model.config._attn_implementation_internal = "snn2_eager"
     model.config.snn2_site_integration = True
@@ -263,6 +353,8 @@ def temporal_forward(
     attention_mask: torch.Tensor,
     **kwargs: Any,
 ):
+    if model.training:
+        raise RuntimeError("Temporal deployment requires model.eval()")
     if controller.temporal_steps is None:
         raise RuntimeError("Controller deployment timestep is unset")
     steps = controller.temporal_steps

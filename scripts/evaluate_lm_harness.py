@@ -9,7 +9,8 @@ from _common import parser, setup
 from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
 from snn2.config import evaluation_prefix_enabled, rotated_pre_finetuning_prefix_enabled
 from snn2.controller import SiteController
-from snn2.evaluation import EvaluationModelProxy
+from snn2.conversion import validate_conversion_metadata
+from snn2.evaluation import EvaluationModelProxy, deployment_policy_metadata
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
 from snn2.sites import SITE_COUNT, SITE_TOPOLOGY_VERSION
@@ -97,6 +98,9 @@ def main():
                 + ". Run prepare_rotation.py and, when enabled, "
                 + "discover_prefix.py --stage pre_finetuning."
             )
+
+    if args.neuron != "ann" and not args.base and not args.rotated_pre_finetuning:
+        validate_conversion_metadata(cfg, layout, args.neuron)
 
     rank = int(
         os.environ.get(
@@ -384,6 +388,7 @@ def main():
             "site_count": SITE_COUNT,
 
             "site_topology_version": SITE_TOPOLOGY_VERSION,
+            **deployment_policy_metadata(controller),
 
             "batch_size": batch_size,
 

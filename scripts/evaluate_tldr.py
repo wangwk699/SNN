@@ -11,6 +11,7 @@ from _common import parser, setup
 from tqdm.auto import tqdm
 from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
 from snn2.controller import SiteController
+from snn2.conversion import validate_conversion_metadata
 from snn2.config import evaluation_prefix_enabled, rotated_pre_finetuning_prefix_enabled
 from snn2.data import (
     encode_tldr_generation_prompt,
@@ -19,6 +20,7 @@ from snn2.data import (
 )
 from snn2.evaluation import (
     greedy_generate,
+    deployment_policy_metadata,
     resolve_tldr_evaluation_layout,
 )
 from snn2.logging_utils import StageRun
@@ -134,6 +136,9 @@ def main():
                 "--base must use a vanilla configuration"
             )
 
+    if args.neuron != "ann" and not args.base and not args.rotated_pre_finetuning:
+        validate_conversion_metadata(cfg, layout, args.neuron)
+
     if args.rotated_pre_finetuning:
         if args.neuron != "ann":
             raise ValueError("--rotated-pre-finetuning can only be used with --neuron ann")
@@ -232,6 +237,7 @@ def main():
         install_prefix_kv_forward(
             model,
             prefix_key_values_for_stage(cfg, layout, stage=prefix_stage),
+            controller=controller,
         )
 
         evaluation = load_selected_raw(cfg, layout).evaluation
@@ -500,6 +506,7 @@ def main():
                     "full_temporal_steps": steps,
                     "site_count": SITE_COUNT,
                     "site_topology_version": SITE_TOPOLOGY_VERSION,
+                    **deployment_policy_metadata(controller),
                     "decode": "greedy",
                     "input_length": input_length,
                     "max_new_tokens": max_new,

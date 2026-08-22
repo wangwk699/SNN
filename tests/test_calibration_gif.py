@@ -25,4 +25,4 @@ def test_gif_high_qparams_use_two_chunk_capacity():
         state["high_scale"], torch.tensor([2.0 / 30.0]), rtol=1e-6, atol=1e-8
     )
     torch.testing.assert_close(state["high_zero"], torch.tensor([15.0]))
-    assert state["integer_decomposition"].startswith("unsigned_q_capped")
+    assert state["integer_decomposition"] == "two_unsigned_chunks_each_0_to_15_high_qmax_30"

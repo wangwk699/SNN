@@ -14,6 +14,19 @@ from .data import CausalLMCollator, tokenize_dataset
 from .neurons import gif_high_qmax
 from .sites import SITE_COUNT, SITE_TOPOLOGY_VERSION, topology_metadata, validate_site_topology
 from .stats import StatisticsStore
+from .temporal_ops import (
+    CALIBRATION_MANIFEST_FORMAT_VERSION,
+    GIF_ADD_BITS,
+    GIF_BASE_BITS,
+    GIF_HIGH_QMAX,
+    GIF_INTEGER_DECOMPOSITION,
+    GIF_LOCAL_STEPS,
+    GIF_LOW_QMAX,
+    GIF_STEP_QMAX,
+    SITE_STATE_FORMAT_VERSION,
+    TEMPORAL_IMPLEMENTATION_VERSION,
+    temporal_policy_metadata,
+)
 from .prefix_cache import install_prefix_kv_forward
 
 
@@ -56,7 +69,7 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
     state_profile = {
         "ann_training": "ann_training_with_common_clip",
         "vanilla_analysis": "analysis_statistics_only",
-        "post_finetuning": "snn_conversion_without_common_clip",
+        "post_finetuning": "snn_conversion_with_common_clip",
     }[stage]
     return {
         "purpose": purpose,
@@ -65,7 +78,7 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "eligible_for_conversion": post,
         "post_finetuning_recalibration": post,
         "state_profile": state_profile,
-        "common_clip_required": stage == "ann_training",
+        "common_clip_required": stage in {"ann_training", "post_finetuning"},
         "source_model_stage": "original_pretrained_base" if stage == "vanilla_analysis" else ("rotated_fused_base" if stage == "ann_training" else "final_ann_checkpoint"),
         "source_ann_mode": cfg["experiment"]["ann_mode"] if post else None,
         "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()) if post else None,
@@ -105,10 +118,15 @@ def _group_reduce(vector: torch.Tensor, group_size: int, reduction: str) -> torc
 
 
 def _qparams(
-    minimum: torch.Tensor, maximum: torch.Tensor, bits: int, *, qmax: int | None = None
+    minimum: torch.Tensor,
+    maximum: torch.Tensor,
+    *,
+    qmin: int,
+    qmax: int,
 ):
-    qmin = 0
-    qmax = 2**bits - 1 if qmax is None else int(qmax)
+    qmin, qmax = int(qmin), int(qmax)
+    if qmin != 0 or qmax <= qmin:
+        raise ValueError(f"Invalid unsigned quantization range [{qmin}, {qmax}]")
     scale = ((maximum - minimum) / (qmax - qmin)).clamp_min(1e-8)
     zero = torch.round(qmin - minimum / scale).clamp(qmin, qmax)
     representable_min = (qmin - zero) * scale
@@ -147,7 +165,9 @@ def build_site_states(
     phase_cfg = cfg["phase"]
     phase_tau = absolute.float()
     phase_state = {
-        "format_version": 1,
+        "state_kind": "phase",
+        "format_version": SITE_STATE_FORMAT_VERSION,
+        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
         "T": int(phase_cfg["T"]),
         "base": float(phase_cfg["base"]),
         "surrogate_slope": float(phase_cfg["surrogate_slope"]),
@@ -160,11 +180,10 @@ def build_site_states(
     gif_cfg = cfg["gif"]
     base_bits = int(gif_cfg["base_bits"])
     add_bits = int(gif_cfg["add_bits"])
-    high_bits = base_bits + add_bits
-    high_qmax = gif_high_qmax(base_bits, add_bits)
-    low_scale, low_zero, low_min, low_max = _qparams(minimum, maximum, base_bits)
+    gif_high_qmax(base_bits, add_bits)
+    low_scale, low_zero, low_min, low_max = _qparams(minimum, maximum, qmin=0, qmax=GIF_LOW_QMAX)
     high_scale, high_zero, high_min, high_max = _qparams(
-        minimum, maximum, high_bits, qmax=high_qmax
+        minimum, maximum, qmin=0, qmax=GIF_HIGH_QMAX
     )
     low_ratio = float(gif_cfg["low_ratio"])
     observed_indices = torch.nonzero(observed, as_tuple=False).flatten()
@@ -177,10 +196,18 @@ def build_site_states(
         mask_low[observed_indices] = False
     mask_low[ordering[:low_channels]] = True
     gif_state = {
-        "format_version": 1,
+        "state_kind": "gif",
+        "format_version": SITE_STATE_FORMAT_VERSION,
+        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
         "base_bits": base_bits,
         "add_bits": int(gif_cfg["add_bits"]),
-        "high_qmax": high_qmax,
+        "low_qmin": 0,
+        "low_qmax": GIF_LOW_QMAX,
+        "high_qmin": 0,
+        "high_qmax": GIF_HIGH_QMAX,
+        "temporal_steps": GIF_LOCAL_STEPS,
+        "per_step_qmin": 0,
+        "per_step_qmax": GIF_STEP_QMAX,
         "low_ratio": low_ratio,
         "group_size": runtime_group_size,
         "low_scale": low_scale.float(),
@@ -193,7 +220,7 @@ def build_site_states(
         "saliency_observed": observed,
         "variable_key_position_mask": variable_channels,
         "unobserved_position_policy": "low_bit" if variable_channels else "not_applicable",
-        "integer_decomposition": "unsigned_q_capped_to_temporal_capacity_then_subtract_zero_once",
+        "integer_decomposition": GIF_INTEGER_DECOMPOSITION,
         "scale_initialization": "direct_min_max",
         "mse_refinement": False,
         "original_spikellm_dynamic_quantization": False,
@@ -201,7 +228,9 @@ def build_site_states(
 
     mtn_cfg = cfg["mtn"]
     mtn_state = {
-        "format_version": 1,
+        "state_kind": "mtn",
+        "format_version": SITE_STATE_FORMAT_VERSION,
+        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
         "T": int(mtn_cfg["T"]),
         "K": int(mtn_cfg["K"]),
         "group_size": runtime_group_size,
@@ -222,7 +251,12 @@ def build_site_states(
         bad = torch.nonzero(lower >= upper, as_tuple=False).flatten().tolist()
         raise ValueError(f"Invalid common clipping interval in groups {bad}")
     clip_state = {
-        "format_version": 1,
+        "state_kind": "clip",
+        "format_version": SITE_STATE_FORMAT_VERSION,
+        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
+        "gif_high_qmax": GIF_HIGH_QMAX,
+        "gif_per_step_qmax": GIF_STEP_QMAX,
+        "gif_integer_decomposition": GIF_INTEGER_DECOMPOSITION,
         "group_size": runtime_group_size,
         "lower": lower.float(),
         "upper": upper.float(),
@@ -242,7 +276,13 @@ def materialize_calibration_states(
     include_clip: bool,
 ) -> dict[str, Any]:
     root = Path(site_root)
-    manifest: dict[str, Any] = {"format_version": 1, **topology_metadata(), "sites": {}, **(metadata or {})}
+    manifest: dict[str, Any] = {
+        "format_version": CALIBRATION_MANIFEST_FORMAT_VERSION,
+        **topology_metadata(),
+        **(metadata or {}),
+        **temporal_policy_metadata(),
+        "sites": {},
+    }
     for statistics_path in sorted(root.glob("layer_*/site_*/statistics.pt")):
         directory = statistics_path.parent
         key = directory.relative_to(root).as_posix()
@@ -259,6 +299,9 @@ def materialize_calibration_states(
             "mtn_K_positive_and_negative": states["mtn"]["K"],
             "gif_base_bits": states["gif"]["base_bits"],
             "gif_add_bits": states["gif"]["add_bits"],
+            "gif_high_qmax": states["gif"]["high_qmax"],
+            "gif_temporal_steps": states["gif"]["temporal_steps"],
+            "gif_per_step_qmax": states["gif"]["per_step_qmax"],
             "gif_low_ratio": states["gif"]["low_ratio"],
             "group_size": states["phase"]["group_size"],
             "clip_state_present": include_clip,
@@ -323,7 +366,7 @@ def collect_site_statistics(
     controller.statistics = StatisticsStore(
         max_channels_by_site={5: int(cfg["data"]["max_seq_length"])}
     )
-    install_prefix_kv_forward(model, prefix_key_values)
+    install_prefix_kv_forward(model, prefix_key_values, controller=controller)
     model.eval()
     device = next(model.parameters()).device
     for batch in loader:
@@ -338,7 +381,7 @@ def collect_site_statistics(
     state_profile = {
         "ann_training_calibration": "ann_training_with_common_clip",
         "vanilla_analysis_calibration": "analysis_statistics_only",
-        "post_finetuning_conversion_calibration": "snn_conversion_without_common_clip",
+        "post_finetuning_conversion_calibration": "snn_conversion_with_common_clip",
     }[purpose]
     metadata = {
         "purpose": purpose,
@@ -347,7 +390,7 @@ def collect_site_statistics(
         "eligible_for_conversion": eligible_conversion,
         "post_finetuning_recalibration": eligible_conversion,
         "state_profile": state_profile,
-        "common_clip_required": eligible_ann,
+        "common_clip_required": eligible_ann or eligible_conversion,
         "source_model_stage": None,
         "source_ann_mode": None,
         "source_ann_checkpoint": None,
@@ -376,10 +419,16 @@ def collect_site_statistics(
             site_root,
             cfg,
             metadata,
-            include_clip=eligible_ann,
+            include_clip=eligible_ann or eligible_conversion,
         )
         if materialize_states
-        else {"format_version": 1, **topology_metadata(), **metadata, "sites": {}}
+        else {
+            "format_version": CALIBRATION_MANIFEST_FORMAT_VERSION,
+            **topology_metadata(),
+            **metadata,
+            **temporal_policy_metadata(),
+            "sites": {},
+        }
     )
     if not materialize_states:
         write_json(root / "calibration_state_manifest.json", state_manifest)

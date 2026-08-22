@@ -6,12 +6,42 @@ from typing import Any
 import torch
 from torch import nn
 
+from .temporal_ops import (
+    GIF_ADD_BITS,
+    GIF_BASE_BITS,
+    GIF_HIGH_QMAX,
+    GIF_INTEGER_DECOMPOSITION,
+    GIF_LOCAL_STEPS,
+    GIF_LOW_QMAX,
+    GIF_STEP_QMAX,
+    SITE_STATE_FORMAT_VERSION,
+    TEMPORAL_IMPLEMENTATION_VERSION,
+    temporal_clip,
+)
+
 
 def gif_high_qmax(base_bits: int, add_bits: int) -> int:
-    """Largest unsigned integer representable by all GIF temporal chunks."""
-    step_qmax = 2**int(base_bits) - 1
-    temporal_steps = 2**int(add_bits)
-    return step_qmax * temporal_steps
+    """Return the only GIF integer range supported by this experiment."""
+    if int(base_bits) != GIF_BASE_BITS or int(add_bits) != GIF_ADD_BITS:
+        raise ValueError(
+            f"GIF requires base_bits={GIF_BASE_BITS}, add_bits={GIF_ADD_BITS}"
+        )
+    return GIF_HIGH_QMAX
+
+
+def _validate_state_header(state: dict[str, Any], state_kind: str) -> None:
+    if (
+        state.get("state_kind") != state_kind
+        or state.get("format_version") != SITE_STATE_FORMAT_VERSION
+        or state.get("temporal_implementation_version")
+        != TEMPORAL_IMPLEMENTATION_VERSION
+    ):
+        raise ValueError(
+            f"Incompatible legacy {state_kind} state; expected state_kind={state_kind}, "
+            f"format_version={SITE_STATE_FORMAT_VERSION}, "
+            f"temporal_implementation_version={TEMPORAL_IMPLEMENTATION_VERSION}. "
+            "Re-materialize calibration states before training/conversion/evaluation."
+        )
 
 
 def _channel_values(x: torch.Tensor, values: torch.Tensor, group_size: int) -> torch.Tensor:
@@ -48,6 +78,7 @@ def hard_clip(x: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor) -> torc
 class PhaseSurrogate(nn.Module):
     def __init__(self, state: dict[str, Any]):
         super().__init__()
+        _validate_state_header(state, "phase")
         self.T = int(state["T"])
         self.base = float(state["base"])
         self.group_size = int(state["group_size"])
@@ -77,22 +108,40 @@ class PhaseSurrogate(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.encode(x, return_temporal=False)
 
+
     def temporal(self, incoming: torch.Tensor) -> torch.Tensor:
+        if incoming.shape[0] != self.T:
+            raise ValueError(f"Phase expects T={self.T}, got {incoming.shape[0]}")
         return self.encode(incoming.sum(dim=0), return_temporal=True)
 
 
 class StaticGIF(nn.Module):
     def __init__(self, state: dict[str, Any]):
         super().__init__()
+        _validate_state_header(state, "gif")
         self.base_bits = int(state["base_bits"])
         self.add_bits = int(state["add_bits"])
         self.group_size = int(state["group_size"])
         self.high_qmax = gif_high_qmax(self.base_bits, self.add_bits)
-        configured_high_qmax = int(state.get("high_qmax", self.high_qmax))
-        if configured_high_qmax != self.high_qmax:
+        expected_policy = {
+            "low_qmin": 0,
+            "low_qmax": GIF_LOW_QMAX,
+            "high_qmin": 0,
+            "high_qmax": GIF_HIGH_QMAX,
+            "temporal_steps": GIF_LOCAL_STEPS,
+            "per_step_qmin": 0,
+            "per_step_qmax": GIF_STEP_QMAX,
+            "integer_decomposition": GIF_INTEGER_DECOMPOSITION,
+        }
+        mismatched = {
+            key: (expected, state.get(key))
+            for key, expected in expected_policy.items()
+            if key not in state or state[key] != expected
+        }
+        if mismatched:
             raise ValueError(
-                f"GIF high_qmax={configured_high_qmax} does not match temporal capacity "
-                f"{self.high_qmax}"
+                "Incompatible legacy GIF qmax/chunk policy; re-materialize calibration "
+                f"states (mismatched={mismatched})"
             )
         self.register_buffer("low_scale", state["low_scale"].float())
         self.register_buffer("low_zero", state["low_zero"].float())
@@ -107,27 +156,32 @@ class StaticGIF(nn.Module):
     def _quantize(
         self,
         x: torch.Tensor,
-        bits: int,
         scale_values: torch.Tensor,
         zero_values: torch.Tensor,
         *,
-        qmax: int | None = None,
+        qmin: int,
+        qmax: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         scale = _channel_values(x, scale_values, self.group_size).clamp_min(1e-8)
         zero = _channel_values(x, zero_values, self.group_size)
-        qmin = 0
-        qmax = 2**bits - 1 if qmax is None else int(qmax)
-        q = (self.round_ste(x.float() / scale.float()) + zero.float()).clamp(qmin, qmax)
+        qmin, qmax = int(qmin), int(qmax)
+        if qmin != 0 or qmax <= qmin:
+            raise ValueError(f"Invalid unsigned GIF range [{qmin}, {qmax}]")
+        q = (self.round_ste(x.float() / scale.float()) + zero.float()).clamp(
+            qmin, qmax
+        )
         dequantized = (q - zero.float()) * scale.float()
         return dequantized.to(x.dtype), q, zero.float()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        low, _, _ = self._quantize(x, self.base_bits, self.low_scale, self.low_zero)
+        low, _, _ = self._quantize(
+            x, self.low_scale, self.low_zero, qmin=0, qmax=GIF_LOW_QMAX
+        )
         high, _, _ = self._quantize(
             x,
-            self.base_bits + self.add_bits,
             self.high_scale,
             self.high_zero,
+            qmin=0,
             qmax=self.high_qmax,
         )
         mask = self.mask_low.to(device=x.device)
@@ -144,16 +198,38 @@ class StaticGIF(nn.Module):
 
     @property
     def temporal_steps(self) -> int:
-        return 2**self.add_bits
+        return GIF_LOCAL_STEPS
+
+    @staticmethod
+    def integer_chunks(q_high: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if torch.any(q_high < 0) or torch.any(q_high > GIF_HIGH_QMAX):
+            raise ValueError(f"GIF high integer code must be in [0, {GIF_HIGH_QMAX}]")
+        chunk0 = q_high.clamp(0, GIF_STEP_QMAX)
+        chunk1 = q_high - chunk0
+        if (
+            torch.any(chunk0 < 0)
+            or torch.any(chunk0 > GIF_STEP_QMAX)
+            or torch.any(chunk1 < 0)
+            or torch.any(chunk1 > GIF_STEP_QMAX)
+            or torch.any(chunk0 + chunk1 != q_high)
+        ):
+            raise RuntimeError("GIF two-step integer decomposition invariant failed")
+        return chunk0, chunk1
 
     def temporal(self, incoming: torch.Tensor) -> torch.Tensor:
+        if incoming.shape[0] != self.temporal_steps:
+            raise ValueError(
+                f"GIF expects T={self.temporal_steps}, got {incoming.shape[0]}"
+            )
         x = incoming.sum(dim=0)
-        _, low_q, low_zero = self._quantize(x, self.base_bits, self.low_scale, self.low_zero)
+        _, low_q, low_zero = self._quantize(
+            x, self.low_scale, self.low_zero, qmin=0, qmax=GIF_LOW_QMAX
+        )
         _, high_q, high_zero = self._quantize(
             x,
-            self.base_bits + self.add_bits,
             self.high_scale,
             self.high_zero,
+            qmin=0,
             qmax=self.high_qmax,
         )
         mask = self.mask_low.to(device=x.device)
@@ -172,15 +248,7 @@ class StaticGIF(nn.Module):
         mask = mask.view(*([1] * (x.ndim - 1)), x.shape[-1])
         scale_low = _channel_values(x, self.low_scale, self.group_size)
         scale_high = _channel_values(x, self.high_scale, self.group_size)
-        residual = high_q
-        high_chunks = []
-        step_max = 2**self.base_bits - 1
-        for _ in range(self.temporal_steps):
-            chunk = residual.clamp(0, step_max)
-            high_chunks.append(chunk)
-            residual = residual - chunk
-        if torch.any(residual.abs() > 1e-5):
-            raise RuntimeError("GIF integer decomposition left a non-zero residual")
+        high_chunks = self.integer_chunks(high_q)
         outputs = []
         for timestep, chunk in enumerate(high_chunks):
             high_output = chunk * scale_high
@@ -196,11 +264,13 @@ class StaticGIF(nn.Module):
 class MultiThresholdNeuron(nn.Module):
     def __init__(self, state: dict[str, Any]):
         super().__init__()
+        _validate_state_header(state, "mtn")
         self.T = int(state["T"])
         self.K = int(state["K"])
         self.group_size = int(state["group_size"])
         self.threshold_factor = float(state.get("threshold_factor", 0.75))
         self.register_buffer("base_scale", state["base_scale"].float())
+
 
     def temporal(self, incoming: torch.Tensor) -> torch.Tensor:
         if incoming.shape[0] != self.T:
@@ -228,9 +298,50 @@ class MultiThresholdNeuron(nn.Module):
 class Clipper(nn.Module):
     def __init__(self, state: dict[str, Any]):
         super().__init__()
+        _validate_state_header(state, "clip")
+        expected = {
+            "gif_high_qmax": GIF_HIGH_QMAX,
+            "gif_per_step_qmax": GIF_STEP_QMAX,
+            "gif_integer_decomposition": GIF_INTEGER_DECOMPOSITION,
+        }
+        mismatched = {
+            key: (value, state.get(key))
+            for key, value in expected.items()
+            if key not in state or state[key] != value
+        }
+        if mismatched:
+            raise ValueError(
+                "Incompatible legacy Clip/GIF range metadata; re-materialize "
+                f"calibration states (mismatched={mismatched})"
+            )
         self.group_size = int(state["group_size"])
         self.register_buffer("lower", state["lower"].float())
         self.register_buffer("upper", state["upper"].float())
+        gif_ranges = {}
+        for range_name in ("gif_low_range", "gif_high_range"):
+            raw_range = state.get(range_name)
+            if not isinstance(raw_range, (tuple, list)) or len(raw_range) != 2:
+                raise ValueError(f"Clip state is missing valid {range_name} metadata")
+            range_lower = raw_range[0].float()
+            range_upper = raw_range[1].float()
+            if (
+                range_lower.shape != self.lower.shape
+                or range_upper.shape != self.upper.shape
+                or torch.any(range_lower >= range_upper)
+            ):
+                raise ValueError(f"Clip state has invalid {range_name} metadata")
+            gif_ranges[range_name] = (range_lower, range_upper)
+        gif_lower = torch.maximum(
+            gif_ranges["gif_low_range"][0], gif_ranges["gif_high_range"][0]
+        )
+        gif_upper = torch.minimum(
+            gif_ranges["gif_low_range"][1], gif_ranges["gif_high_range"][1]
+        )
+        tolerance = 1e-6
+        if torch.any(self.lower < gif_lower - tolerance) or torch.any(
+            self.upper > gif_upper + tolerance
+        ):
+            raise ValueError("Clip interval is inconsistent with saved GIF ranges")
         if torch.any(self.lower >= self.upper):
             raise ValueError("Every clipping interval must satisfy lower < upper")
 
@@ -238,3 +349,8 @@ class Clipper(nn.Module):
         lower = _channel_values(x, self.lower, self.group_size)
         upper = _channel_values(x, self.upper, self.group_size)
         return hard_clip(x, lower, upper)
+
+    def temporal(self, x: torch.Tensor) -> torch.Tensor:
+        lower = _channel_values(x[0], self.lower, self.group_size)
+        upper = _channel_values(x[0], self.upper, self.group_size)
+        return temporal_clip(x, lower, upper)
