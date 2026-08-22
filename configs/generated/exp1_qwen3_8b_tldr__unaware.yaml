@@ -96,7 +96,7 @@ training:
   logging_steps: 10
   deepspeed_config: configs/deepspeed_zero3.json
   resume_from_checkpoint: null
-  tldr_train_samples: null
+  tldr_train_samples: 10000
   tldr_train_seed: 42
 evaluation:
   prefix_enabled: true
