@@ -14,6 +14,16 @@ from .modeling import load_model, load_tokenizer, model_source_for_stage, prefix
 from .prefix_cache import install_prefix_kv_forward
 
 
+def format_runtime_hms(runtime_seconds: float) -> str:
+    """Format a runtime in seconds as HH:MM:SS.ffff without a 24-hour wrap."""
+    units_per_second = 10_000
+    total_units = round(float(runtime_seconds) * units_per_second)
+    total_seconds, fractional_units = divmod(total_units, units_per_second)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{fractional_units:04d}"
+
+
 def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, Any]:
     from transformers import Trainer, TrainingArguments
 
@@ -145,6 +155,8 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             ),
         }
     )
+    if "train_runtime" in metrics:
+        metrics["train_runtime_hms"] = format_runtime_hms(metrics["train_runtime"])
     if trainer.is_world_process_zero():
         write_json(layout.ann_dir / "training_result.json", metrics)
         write_json(layout.ann_dir / "trainer_log_history.json", trainer.state.log_history)
