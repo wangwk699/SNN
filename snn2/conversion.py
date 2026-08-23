@@ -33,7 +33,7 @@ def validate_calibration(
     root = Path(site_root)
     validation = validate_site_state_bundle(
         root,
-        require_clip=True,
+        require_clip=False,
         expected_num_hidden_layers=expected_num_hidden_layers,
     )
     for directory in sorted(path for path in root.glob("layer_*/site_*") if path.is_dir()):
@@ -42,10 +42,16 @@ def validate_calibration(
             "phase_state.pt",
             "gif_state.pt",
             "mtn_state.pt",
-            "clip_state.pt",
         ):
             if not (directory / name).exists():
                 raise FileNotFoundError(directory / name)
+    stale_clip_states = sorted(root.glob("layer_*/site_*/clip_state.pt"))
+    if stale_clip_states:
+        raise ValueError(
+            "Post-finetuning conversion calibration must be clip-free; "
+            "re-run calibrate_sites.py --stage post_finetuning "
+            f"(found {len(stale_clip_states)} stale clip_state.pt files)"
+        )
     return {
         "expected_num_hidden_layers": validation["expected_num_hidden_layers"],
         "layers": validation["layers"],
@@ -53,6 +59,26 @@ def validate_calibration(
         "temporal_steps": validation["temporal_steps"],
         **topology_metadata(),
     }
+
+
+def _validate_post_finetuning_manifest(manifest: dict[str, Any]) -> None:
+    expected = {
+        "purpose": "post_finetuning_conversion_calibration",
+        "eligible_for_conversion": True,
+        "post_finetuning_recalibration": True,
+        "state_profile": "snn_conversion_without_clip",
+        "common_clip_required": False,
+    }
+    mismatched = {
+        key: {"expected": value, "actual": manifest.get(key)}
+        for key, value in expected.items()
+        if manifest.get(key) != value
+    }
+    if mismatched:
+        raise ValueError(
+            "Conversion requires clip-free post-finetuning calibration: "
+            f"{mismatched}. Re-run calibrate_sites.py --stage post_finetuning."
+        )
 
 
 def validate_post_finetuning_prefix(layout: ArtifactLayout, enabled: bool = True) -> dict[str, Any]:
@@ -94,7 +120,7 @@ def validate_conversion_metadata(
     metadata = read_json(path)
     if metadata.get("format_version") != CONVERSION_METADATA_FORMAT_VERSION:
         raise ValueError(
-            f"{path} uses a legacy conversion descriptor schema; format v3 is "
+            f"{path} uses a legacy conversion descriptor schema; format v4 is "
             "required while temporal arithmetic remains v2. Re-run conversion"
         )
     validate_temporal_policy(metadata, context=str(path))
@@ -102,13 +128,14 @@ def validate_conversion_metadata(
     prefix = validate_post_finetuning_prefix(layout, enabled=expected_prefix)
     ann_config = layout.ann_checkpoint_dir / "config.json"
     expected_num_hidden_layers = _ann_num_hidden_layers(ann_config)
-    bundle = validate_site_state_bundle(
+    bundle = validate_calibration(
         layout.post_finetuning_site_dir,
-        require_clip=True,
         expected_num_hidden_layers=expected_num_hidden_layers,
     )
     expected_root = str(layout.post_finetuning_site_dir.resolve())
     manifest_path = layout.post_finetuning_site_dir / "calibration_state_manifest.json"
+    manifest = read_json(manifest_path)
+    _validate_post_finetuning_manifest(manifest)
     rotation_path = layout.rotation_dir / "rotation_state.pt"
     rotation_enabled = bool(cfg["rotation"]["enabled"])
     if rotation_enabled and not rotation_path.exists():
@@ -137,7 +164,7 @@ def validate_conversion_metadata(
         "calibration_state_manifest_sha256": (
             sha256_file(manifest_path) if manifest_path.exists() else None
         ),
-        "common_clip_applied": True,
+        "snn_clip_applied": False,
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
     }
     for key, value in expected.items():
@@ -151,7 +178,7 @@ def validate_conversion_metadata(
         }
     if mismatched:
         raise ValueError(
-            f"{path} does not match the requested v3 conversion descriptor "
+            f"{path} does not match the requested v4 clip-free conversion descriptor "
             f"(temporal implementation remains v2): {mismatched}. "
             "Re-run scripts/convert_snn.py."
         )
@@ -179,16 +206,7 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
             f"Calibration state manifest is missing: {calibration_manifest}"
         )
     manifest = read_json(calibration_manifest)
-    if (
-        manifest.get("purpose") != "post_finetuning_conversion_calibration"
-        or not manifest.get("eligible_for_conversion")
-        or not manifest.get("post_finetuning_recalibration")
-        or manifest.get("state_profile") != "snn_conversion_with_common_clip"
-        or manifest.get("common_clip_required") is not True
-    ):
-        raise ValueError(
-            "Conversion requires post-finetuning calibration with temporal common Clip"
-        )
+    _validate_post_finetuning_manifest(manifest)
     if manifest.get("prefix_enabled") != prefix_enabled:
         raise ValueError(
             "Conversion calibration prefix_enabled does not match "
@@ -224,7 +242,7 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
         "prefix_state_sha256": prefix["prefix_state_sha256"],
         "prefix_kv_sha256": prefix["prefix_kv_sha256"],
         "post_finetuning_recalibration": True,
-        "common_clip_applied": True,
+        "snn_clip_applied": False,
         "prefix_root": prefix["prefix_root"],
         "calibration_validation": validation,
         **temporal_policy_metadata(),

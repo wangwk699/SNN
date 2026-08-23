@@ -55,7 +55,19 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         site = layout.post_finetuning_site_dir / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
         site.mkdir(parents=True)
         torch.save(_statistics(), site / "statistics.pt")
-    materialize_calibration_states(layout.post_finetuning_site_dir, _cfg(rotation_enabled), include_clip=True, expected_num_hidden_layers=1)
+    materialize_calibration_states(
+        layout.post_finetuning_site_dir,
+        _cfg(rotation_enabled),
+        {
+            "purpose": "post_finetuning_conversion_calibration",
+            "eligible_for_conversion": True,
+            "post_finetuning_recalibration": True,
+            "state_profile": "snn_conversion_without_clip",
+            "common_clip_required": False,
+        },
+        include_clip=False,
+        expected_num_hidden_layers=1,
+    )
     layout.ann_checkpoint_dir.mkdir(parents=True)
     ann_config = layout.ann_checkpoint_dir / "config.json"
     ann_config.write_text('{"num_hidden_layers": 1}' + '\n', encoding="utf-8")
@@ -84,7 +96,7 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         "prefix_kv_sha256": None,
         "calibration_root": str(layout.post_finetuning_site_dir.resolve()),
         "calibration_state_manifest_sha256": sha256_file(manifest),
-        "common_clip_applied": True,
+        "snn_clip_applied": False,
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         **temporal_policy_metadata(),
     }
@@ -93,7 +105,7 @@ def _prepare(tmp_path, *, rotation_enabled=False):
     return layout, path
 
 
-def test_conversion_metadata_v3_is_accepted(tmp_path):
+def test_conversion_metadata_v4_is_accepted(tmp_path):
     layout, _ = _prepare(tmp_path)
     metadata = validate_conversion_metadata(_cfg(), layout, "gif")
     assert metadata["gif_high_qmax"] == 30
@@ -102,10 +114,10 @@ def test_conversion_metadata_v3_is_accepted(tmp_path):
 @pytest.mark.parametrize(
     ("key", "value"),
     [
-        ("format_version", 2),
+        ("format_version", 3),
         ("gif_high_qmax", 31),
         ("full_temporal_steps", 3),
-        ("common_clip_applied", False),
+        ("snn_clip_applied", True),
     ],
 )
 def test_conversion_metadata_rejects_legacy_or_mismatched_policy(tmp_path, key, value):
@@ -156,4 +168,12 @@ def test_conversion_rejects_ann_manifest_layer_mismatch(tmp_path):
         json.dumps({"num_hidden_layers": 2}), encoding="utf-8"
     )
     with pytest.raises(ValueError, match="ANN config num_hidden_layers"):
+        validate_conversion_metadata(_cfg(), layout, "gif")
+
+
+def test_conversion_rejects_stale_post_finetuning_clip_state(tmp_path):
+    layout, _ = _prepare(tmp_path)
+    stale = next(layout.post_finetuning_site_dir.glob("layer_*/site_*"))
+    torch.save({}, stale / "clip_state.pt")
+    with pytest.raises(ValueError, match="clip-free"):
         validate_conversion_metadata(_cfg(), layout, "gif")

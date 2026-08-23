@@ -139,31 +139,13 @@ def test_gif_rejects_legacy_qmax_31_state():
         StaticGIF(state)
 
 
-@pytest.mark.parametrize("kind", ["phase", "gif", "mtn"])
-def test_neuron_temporal_then_differential_common_clip(kind):
-    if kind == "phase":
-        neuron = PhaseSurrogate({
-            **_header("phase"), "T": 2, "base": 2.0, "group_size": -1,
-            "surrogate_slope": 4.0, "max_spikes": 2,
-            "tau": torch.tensor([2.0]), "v0": torch.tensor([0.125]),
-        })
-    elif kind == "gif":
-        neuron = StaticGIF({
-            **_gif_policy(), "group_size": -1,
-            "low_scale": torch.tensor([0.1]), "low_zero": torch.tensor([7.0]),
-            "high_scale": torch.tensor([0.05]), "high_zero": torch.tensor([13.0]),
-            "mask_low": torch.tensor([False, True]),
-        })
-    else:
-        neuron = MultiThresholdNeuron({
-            **_header("mtn"), "T": 2, "K": 2, "group_size": -1,
-            "threshold_factor": 0.75, "base_scale": torch.tensor([2.0]),
-        })
-    incoming = torch.tensor([[[[2.0, -2.0]]], [[[-1.0, 1.0]]]])
-    neuron_output = neuron.temporal(incoming)
+
+def test_clipper_remains_available_only_for_static_ann_tensors():
     clip = Clipper(_clip_state())
-    clipped = clip.temporal(neuron_output)
-    torch.testing.assert_close(clipped.sum(0), clip(neuron_output.sum(0)))
+    output = clip(torch.tensor([[-2.0, 0.0, 2.0]]))
+    torch.testing.assert_close(output, torch.tensor([[-0.75, 0.0, 0.75]]))
+    assert not hasattr(clip, "temporal")
+
 
 @pytest.mark.parametrize("kind", ["phase", "mtn", "clip"])
 def test_non_gif_neurons_reject_format_v1(kind):

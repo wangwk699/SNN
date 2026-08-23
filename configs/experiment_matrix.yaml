@@ -57,7 +57,6 @@ experiments:
       temporal_layout: time_major_flattened_TB
       linear_bias_policy: first_timestep_once
       prefix_temporal_policy: uniform_kv_divide_by_T
-      common_clip_temporal_policy: cumulative_then_difference
     phase:
       T: 4
       base: 2.0
@@ -212,7 +211,6 @@ experiments:
       temporal_layout: time_major_flattened_TB
       linear_bias_policy: first_timestep_once
       prefix_temporal_policy: uniform_kv_divide_by_T
-      common_clip_temporal_policy: cumulative_then_difference
     phase:
       T: 4
       base: 2.0
@@ -369,7 +367,6 @@ experiments:
       temporal_layout: time_major_flattened_TB
       linear_bias_policy: first_timestep_once
       prefix_temporal_policy: uniform_kv_divide_by_T
-      common_clip_temporal_policy: cumulative_then_difference
     phase:
       T: 4
       base: 2.0

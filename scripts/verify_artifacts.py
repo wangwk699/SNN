@@ -9,6 +9,7 @@ from snn2.conversion import validate_calibration, validate_conversion_metadata
 from snn2.sites import topology_metadata
 from snn2.evaluation import resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
+from snn2.state_validation import validate_site_state_bundle
 from snn2.temporal_ops import validate_temporal_policy
 
 
@@ -529,8 +530,11 @@ def main():
             _require_manifest_flags(ann_manifest, {"purpose": "ann_training_calibration", "analysis_only": False, "eligible_for_ann_training": True, "eligible_for_conversion": False, "post_finetuning_recalibration": False, "state_profile": "ann_training_with_common_clip", "common_clip_required": True, "rotation_enabled": True, "prefix_protocol_enabled": training_prefix_enabled(cfg)}, "ANN-training")
             _verify_hashes(ann_manifest,"ANN-training calibration")
             validate_temporal_policy(ann_manifest, context="ANN-training calibration manifest")
+            validate_site_state_bundle(
+                layout.ann_training_site_dir, require_clip=True
+            )
         post_manifest = read_json(layout.post_finetuning_site_dir / "calibration_state_manifest.json")
-        _require_manifest_flags(post_manifest, {"purpose": "post_finetuning_conversion_calibration", "analysis_only": False, "eligible_for_ann_training": False, "eligible_for_conversion": True, "post_finetuning_recalibration": True, "state_profile": "snn_conversion_with_common_clip", "common_clip_required": True, "prefix_protocol_enabled": post_finetuning_prefix_enabled(cfg)}, "Post-finetuning")
+        _require_manifest_flags(post_manifest, {"purpose": "post_finetuning_conversion_calibration", "analysis_only": False, "eligible_for_ann_training": False, "eligible_for_conversion": True, "post_finetuning_recalibration": True, "state_profile": "snn_conversion_without_clip", "common_clip_required": False, "prefix_protocol_enabled": post_finetuning_prefix_enabled(cfg)}, "Post-finetuning")
         if not post_manifest.get("source_ann_checkpoint") or not post_manifest.get("source_ann_config_sha256") or not post_manifest.get("calibration_data_manifest_sha256"):
             raise ValueError("Post-finetuning calibration lacks required final-ANN or data provenance")
         expected_rotation = bool(cfg["rotation"]["enabled"])

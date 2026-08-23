@@ -47,7 +47,7 @@ def test_build_site_states_without_common_clip():
     assert set(states) == {"phase", "gif", "mtn"}
 
 
-def test_conversion_materialization_keeps_temporal_common_clip(tmp_path):
+def test_conversion_materialization_removes_common_clip(tmp_path):
     directories = _write_statistics(tmp_path)
     for directory in directories:
         torch.save({}, directory / "clip_state.pt")
@@ -56,20 +56,20 @@ def test_conversion_materialization_keeps_temporal_common_clip(tmp_path):
         tmp_path,
         _cfg(),
         {
-            "state_profile": "snn_conversion_with_common_clip",
-            "common_clip_required": True,
+            "state_profile": "snn_conversion_without_clip",
+            "common_clip_required": False,
         },
-        include_clip=True,
+        include_clip=False,
         expected_num_hidden_layers=1,
     )
 
-    assert manifest["state_profile"] == "snn_conversion_with_common_clip"
-    assert all((directory / "clip_state.pt").exists() for directory in directories)
+    assert manifest["state_profile"] == "snn_conversion_without_clip"
+    assert all(not (directory / "clip_state.pt").exists() for directory in directories)
     summary = json.loads(
         (directories[0] / "calibration_summary.json").read_text(encoding="utf-8")
     )
-    assert summary["clip_state_present"] is True
-    assert summary["clip_valid"] is True
+    assert summary["clip_state_present"] is False
+    assert "clip_valid" not in summary
 
 
 def test_ann_training_materialization_keeps_common_clip(tmp_path):

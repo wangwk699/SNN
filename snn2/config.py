@@ -10,7 +10,6 @@ import yaml
 
 from .sites import SITE_COUNT
 from .temporal_ops import (
-    COMMON_CLIP_TEMPORAL_POLICY,
     GIF_ADD_BITS,
     GIF_BASE_BITS,
     GIF_HIGH_QMAX,
@@ -130,8 +129,13 @@ def validate_config(cfg: dict[str, Any]) -> None:
         "temporal_layout": TEMPORAL_LAYOUT,
         "linear_bias_policy": TEMPORAL_LINEAR_BIAS_POLICY,
         "prefix_temporal_policy": PREFIX_TEMPORAL_POLICY,
-        "common_clip_temporal_policy": COMMON_CLIP_TEMPORAL_POLICY,
     }
+    unexpected_deployment = sorted(set(deployment) - set(expected_deployment))
+    if unexpected_deployment:
+        raise ValueError(
+            "Unsupported temporal deployment keys; re-run materialize_configs.py: "
+            f"{unexpected_deployment}"
+        )
     mismatched_deployment = {
         key: (expected, deployment.get(key))
         for key, expected in expected_deployment.items()

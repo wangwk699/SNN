@@ -33,7 +33,7 @@ class SiteController:
             neuron = self.mode.removeprefix("deploy_")
             if neuron not in {"phase", "gif", "mtn"}:
                 raise ValueError(f"Unknown deployment neuron: {neuron}")
-            required = (neuron, "clip")
+            required = (neuron,)
         else:
             raise ValueError(f"Mode {self.mode!r} does not load calibration states")
 
@@ -59,7 +59,7 @@ class SiteController:
         if self.site_root is None:
             raise RuntimeError("Deployment requires site_root")
         validation = validate_site_state_bundle(
-            self.site_root, require_clip=True
+            self.site_root, require_clip=False
         )
         self.mode = f"deploy_{neuron}"
         self.temporal_steps = int(validation["temporal_steps"][neuron])
@@ -107,9 +107,6 @@ class SiteController:
                 raise ValueError(
                     f"{neuron} temporal output shape {output.shape} != input {temporal.shape}"
                 )
-            output = modules["clip"].temporal(output)
-            if output.shape != temporal.shape:
-                raise ValueError("Temporal Clip changed the site tensor shape")
             if output.dtype != x.dtype or output.device != x.device:
                 raise ValueError("Deployment site changed dtype or device")
             return from_temporal(output)

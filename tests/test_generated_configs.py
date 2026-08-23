@@ -8,7 +8,6 @@ import yaml
 from scripts.materialize_configs import materialize_configs
 from snn2.config import validate_config
 from snn2.temporal_ops import (
-    COMMON_CLIP_TEMPORAL_POLICY,
     GIF_HIGH_QMAX,
     GIF_LOCAL_STEPS,
     GIF_STEP_QMAX,
@@ -41,7 +40,6 @@ def test_all_twelve_generated_configs_carry_temporal_v2_and_qmax30(generated_con
             "temporal_layout": TEMPORAL_LAYOUT,
             "linear_bias_policy": TEMPORAL_LINEAR_BIAS_POLICY,
             "prefix_temporal_policy": PREFIX_TEMPORAL_POLICY,
-            "common_clip_temporal_policy": COMMON_CLIP_TEMPORAL_POLICY,
         }
         assert cfg["gif"]["high_qmax"] == GIF_HIGH_QMAX
         assert cfg["gif"]["temporal_steps"] == GIF_LOCAL_STEPS
@@ -59,6 +57,7 @@ def test_qwen17_quick_tldr_evaluation_remains_128_samples(generated_configs):
     ("section", "key", "value"),
     [
         ("deployment", "prefix_temporal_policy", "full_prefix_each_timestep"),
+        ("deployment", "common_clip_temporal_policy", "cumulative_then_difference"),
         ("gif", "high_qmax", 31),
         ("gif", "per_step_qmax", 16),
     ],

@@ -69,7 +69,7 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
     state_profile = {
         "ann_training": "ann_training_with_common_clip",
         "vanilla_analysis": "analysis_statistics_only",
-        "post_finetuning": "snn_conversion_with_common_clip",
+        "post_finetuning": "snn_conversion_without_clip",
     }[stage]
     return {
         "purpose": purpose,
@@ -78,7 +78,7 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "eligible_for_conversion": post,
         "post_finetuning_recalibration": post,
         "state_profile": state_profile,
-        "common_clip_required": stage in {"ann_training", "post_finetuning"},
+        "common_clip_required": stage == "ann_training",
         "source_model_stage": "original_pretrained_base" if stage == "vanilla_analysis" else ("rotated_fused_base" if stage == "ann_training" else "final_ann_checkpoint"),
         "source_ann_mode": cfg["experiment"]["ann_mode"] if post else None,
         "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()) if post else None,
@@ -406,7 +406,7 @@ def collect_site_statistics(
     state_profile = {
         "ann_training_calibration": "ann_training_with_common_clip",
         "vanilla_analysis_calibration": "analysis_statistics_only",
-        "post_finetuning_conversion_calibration": "snn_conversion_with_common_clip",
+        "post_finetuning_conversion_calibration": "snn_conversion_without_clip",
     }[purpose]
     metadata = {
         "purpose": purpose,
@@ -415,7 +415,7 @@ def collect_site_statistics(
         "eligible_for_conversion": eligible_conversion,
         "post_finetuning_recalibration": eligible_conversion,
         "state_profile": state_profile,
-        "common_clip_required": eligible_ann or eligible_conversion,
+        "common_clip_required": eligible_ann,
         "source_model_stage": None,
         "source_ann_mode": None,
         "source_ann_checkpoint": None,
@@ -436,6 +436,13 @@ def collect_site_statistics(
         "learning_rate": None,
         "seed": int(cfg["experiment"]["seed"]),
         **(extra_metadata or {}),
+        "purpose": purpose,
+        "analysis_only": purpose == "vanilla_analysis_calibration",
+        "eligible_for_ann_training": eligible_ann,
+        "eligible_for_conversion": eligible_conversion,
+        "post_finetuning_recalibration": eligible_conversion,
+        "state_profile": state_profile,
+        "common_clip_required": eligible_ann,
         "expected_num_hidden_layers": expected_num_hidden_layers,
         "expected_layer_names": [
             f"layer_{index:03d}" for index in range(expected_num_hidden_layers)
@@ -448,7 +455,7 @@ def collect_site_statistics(
             site_root,
             cfg,
             metadata,
-            include_clip=eligible_ann or eligible_conversion,
+            include_clip=eligible_ann,
             expected_num_hidden_layers=expected_num_hidden_layers,
         )
         if materialize_states

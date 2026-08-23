@@ -12,11 +12,10 @@ TEMPORAL_IMPLEMENTATION = "sparse_llm_temporal_v2"
 TEMPORAL_LAYOUT = "time_major_flattened_TB"
 TEMPORAL_LINEAR_BIAS_POLICY = "first_timestep_once"
 PREFIX_TEMPORAL_POLICY = "uniform_kv_divide_by_T"
-COMMON_CLIP_TEMPORAL_POLICY = "cumulative_then_difference"
 
 SITE_STATE_FORMAT_VERSION = 2
 CALIBRATION_MANIFEST_FORMAT_VERSION = 3
-CONVERSION_METADATA_FORMAT_VERSION = 3
+CONVERSION_METADATA_FORMAT_VERSION = 4
 
 GIF_BASE_BITS = 4
 GIF_ADD_BITS = 1
@@ -39,7 +38,6 @@ def temporal_policy_metadata() -> dict[str, Any]:
         "temporal_layout": TEMPORAL_LAYOUT,
         "temporal_linear_bias_policy": TEMPORAL_LINEAR_BIAS_POLICY,
         "prefix_temporal_policy": PREFIX_TEMPORAL_POLICY,
-        "common_clip_temporal_policy": COMMON_CLIP_TEMPORAL_POLICY,
         "gif_high_qmax": GIF_HIGH_QMAX,
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         "gif_per_step_qmax": GIF_STEP_QMAX,
@@ -209,20 +207,6 @@ def temporal_symmetric_hadamard(
     sum_b = b_float.sum(dim=0, keepdim=True)
     return (0.5 * (a_float * sum_b + sum_a * b_float)).to(dtype=a.dtype)
 
-
-def temporal_clip(
-    x: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor
-) -> torch.Tensor:
-    lower_float = lower.float()
-    upper_float = upper.float()
-    if torch.any(lower_float >= upper_float):
-        raise ValueError("Every clipping interval must satisfy lower < upper")
-    return temporal_difference(
-        x,
-        lambda cumulative: torch.maximum(
-            torch.minimum(cumulative, upper_float), lower_float
-        ),
-    )
 
 
 def temporal_bias_once(

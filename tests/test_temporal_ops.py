@@ -11,7 +11,6 @@ from snn2.temporal_ops import (
     TEMPORAL_IMPLEMENTATION_VERSION,
     from_temporal,
     temporal_bias_once,
-    temporal_clip,
     temporal_rmsnorm,
     temporal_seq_matmul,
     temporal_silu,
@@ -143,24 +142,6 @@ def test_temporal_symmetric_hadamard_matches_explicit_formula_and_total():
     )
 
 
-def test_temporal_clip_is_cumulative_then_difference():
-    x = torch.tensor(
-        [
-            [[[3.0, -3.0, 0.5]]],
-            [[[-2.5, 2.5, 1.0]]],
-            [[[2.0, -2.0, -4.0]]],
-        ]
-    )
-    lower = torch.tensor([[[[-1.0]]]])
-    upper = torch.tensor([[[[1.0]]]])
-    output = temporal_clip(x, lower, upper)
-    independent = x.clamp(-1, 1)
-    assert not torch.allclose(output, independent)
-    for timestep in range(x.shape[0]):
-        reference = x[: timestep + 1].sum(0).clamp(-1, 1)
-        torch.testing.assert_close(output[: timestep + 1].sum(0), reference)
-
-
 def test_temporal_linear_bias_is_kept_only_at_timestep_zero():
     torch.manual_seed(19)
     steps, batch = 4, 3
@@ -177,6 +158,6 @@ def test_temporal_linear_bias_is_kept_only_at_timestep_zero():
 
 def test_artifact_schema_versions_do_not_change_temporal_arithmetic():
     assert CALIBRATION_MANIFEST_FORMAT_VERSION == 3
-    assert CONVERSION_METADATA_FORMAT_VERSION == 3
+    assert CONVERSION_METADATA_FORMAT_VERSION == 4
     assert SITE_STATE_FORMAT_VERSION == 2
     assert TEMPORAL_IMPLEMENTATION_VERSION == 2

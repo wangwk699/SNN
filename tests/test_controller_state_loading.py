@@ -39,7 +39,7 @@ def _write_bundle(root):
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
         "mtn": {"T": 2, "K": 2, "threshold_factor": 0.75},
     }
-    materialize_calibration_states(root, cfg, include_clip=True, expected_num_hidden_layers=1)
+    materialize_calibration_states(root, cfg, include_clip=False, expected_num_hidden_layers=1)
 
 
 
@@ -127,7 +127,7 @@ def test_deployment_loads_only_selected_neuron_state(
     output = controller.apply(0, 1, torch.zeros(expected_steps, 1, 3))
 
     assert output.shape == (expected_steps, 1, 3)
-    assert set(controller._modules[site_key(0, 1)]) == {neuron, "clip"}
+    assert set(controller._modules[site_key(0, 1)]) == {neuron}
 
 
 @pytest.mark.parametrize(
@@ -144,6 +144,19 @@ def test_ann_replacement_requires_common_clip(tmp_path, mode, state_name, state)
 
     with pytest.raises(FileNotFoundError, match="clip_state.pt"):
         controller.apply(0, 1, torch.zeros(1, 3))
+
+
+def test_ann_phase_still_applies_common_clip(tmp_path):
+    directory = _site_directory(tmp_path)
+    torch.save(_phase_state(), directory / "phase_state.pt")
+    torch.save(_clip_state(), directory / "clip_state.pt")
+    controller = SiteController(mode="phase", site_root=tmp_path)
+
+    output = controller.apply(0, 1, torch.tensor([[100.0, 0.0, -100.0]]))
+
+    assert torch.all(output <= 1.0)
+    assert torch.all(output >= -1.0)
+    assert set(controller._modules[site_key(0, 1)]) == {"phase", "clip"}
 
 
 def test_ann_gif_still_applies_common_clip(tmp_path):

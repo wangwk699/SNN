@@ -16,7 +16,6 @@ from .temporal_ops import (
     GIF_STEP_QMAX,
     SITE_STATE_FORMAT_VERSION,
     TEMPORAL_IMPLEMENTATION_VERSION,
-    temporal_clip,
 )
 
 
@@ -349,8 +348,3 @@ class Clipper(nn.Module):
         lower = _channel_values(x, self.lower, self.group_size)
         upper = _channel_values(x, self.upper, self.group_size)
         return hard_clip(x, lower, upper)
-
-    def temporal(self, x: torch.Tensor) -> torch.Tensor:
-        lower = _channel_values(x[0], self.lower, self.group_size)
-        upper = _channel_values(x[0], self.upper, self.group_size)
-        return temporal_clip(x, lower, upper)
