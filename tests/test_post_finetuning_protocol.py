@@ -1,88 +1,93 @@
 import json
-
-import pytest
 from pathlib import Path
 
+import pytest
+
 from snn2.artifacts import ArtifactLayout
-from snn2.config import post_finetuning_prefix_enabled, training_prefix_enabled
-from snn2.conversion import validate_post_finetuning_prefix
+from snn2.config import (
+    conversion_calibration_stage,
+    conversion_prefix_enabled,
+    conversion_reuses_ann_training_artifacts,
+    final_evaluation_prefix_artifact_stage,
+    requires_ann_training_calibration,
+    requires_post_finetuning_artifacts,
+    requires_pre_finetuning_prefix,
+)
+from snn2.conversion import validate_conversion_prefix
 
 
-def _cfg(mode):
-    return {"experiment": {"id": "e", "task": "t", "model_name": "m", "seed": 42, "output_root": "artifacts", "ann_mode": mode}, "training": {"learning_rate": 1e-6}, "rotation": {"enabled": mode != "vanilla"}, "prefix": {"enabled": True}, "post_finetuning": {"prefix_enabled": True}}
+def _cfg(mode, root="artifacts"):
+    aware = mode in {"phase_aware", "gif_aware"}
+    return {
+        "experiment": {
+            "id": "e", "task": "t", "model_name": "m", "seed": 42,
+            "output_root": str(root), "ann_mode": mode,
+        },
+        "training": {"learning_rate": 1e-6},
+        "rotation": {"enabled": mode != "vanilla"},
+        "prefix": {"enabled": mode != "vanilla"},
+        "ann_training": {"prefix_enabled": mode != "vanilla"},
+        "post_finetuning": {"prefix_enabled": not aware},
+    }
 
 
-def test_stage_specific_artifact_paths():
-    layout = ArtifactLayout(_cfg("phase_aware"))
-    assert layout.ann_training_prefix_dir.parts[-1:] == ("pre_finetuning_prefix",)
-    assert layout.ann_training_site_dir.parts[-3:] == (
-        "ann_training_calibration", "prefix_enabled_ture", "sites"
-    )
-    assert layout.vanilla_analysis_site_dir.parts[-2:] == (
-        "vanilla_analysis_calibration", "sites"
-    )
-    assert layout.post_finetuning_prefix_dir.parts[-2:] == ("post_finetuning", "prefix")
-    assert layout.post_finetuning_site_dir.parts[-4:] == (
-        "post_finetuning", "conversion_calibration", "prefix_enabled_ture", "sites"
-    )
+@pytest.mark.parametrize(
+    ("mode", "pre", "ann_cal", "post", "reused", "stage"),
+    [
+        ("vanilla", False, False, True, False, "post_finetuning"),
+        ("unaware", True, False, True, False, "post_finetuning"),
+        ("phase_aware", True, True, False, True, "ann_training"),
+        ("gif_aware", True, True, False, True, "ann_training"),
+    ],
+)
+def test_mode_aware_protocol_table(mode, pre, ann_cal, post, reused, stage):
+    cfg = _cfg(mode)
+    assert requires_pre_finetuning_prefix(cfg) is pre
+    assert requires_ann_training_calibration(cfg) is ann_cal
+    assert requires_post_finetuning_artifacts(cfg) is post
+    assert conversion_reuses_ann_training_artifacts(cfg) is reused
+    assert conversion_calibration_stage(cfg) == stage
+    assert final_evaluation_prefix_artifact_stage(cfg) == stage
+    assert conversion_prefix_enabled(cfg) is True
+
+
+def test_mode_aware_conversion_roots():
+    aware = ArtifactLayout(_cfg("phase_aware"))
+    assert aware.conversion_prefix_dir == aware.ann_training_prefix_dir
+    assert aware.conversion_site_dir == aware.ann_training_site_dir
+    unaware = ArtifactLayout(_cfg("unaware"))
+    assert unaware.conversion_prefix_dir == unaware.post_finetuning_prefix_dir
+    assert unaware.conversion_site_dir == unaware.post_finetuning_site_dir
 
 
 @pytest.mark.parametrize(
     ("configured", "suffix"),
-    [
-        (None, "lr1e-06_train_samples_full/prefix_enabled_ture/seed42"),
-        (128, "lr1e-06_train_samples_128/prefix_enabled_ture/seed42"),
-    ],
+    [(None, "lr1e-06_train_samples_full/prefix_enabled_false/seed42"),
+     (128, "lr1e-06_train_samples_128/prefix_enabled_false/seed42")],
 )
-def test_tldr_training_sample_count_is_part_of_run_path(configured, suffix):
+def test_vanilla_tldr_path_records_no_pretraining_prefix(configured, suffix):
     cfg = _cfg("vanilla")
     cfg["experiment"]["task"] = "tldr"
     cfg["training"]["tldr_train_samples"] = configured
     assert ArtifactLayout(cfg).root.parts[-3:] == Path(suffix).parts[-3:]
 
 
-def test_vanilla_prefix_policy_and_shared_analysis_paths():
-    cfg = _cfg("vanilla")
+def test_conversion_prefix_validator_uses_aware_pre_finetuning_root(tmp_path):
+    cfg = _cfg("phase_aware", tmp_path)
     layout = ArtifactLayout(cfg)
-    assert training_prefix_enabled(cfg)
-    assert post_finetuning_prefix_enabled(cfg)
-    assert layout.policy_root.parts[-1] == "vanilla_original"
-    assert "_shared" in layout.policy_config_dir.parts
-    assert "_shared" in layout.policy_logs_dir.parts
-
-
-@pytest.mark.parametrize("mode", ["unaware", "phase_aware", "gif_aware"])
-def test_rotated_modes_have_both_prefix_stages(mode):
-    cfg = _cfg(mode)
-    assert training_prefix_enabled(cfg)
-    assert post_finetuning_prefix_enabled(cfg)
-
-
-def _layout_at(tmp_path):
-    cfg = _cfg("vanilla")
-    cfg["experiment"]["output_root"] = str(tmp_path)
-    return ArtifactLayout(cfg)
-
-
-def test_conversion_prefix_validation_requires_state(tmp_path):
-    with pytest.raises(FileNotFoundError, match="discover_prefix"):
-        validate_post_finetuning_prefix(_layout_at(tmp_path))
-
-
-def test_empty_post_finetuning_prefix_needs_no_kv(tmp_path):
-    layout = _layout_at(tmp_path)
-    state = layout.post_finetuning_prefix_dir / "prefix_state.json"
+    state = layout.ann_training_prefix_dir / "prefix_state.json"
     state.parent.mkdir(parents=True)
     state.write_text(json.dumps({"prefix_token_ids": []}), encoding="utf-8")
-    metadata = validate_post_finetuning_prefix(layout)
-    assert metadata["prefix_token_ids"] == []
-    assert metadata["prefix_kv_sha256"] is None
+    metadata = validate_conversion_prefix(cfg, layout)
+    assert metadata["prefix_source_stage"] == "pre_finetuning"
+    assert metadata["prefix_root"] == str(layout.ann_training_prefix_dir.resolve())
 
 
-def test_nonempty_post_finetuning_prefix_requires_kv(tmp_path):
-    layout = _layout_at(tmp_path)
+def test_conversion_prefix_validator_uses_post_finetuning_root(tmp_path):
+    cfg = _cfg("unaware", tmp_path)
+    layout = ArtifactLayout(cfg)
     state = layout.post_finetuning_prefix_dir / "prefix_state.json"
     state.parent.mkdir(parents=True)
     state.write_text(json.dumps({"prefix_token_ids": [123]}), encoding="utf-8")
     with pytest.raises(FileNotFoundError, match="KV cache"):
-        validate_post_finetuning_prefix(layout)
+        validate_conversion_prefix(cfg, layout)

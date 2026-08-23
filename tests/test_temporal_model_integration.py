@@ -23,9 +23,14 @@ class _BypassController:
         self.temporal_steps = steps
         self.mode = mode
         self.applied = []
+        self.applied_shapes = []
 
     def apply(self, layer, site, value):
         self.applied.append(site)
+        self.applied_shapes.append(tuple(value.shape))
+        return value
+
+    def apply_final_norm_phase(self, value):
         return value
 
     def record_saliency(self, *args):
@@ -94,6 +99,7 @@ def test_temporal_attention_sum_matches_ann_with_gqa_mask_and_batch(with_prefix)
         to_temporal(weights, steps).sum(0), reference_weights, rtol=1e-5, atol=1e-5
     )
     assert controller.applied == [2, 3, 4, 5, 6]
+    assert controller.applied_shapes[3][-1] == key_len
 
 
 class _RMSNorm(torch.nn.Module):
@@ -183,6 +189,21 @@ def test_tiny_decoder_temporal_sum_matches_ann_and_wraps_optional_qk_norm(with_q
         assert attention.k_norm in model._snn2_wrapped_norms
     else:
         assert not hasattr(attention, "q_norm")
+
+
+def test_deployment_embedding_is_uniformly_distributed_across_time():
+    torch.manual_seed(30)
+    model = _TinyModel().eval()
+    controller = _BypassController(steps=4)
+    install_model_integration(model, controller, rotation_state=None)
+    ids = torch.tensor([[1, 2, 3]])
+    original = model.model.embed_tokens.weight[ids].detach()
+    repeated = ids.repeat(4, 1)
+    frames = to_temporal(model.model.embed_tokens(repeated), 4)
+    for frame in frames:
+        torch.testing.assert_close(frame, original / 4)
+    torch.testing.assert_close(frames.sum(0), original)
+    assert torch.count_nonzero(frames[1:]).item() > 0
 
 
 def test_model_integration_keeps_non_deploy_forward_unchanged():

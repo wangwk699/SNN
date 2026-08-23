@@ -67,14 +67,7 @@ def deployment_attention_forward(
         softcap=softcap,
     )
     flat_weights = from_temporal(weight_increment)
-    if past_length:
-        prefix_weights = flat_weights[..., :past_length]
-        current_weights = controller.apply(
-            layer_index, 5, flat_weights[..., past_length:]
-        )
-        flat_weights = torch.cat((prefix_weights, current_weights), dim=-1)
-    else:
-        flat_weights = controller.apply(layer_index, 5, flat_weights)
+    flat_weights = controller.apply(layer_index, 5, flat_weights)
     weight_increment = to_temporal(flat_weights, steps)
     output_increment = temporal_seq_matmul(
         weight_increment, to_temporal(value, steps)

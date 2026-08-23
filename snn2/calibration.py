@@ -28,6 +28,8 @@ from .temporal_ops import (
     temporal_policy_metadata,
 )
 from .prefix_cache import install_prefix_kv_forward
+from .prefix_cache import prefix_length
+from .rotation import get_model_parts
 
 
 def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: str) -> dict[str, Any]:
@@ -134,6 +136,42 @@ def _qparams(
     return scale, zero, representable_min, representable_max
 
 
+def build_phase_state(
+    statistics: dict[str, Any], cfg: dict[str, Any]
+) -> dict[str, Any]:
+    if statistics.get("phase_tau_statistic") != "spikingllm_ema_channel_abs_max":
+        raise ValueError("Phase statistics do not use the SpikingLLM EMA policy")
+    if float(statistics.get("phase_tau_ema_factor", -1.0)) != 0.99:
+        raise ValueError("Phase statistics must use EMA factor 0.99")
+    phase_stat = statistics.get("phase_ema_abs_max")
+    updates = statistics.get("phase_ema_updates")
+    if not isinstance(phase_stat, torch.Tensor) or not isinstance(updates, torch.Tensor):
+        raise ValueError("Phase EMA statistics are missing")
+    if phase_stat.numel() != updates.numel() or not torch.any(updates > 0):
+        raise ValueError("Phase EMA statistics have invalid update metadata")
+    configured_group = int(cfg["calibration"].get("group_size", -1))
+    channels = int(phase_stat.numel())
+    reduction_group_size = channels if configured_group <= 0 else configured_group
+    runtime_group_size = -1 if configured_group <= 0 else configured_group
+    tau = _group_reduce(phase_stat.double(), reduction_group_size, "max").float()
+    phase_cfg = cfg["phase"]
+    steps = int(phase_cfg["T"])
+    return {
+        "state_kind": "phase",
+        "format_version": SITE_STATE_FORMAT_VERSION,
+        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
+        "T": steps,
+        "base": float(phase_cfg["base"]),
+        "surrogate_slope": float(phase_cfg["surrogate_slope"]),
+        "max_spikes": int(phase_cfg.get("max_spikes", steps)),
+        "group_size": runtime_group_size,
+        "tau": tau,
+        "v0": (0.5 * tau * 2 ** (-steps)).float(),
+        "tau_calibration": "spikingllm_ema_channel_abs_max",
+        "tau_ema_factor": 0.99,
+    }
+
+
 def build_site_states(
     statistics: dict[str, Any],
     cfg: dict[str, Any],
@@ -163,19 +201,8 @@ def build_site_states(
     )
 
     phase_cfg = cfg["phase"]
-    phase_tau = absolute.float()
-    phase_state = {
-        "state_kind": "phase",
-        "format_version": SITE_STATE_FORMAT_VERSION,
-        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
-        "T": int(phase_cfg["T"]),
-        "base": float(phase_cfg["base"]),
-        "surrogate_slope": float(phase_cfg["surrogate_slope"]),
-        "max_spikes": int(phase_cfg.get("max_spikes", 2)),
-        "group_size": runtime_group_size,
-        "tau": phase_tau,
-        "v0": (0.5 * phase_tau * 2 ** (-int(phase_cfg["T"]))).float(),
-    }
+    phase_state = build_phase_state(statistics, cfg)
+    phase_tau = phase_state["tau"]
 
     gif_cfg = cfg["gif"]
     base_bits = int(gif_cfg["base_bits"])
@@ -316,6 +343,12 @@ def materialize_calibration_states(
             "gif_low_ratio": states["gif"]["low_ratio"],
             "group_size": states["phase"]["group_size"],
             "clip_state_present": include_clip,
+            "phase_tau_calibration": states["phase"]["tau_calibration"],
+            "phase_tau_ema_factor": states["phase"]["tau_ema_factor"],
+            "state_sha256": {
+                name: sha256_file(directory / f"{name}_state.pt")
+                for name in states
+            },
         }
         if include_clip:
             summary["clip_valid"] = bool(
@@ -323,6 +356,23 @@ def materialize_calibration_states(
             )
         write_json(directory / "calibration_summary.json", summary)
         manifest["sites"][key] = summary
+    global_statistics = root / "_global" / "final_rmsnorm" / "statistics.pt"
+    if not global_statistics.exists():
+        raise FileNotFoundError(
+            f"Final RMSNorm Phase statistics are missing: {global_statistics}"
+        )
+    global_directory = global_statistics.parent
+    final_phase_state = build_phase_state(
+        torch.load(global_statistics, map_location="cpu", weights_only=False), cfg
+    )
+    final_phase_path = global_directory / "phase_state.pt"
+    torch.save(final_phase_state, final_phase_path)
+    manifest["global_states"] = {
+        "final_rmsnorm": {
+            "phase_state_path": str(final_phase_path.relative_to(root)),
+            "phase_state_sha256": sha256_file(final_phase_path),
+        }
+    }
     expected = int(cfg["calibration"]["expected_sites_per_layer"])
     if expected != SITE_COUNT:
         raise ValueError(
@@ -384,19 +434,33 @@ def collect_site_statistics(
         shuffle=False,
         collate_fn=CausalLMCollator(tokenizer),
     )
+    if int(cfg["calibration"].get("batch_size", 1)) != 1:
+        raise ValueError("SpikingLLM Phase EMA calibration requires batch_size=1")
     controller.mode = "collect"
+    actual_prefix_length = prefix_length(prefix_key_values)
     controller.statistics = StatisticsStore(
-        max_channels_by_site={5: int(cfg["data"]["max_seq_length"])}
+        max_channels_by_site={
+            5: int(cfg["data"]["max_seq_length"]) + actual_prefix_length
+        }
     )
     install_prefix_kv_forward(model, prefix_key_values, controller=controller)
     model.eval()
-    device = next(model.parameters()).device
-    for batch in loader:
-        model(
-            input_ids=batch["input_ids"].to(device),
-            attention_mask=batch["attention_mask"].to(device),
-            use_cache=False,
+    final_norm = get_model_parts(model).final_norm
+    final_norm_handle = final_norm.register_forward_hook(
+        lambda _module, _inputs, output: controller.statistics.update_global(
+            "final_rmsnorm", output
         )
+    )
+    device = next(model.parameters()).device
+    try:
+        for batch in loader:
+            model(
+                input_ids=batch["input_ids"].to(device),
+                attention_mask=batch["attention_mask"].to(device),
+                use_cache=False,
+            )
+    finally:
+        final_norm_handle.remove()
     stats_manifest = controller.statistics.reduce_and_save(site_root)
     validate_site_topology(
         root, expected_num_hidden_layers=expected_num_hidden_layers
@@ -435,6 +499,8 @@ def collect_site_statistics(
         "rotation_state_sha256": None,
         "learning_rate": None,
         "seed": int(cfg["experiment"]["seed"]),
+        "site5_max_channels": int(cfg["data"]["max_seq_length"]) + actual_prefix_length,
+        "actual_prefix_length": actual_prefix_length,
         **(extra_metadata or {}),
         "purpose": purpose,
         "analysis_only": purpose == "vanilla_analysis_calibration",

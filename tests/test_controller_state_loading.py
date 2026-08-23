@@ -6,6 +6,10 @@ from snn2.calibration import materialize_calibration_states
 from snn2.sites import SITE_IDS, SITE_NAMES, site_key
 from snn2.temporal_ops import (
     GIF_INTEGER_DECOMPOSITION,
+    PHASE_TAU_CALIBRATION,
+    PHASE_TAU_EMA_FACTOR,
+    SITE_STATE_FORMAT_VERSION,
+    TEMPORAL_IMPLEMENTATION_VERSION,
     temporal_policy_metadata,
 )
 
@@ -13,8 +17,8 @@ from snn2.temporal_ops import (
 def _header(kind):
     return {
         "state_kind": kind,
-        "format_version": 2,
-        "temporal_implementation_version": 2,
+        "format_version": SITE_STATE_FORMAT_VERSION,
+        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
     }
 
 
@@ -25,6 +29,10 @@ def _statistics():
         "value_max": torch.full((3,), 1.0),
         "saliency_row_count": torch.ones(3, dtype=torch.long),
         "saliency_sum": torch.arange(3, dtype=torch.float64),
+        "phase_ema_abs_max": torch.ones(3),
+        "phase_ema_updates": torch.ones(3, dtype=torch.long),
+        "phase_tau_statistic": PHASE_TAU_CALIBRATION,
+        "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
     }
 
 
@@ -33,6 +41,9 @@ def _write_bundle(root):
         directory = root / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
         directory.mkdir(parents=True)
         torch.save(_statistics(), directory / "statistics.pt")
+    global_directory = root / "_global" / "final_rmsnorm"
+    global_directory.mkdir(parents=True)
+    torch.save(_statistics(), global_directory / "statistics.pt")
     cfg = {
         "calibration": {"group_size": -1, "expected_sites_per_layer": 10},
         "phase": {"T": 2, "base": 2.0, "surrogate_slope": 4.0, "max_spikes": 2},
@@ -59,6 +70,8 @@ def _phase_state():
         "max_spikes": 2,
         "tau": torch.tensor([1.0]),
         "v0": torch.tensor([0.125]),
+        "tau_calibration": PHASE_TAU_CALIBRATION,
+        "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
     }
 
 
@@ -177,6 +190,12 @@ def test_deployment_rejects_cross_site_temporal_step_mismatch(tmp_path):
     state = torch.load(path, weights_only=False)
     state["T"] = 3
     torch.save(state, path)
+    import json
+    from snn2.artifacts import sha256_file
+    manifest_path = tmp_path / "calibration_state_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sites"][site_key(0, 2)]["state_sha256"]["phase"] = sha256_file(path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="Inconsistent temporal steps"):
         SiteController(site_root=tmp_path).set_deployment("phase")
 
@@ -191,3 +210,20 @@ def test_deployment_rejects_manifest_policy_mismatch(tmp_path):
     path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="incompatible legacy temporal"):
         SiteController(site_root=tmp_path).set_deployment("phase")
+
+def test_final_rmsnorm_phase_is_phase_only_and_not_part_of_sites(tmp_path):
+    _write_bundle(tmp_path)
+    phase = SiteController(site_root=tmp_path)
+    phase.set_deployment("phase")
+    value = torch.randn(2, 1, 3)
+    output = phase.apply_final_norm_phase(value)
+    assert output.shape == value.shape
+    assert phase._final_norm_phase is not None
+    assert set(phase._modules) == set()
+
+    for neuron in ("gif", "mtn"):
+        controller = SiteController(site_root=tmp_path)
+        controller.set_deployment(neuron)
+        assert controller.apply_final_norm_phase(value) is value
+        assert controller._final_norm_phase is None
+    assert not (tmp_path / "_global" / "final_rmsnorm" / "clip_state.pt").exists()

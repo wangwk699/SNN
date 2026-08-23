@@ -11,6 +11,11 @@ from snn2.temporal_ops import (
     GIF_HIGH_QMAX,
     GIF_LOCAL_STEPS,
     GIF_STEP_QMAX,
+    EMBEDDING_TEMPORAL_POLICY,
+    SOFTMAX_PREFIX_NEURON_POLICY,
+    PHASE_FINAL_NORM_POLICY,
+    PHASE_TAU_CALIBRATION,
+    PHASE_TAU_EMA_FACTOR,
     PREFIX_TEMPORAL_POLICY,
     TEMPORAL_IMPLEMENTATION,
     TEMPORAL_LAYOUT,
@@ -40,6 +45,11 @@ def test_all_twelve_generated_configs_carry_temporal_v2_and_qmax30(generated_con
             "temporal_layout": TEMPORAL_LAYOUT,
             "linear_bias_policy": TEMPORAL_LINEAR_BIAS_POLICY,
             "prefix_temporal_policy": PREFIX_TEMPORAL_POLICY,
+            "embedding_temporal_policy": EMBEDDING_TEMPORAL_POLICY,
+            "softmax_prefix_neuron_policy": SOFTMAX_PREFIX_NEURON_POLICY,
+            "phase_final_norm_policy": PHASE_FINAL_NORM_POLICY,
+            "phase_tau_calibration": PHASE_TAU_CALIBRATION,
+            "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
         }
         assert cfg["gif"]["high_qmax"] == GIF_HIGH_QMAX
         assert cfg["gif"]["temporal_steps"] == GIF_LOCAL_STEPS

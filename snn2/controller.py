@@ -19,6 +19,7 @@ class SiteController:
         self.statistics = StatisticsStore()
         self._modules: dict[str, dict[str, torch.nn.Module]] = {}
         self.temporal_steps: int | None = None
+        self._final_norm_phase: PhaseSurrogate | None = None
 
     def _load(self, layer_index: int, site_index: int) -> dict[str, torch.nn.Module]:
         key = site_key(layer_index, site_index)
@@ -111,3 +112,21 @@ class SiteController:
                 raise ValueError("Deployment site changed dtype or device")
             return from_temporal(output)
         raise ValueError(f"Unknown controller mode: {self.mode}")
+
+    def apply_final_norm_phase(self, x: torch.Tensor) -> torch.Tensor:
+        if self.mode != "deploy_phase":
+            return x
+        if self.site_root is None or self.temporal_steps is None:
+            raise RuntimeError("Final RMSNorm Phase deployment requires initialized site states")
+        if self._final_norm_phase is None:
+            path = self.site_root / "_global" / "final_rmsnorm" / "phase_state.pt"
+            state = torch.load(path, map_location="cpu", weights_only=False)
+            self._final_norm_phase = PhaseSurrogate(state)
+        first_buffer = next(self._final_norm_phase.buffers(), None)
+        if first_buffer is not None and first_buffer.device != x.device:
+            self._final_norm_phase.to(x.device)
+        temporal = to_temporal(x, self.temporal_steps)
+        output = self._final_norm_phase.temporal(temporal)
+        if output.shape != temporal.shape or output.dtype != x.dtype or output.device != x.device:
+            raise ValueError("Final RMSNorm Phase neuron changed shape, dtype, or device")
+        return from_temporal(output)

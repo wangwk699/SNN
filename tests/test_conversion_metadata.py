@@ -21,6 +21,11 @@ class _Layout:
         self.root = root
         self.post_finetuning_site_dir = root / "sites"
         self.post_finetuning_prefix_dir = root / "prefix"
+        self.pre_finetuning_prefix_dir = root / "pre_prefix"
+        self.ann_training_site_dir = root / "ann_sites"
+        self.ann_dir = root / "ann"
+        self.conversion_prefix_dir = self.post_finetuning_prefix_dir
+        self.conversion_site_dir = self.post_finetuning_site_dir
         self.ann_checkpoint_dir = root / "ann" / "final"
         self.rotation_dir = root / "rotation"
 
@@ -35,11 +40,17 @@ def _statistics():
         "value_max": torch.full((4,), 1.0),
         "saliency_row_count": torch.ones(4, dtype=torch.long),
         "saliency_sum": torch.arange(4, dtype=torch.float64),
+        "phase_ema_abs_max": torch.ones(4),
+        "phase_ema_updates": torch.ones(4, dtype=torch.long),
+        "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
+        "phase_tau_ema_factor": 0.99,
     }
 
 
 def _cfg(rotation_enabled=False):
     return {
+        "experiment": {"name": "test_conversion", "ann_mode": "vanilla"},
+        "ann_finetuning": {"mode": "vanilla"},
         "rotation": {"enabled": rotation_enabled},
         "post_finetuning": {"prefix_enabled": False},
         "calibration": {"group_size": -1, "expected_sites_per_layer": 10},
@@ -55,6 +66,9 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         site = layout.post_finetuning_site_dir / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
         site.mkdir(parents=True)
         torch.save(_statistics(), site / "statistics.pt")
+    global_directory = layout.post_finetuning_site_dir / "_global" / "final_rmsnorm"
+    global_directory.mkdir(parents=True)
+    torch.save(_statistics(), global_directory / "statistics.pt")
     materialize_calibration_states(
         layout.post_finetuning_site_dir,
         _cfg(rotation_enabled),
@@ -64,6 +78,7 @@ def _prepare(tmp_path, *, rotation_enabled=False):
             "post_finetuning_recalibration": True,
             "state_profile": "snn_conversion_without_clip",
             "common_clip_required": False,
+            "prefix_enabled": False,
         },
         include_clip=False,
         expected_num_hidden_layers=1,
@@ -96,6 +111,9 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         "prefix_kv_sha256": None,
         "calibration_root": str(layout.post_finetuning_site_dir.resolve()),
         "calibration_state_manifest_sha256": sha256_file(manifest),
+        "calibration_source_stage": "post_finetuning",
+        "prefix_source_stage": "post_finetuning",
+        "reused_ann_training_artifacts": False,
         "snn_clip_applied": False,
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         **temporal_policy_metadata(),
@@ -105,7 +123,7 @@ def _prepare(tmp_path, *, rotation_enabled=False):
     return layout, path
 
 
-def test_conversion_metadata_v4_is_accepted(tmp_path):
+def test_conversion_metadata_v5_is_accepted(tmp_path):
     layout, _ = _prepare(tmp_path)
     metadata = validate_conversion_metadata(_cfg(), layout, "gif")
     assert metadata["gif_high_qmax"] == 30

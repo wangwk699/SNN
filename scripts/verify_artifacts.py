@@ -4,8 +4,19 @@ from pathlib import Path
 from _common import parser, setup
 
 from snn2.artifacts import prefix_enabled_dirname, read_json, sha256_file, write_json
-from snn2.config import evaluation_prefix_enabled, post_finetuning_prefix_enabled, training_prefix_enabled
-from snn2.conversion import validate_calibration, validate_conversion_metadata
+from snn2.config import (
+    conversion_prefix_enabled,
+    conversion_reuses_ann_training_artifacts,
+    evaluation_prefix_enabled,
+    requires_ann_training_calibration,
+    requires_pre_finetuning_prefix,
+    training_prefix_enabled,
+)
+from snn2.conversion import (
+    validate_calibration,
+    validate_conversion_metadata,
+    validate_conversion_prefix,
+)
 from snn2.sites import topology_metadata
 from snn2.evaluation import resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
@@ -392,12 +403,9 @@ def main():
         # --------------------------------------------------
         # Rotation / Prefix shared artifacts
         # --------------------------------------------------
-        prefix_state_path = layout.post_finetuning_prefix_dir / "prefix_state.json"
-        required.extend([
-            layout.post_finetuning_site_dir / "calibration_state_manifest.json",
-            layout.vanilla_analysis_site_dir / "statistics_manifest.json",
-        ])
-        if post_finetuning_prefix_enabled(cfg) or evaluation_prefix_enabled(cfg):
+        prefix_state_path = layout.conversion_prefix_dir / "prefix_state.json"
+        required.append(layout.conversion_site_dir / "calibration_state_manifest.json")
+        if conversion_prefix_enabled(cfg) or evaluation_prefix_enabled(cfg):
             required.append(prefix_state_path)
 
         if cfg["rotation"]["enabled"]:
@@ -417,12 +425,12 @@ def main():
                     / "fused_base"
                     / "config.json",
 
-                    layout.ann_training_site_dir / "calibration_state_manifest.json",
-
                 ]
             )
-            if training_prefix_enabled(cfg):
+            if requires_pre_finetuning_prefix(cfg) and training_prefix_enabled(cfg):
                 required.append(layout.ann_training_prefix_dir / "prefix_state.json")
+            if requires_ann_training_calibration(cfg):
+                required.append(layout.ann_training_site_dir / "calibration_state_manifest.json")
 
         # --------------------------------------------------
         # First existence check.
@@ -441,6 +449,19 @@ def main():
                 "Missing required artifacts:\n"
                 + "\n".join(missing)
             )
+
+        if requires_pre_finetuning_prefix(cfg) and training_prefix_enabled(cfg):
+            training_prefix_state_path = layout.ann_training_prefix_dir / "prefix_state.json"
+            training_prefix_ids = [
+                int(value) for value in read_json(training_prefix_state_path).get("prefix_token_ids", [])
+            ]
+            if training_prefix_ids:
+                training_prefix_kv_path = layout.ann_training_prefix_dir / "prefixed_key_values.pt"
+                if not training_prefix_kv_path.exists():
+                    raise FileNotFoundError(
+                        "Non-empty Pre-finetuning Prefix requires its fixed KV cache: "
+                        f"{training_prefix_kv_path}"
+                    )
 
         if cfg["rotation"]["enabled"]:
             regression_path = layout.rotation_dir / "rotation_regression.json"
@@ -495,10 +516,7 @@ def main():
             ]
 
             if prefix_token_ids:
-                prefix_kv_path = (
-                    layout.post_finetuning_prefix_dir
-                    / "prefixed_key_values.pt"
-                )
+                prefix_kv_path = layout.conversion_prefix_dir / "prefixed_key_values.pt"
 
                 required.append(
                     prefix_kv_path
@@ -518,30 +536,35 @@ def main():
         # --------------------------------------------------
         # Calibration
         # --------------------------------------------------
+        reused = conversion_reuses_ann_training_artifacts(cfg)
         calibration = validate_calibration(
-            layout.post_finetuning_site_dir
+            layout.conversion_site_dir,
+            allow_clip_bundle=reused,
         )
-
-        vanilla_manifest = read_json(layout.vanilla_analysis_site_dir / "statistics_manifest.json")
-        _require_manifest_flags(vanilla_manifest, {"purpose": "vanilla_analysis_calibration", "analysis_only": True, "eligible_for_ann_training": False, "eligible_for_conversion": False, "post_finetuning_recalibration": False, "state_profile": "analysis_statistics_only", "common_clip_required": False, "rotation_enabled": False, "prefix_protocol_enabled": False}, "Vanilla analysis")
-        _verify_hashes(vanilla_manifest, "Vanilla analysis calibration")
-        if cfg["rotation"]["enabled"]:
-            ann_manifest = read_json(layout.ann_training_site_dir / "calibration_state_manifest.json")
-            _require_manifest_flags(ann_manifest, {"purpose": "ann_training_calibration", "analysis_only": False, "eligible_for_ann_training": True, "eligible_for_conversion": False, "post_finetuning_recalibration": False, "state_profile": "ann_training_with_common_clip", "common_clip_required": True, "rotation_enabled": True, "prefix_protocol_enabled": training_prefix_enabled(cfg)}, "ANN-training")
-            _verify_hashes(ann_manifest,"ANN-training calibration")
-            validate_temporal_policy(ann_manifest, context="ANN-training calibration manifest")
-            validate_site_state_bundle(
-                layout.ann_training_site_dir, require_clip=True
-            )
-        post_manifest = read_json(layout.post_finetuning_site_dir / "calibration_state_manifest.json")
-        _require_manifest_flags(post_manifest, {"purpose": "post_finetuning_conversion_calibration", "analysis_only": False, "eligible_for_ann_training": False, "eligible_for_conversion": True, "post_finetuning_recalibration": True, "state_profile": "snn_conversion_without_clip", "common_clip_required": False, "prefix_protocol_enabled": post_finetuning_prefix_enabled(cfg)}, "Post-finetuning")
-        if not post_manifest.get("source_ann_checkpoint") or not post_manifest.get("source_ann_config_sha256") or not post_manifest.get("calibration_data_manifest_sha256"):
-            raise ValueError("Post-finetuning calibration lacks required final-ANN or data provenance")
-        expected_rotation = bool(cfg["rotation"]["enabled"])
-        if post_manifest.get("rotation_enabled") != expected_rotation:
-            raise ValueError("Post-finetuning calibration rotation provenance disagrees with config")
-        _verify_hashes(post_manifest, "Post-finetuning calibration")
-        validate_temporal_policy(post_manifest, context="Post-finetuning calibration manifest")
+        source_manifest = read_json(
+            layout.conversion_site_dir / "calibration_state_manifest.json"
+        )
+        expected_flags = (
+            {
+                "purpose": "ann_training_calibration",
+                "eligible_for_ann_training": True,
+                "post_finetuning_recalibration": False,
+                "state_profile": "ann_training_with_common_clip",
+                "common_clip_required": True,
+            }
+            if reused
+            else {
+                "purpose": "post_finetuning_conversion_calibration",
+                "eligible_for_conversion": True,
+                "post_finetuning_recalibration": True,
+                "state_profile": "snn_conversion_without_clip",
+                "common_clip_required": False,
+            }
+        )
+        _require_manifest_flags(source_manifest, expected_flags, "Conversion source")
+        _verify_hashes(source_manifest, "Conversion source calibration")
+        validate_temporal_policy(source_manifest, context="Conversion source manifest")
+        validate_conversion_prefix(cfg, layout)
 
         conversions = {}
 

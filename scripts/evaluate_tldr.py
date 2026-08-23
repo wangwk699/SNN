@@ -12,7 +12,13 @@ from tqdm.auto import tqdm
 from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
 from snn2.controller import SiteController
 from snn2.conversion import validate_conversion_metadata
-from snn2.config import evaluation_prefix_enabled, rotated_pre_finetuning_prefix_enabled
+from snn2.config import (
+    conversion_calibration_stage,
+    conversion_reuses_ann_training_artifacts,
+    evaluation_prefix_enabled,
+    final_evaluation_prefix_artifact_stage,
+    rotated_pre_finetuning_prefix_enabled,
+)
 from snn2.data import (
     encode_tldr_generation_prompt,
     load_selected_raw,
@@ -225,7 +231,7 @@ def main():
         controller = SiteController(
             mode="identity",
             site_root=(
-                layout.post_finetuning_site_dir
+                layout.conversion_site_dir
                 if not args.base and not args.rotated_pre_finetuning
                 else None
             ),
@@ -518,16 +524,29 @@ def main():
                         else str(
                             layout.rotated_pre_finetuning_prefix_dir
                             if args.rotated_pre_finetuning
-                            else layout.post_finetuning_prefix_dir
+                            else layout.conversion_prefix_dir
                         )
                     ),
+                    "prefix_source_stage": (
+                        None if args.base or args.rotated_pre_finetuning
+                        else final_evaluation_prefix_artifact_stage(cfg)
+                    ),
+                    "calibration_source_stage": (
+                        None if args.base or args.rotated_pre_finetuning
+                        else conversion_calibration_stage(cfg)
+                    ),
+                    "reused_ann_training_artifacts": (
+                        False if args.base or args.rotated_pre_finetuning
+                        else conversion_reuses_ann_training_artifacts(cfg)
+                    ),
                     "post_finetuning_recalibration": (
-                        not args.base and not args.rotated_pre_finetuning
+                        False if args.base or args.rotated_pre_finetuning
+                        else not conversion_reuses_ann_training_artifacts(cfg)
                     ),
                     "calibration_root": (
                         None
                         if args.base or args.rotated_pre_finetuning
-                        else str(layout.post_finetuning_site_dir)
+                        else str(layout.conversion_site_dir)
                     ),
                     "rotation_enabled": bool(cfg["rotation"]["enabled"]),
 

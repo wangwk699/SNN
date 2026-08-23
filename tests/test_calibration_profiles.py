@@ -13,6 +13,10 @@ def _statistics():
         "value_max": torch.full((4,), 1.0),
         "saliency_row_count": torch.ones(4, dtype=torch.long),
         "saliency_sum": torch.arange(4, dtype=torch.float64),
+        "phase_ema_abs_max": torch.ones(4),
+        "phase_ema_updates": torch.ones(4, dtype=torch.long),
+        "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
+        "phase_tau_ema_factor": 0.99,
     }
 
 
@@ -32,6 +36,9 @@ def _write_statistics(root):
         directory.mkdir(parents=True)
         torch.save(_statistics(), directory / "statistics.pt")
         directories.append(directory)
+    global_directory = root / "_global" / "final_rmsnorm"
+    global_directory.mkdir(parents=True)
+    torch.save(_statistics(), global_directory / "statistics.pt")
     return directories
 
 
@@ -87,6 +94,8 @@ def test_ann_training_materialization_keeps_common_clip(tmp_path):
     )
 
     assert manifest["state_profile"] == "ann_training_with_common_clip"
+    assert (tmp_path / "_global" / "final_rmsnorm" / "phase_state.pt").exists()
+    assert manifest["global_states"]["final_rmsnorm"]["phase_state_sha256"]
     assert all((directory / "clip_state.pt").exists() for directory in directories)
     summary = json.loads(
         (directories[0] / "calibration_summary.json").read_text(encoding="utf-8")

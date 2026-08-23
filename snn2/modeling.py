@@ -11,6 +11,7 @@ from .rotation import load_rotation_state
 from .prefix_cache import load_prefix_key_values
 from .config import (
     evaluation_prefix_enabled,
+    final_evaluation_prefix_artifact_stage,
     post_finetuning_prefix_enabled,
     rotated_pre_finetuning_prefix_enabled,
     training_prefix_enabled,
@@ -96,7 +97,12 @@ def prefix_ids_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: 
     elif stage == "final_evaluation":
         if not evaluation_prefix_enabled(cfg):
             return []
-        path = layout.post_finetuning_prefix_dir / "prefix_state.json"
+        artifact_stage = final_evaluation_prefix_artifact_stage(cfg)
+        path = (
+            layout.ann_training_prefix_dir
+            if artifact_stage == "ann_training"
+            else layout.post_finetuning_prefix_dir
+        ) / "prefix_state.json"
     elif stage == "rotated_pre_finetuning":
         if (
             not bool(cfg["rotation"]["enabled"])
@@ -124,8 +130,14 @@ def prefix_key_values_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, 
         directory = layout.ann_training_prefix_dir
     elif stage == "rotated_pre_finetuning":
         directory = layout.rotated_pre_finetuning_prefix_dir
-    elif stage in {"post_finetuning", "final_evaluation"}:
+    elif stage == "post_finetuning":
         directory = layout.post_finetuning_prefix_dir
+    elif stage == "final_evaluation":
+        directory = (
+            layout.ann_training_prefix_dir
+            if final_evaluation_prefix_artifact_stage(cfg) == "ann_training"
+            else layout.post_finetuning_prefix_dir
+        )
     else:
         raise ValueError(f"Unknown prefix stage: {stage}")
     path = directory / "prefixed_key_values.pt"

@@ -5,13 +5,14 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .artifacts import ArtifactLayout, write_json
-from .config import training_prefix_enabled
+from .artifacts import ArtifactLayout, sha256_file, write_json
+from .config import is_aware_ann_mode, training_prefix_enabled
 from .controller import SiteController
 from .data import CausalLMCollator, load_selected_raw, tokenize_dataset
 from .model_integration import install_model_integration
 from .modeling import load_model, load_tokenizer, model_source_for_stage, prefix_ids_for_stage, prefix_key_values_for_stage, rotation_state
 from .prefix_cache import install_prefix_kv_forward
+from .state_validation import validate_site_state_bundle
 
 
 def format_runtime_hms(runtime_seconds: float) -> str:
@@ -32,6 +33,8 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
     model = load_model(cfg, source, training=True)
     mode = cfg["replacement"]["train_mode"]
     controller = SiteController(mode=mode, site_root=layout.ann_training_site_dir)
+    if is_aware_ann_mode(cfg):
+        validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)
     if cfg["rotation"]["enabled"] or mode != "none":
         install_model_integration(model, controller, rotation_state(cfg, layout))
     model.config.snn2_ann_mode = cfg["experiment"]["ann_mode"]
@@ -159,6 +162,35 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             ),
         }
     )
+    if training_prefix_enabled(cfg):
+        prefix_state_path = layout.ann_training_prefix_dir / "prefix_state.json"
+        prefix_kv_path = layout.ann_training_prefix_dir / "prefixed_key_values.pt"
+        if not prefix_state_path.exists():
+            raise FileNotFoundError(prefix_state_path)
+        metrics.update(
+            {
+                "ann_training_prefix_root": str(layout.ann_training_prefix_dir.resolve()),
+                "ann_training_prefix_state_sha256": sha256_file(prefix_state_path),
+                "ann_training_prefix_kv_sha256": (
+                    sha256_file(prefix_kv_path) if prefixes else None
+                ),
+                "ann_training_prefix_token_ids": prefixes,
+            }
+        )
+    if is_aware_ann_mode(cfg):
+        calibration_manifest = (
+            layout.ann_training_site_dir / "calibration_state_manifest.json"
+        )
+        metrics.update(
+            {
+                "ann_training_calibration_root": str(
+                    layout.ann_training_site_dir.resolve()
+                ),
+                "ann_training_calibration_manifest_sha256": sha256_file(
+                    calibration_manifest
+                ),
+            }
+        )
     if "train_runtime" in metrics:
         metrics["train_runtime_hms"] = format_runtime_hms(metrics["train_runtime"])
     if trainer.is_world_process_zero():

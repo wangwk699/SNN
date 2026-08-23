@@ -26,6 +26,8 @@ class SiteStatistics:
     saliency_row_count: torch.Tensor
     row_count: torch.Tensor
     tensor_count: torch.Tensor
+    phase_ema_abs_max: torch.Tensor
+    phase_ema_updates: torch.Tensor
 
     @classmethod
     def create(cls, channels: int, variable_channels: bool = False) -> "SiteStatistics":
@@ -41,6 +43,8 @@ class SiteStatistics:
             saliency_row_count=torch.zeros(channels, dtype=torch.int64),
             row_count=torch.zeros((), dtype=torch.int64),
             tensor_count=torch.zeros((), dtype=torch.int64),
+            phase_ema_abs_max=torch.zeros(channels, dtype=torch.float64),
+            phase_ema_updates=torch.zeros(channels, dtype=torch.int64),
         )
 
     @torch.no_grad()
@@ -60,6 +64,12 @@ class SiteStatistics:
         self.value_min[:active].copy_(torch.minimum(self.value_min[:active], current_min))
         self.value_max[:active].copy_(torch.maximum(self.value_max[:active], current_max))
         self.abs_max[:active].copy_(torch.maximum(self.abs_max[:active], current_abs_max))
+
+        previous_updates = self.phase_ema_updates[:active]
+        first = previous_updates == 0
+        ema = self.phase_ema_abs_max[:active]
+        ema.copy_(torch.where(first, current_abs_max, 0.99 * ema + 0.01 * current_abs_max))
+        previous_updates.add_(1)
 
         self.sum_abs[:active].add_(work.abs().sum(dim=0).double().cpu())
         self.sum_sq[:active].add_(work.square().sum(dim=0).double().cpu())
@@ -90,6 +100,11 @@ class SiteStatistics:
     def distributed_reduce(self) -> None:
         if not torch.distributed.is_available() or not torch.distributed.is_initialized():
             return
+        if torch.distributed.get_world_size() > 1:
+            raise RuntimeError(
+                "SpikingLLM Phase EMA calibration is order-dependent and only supports "
+                "single-process calibration"
+            )
         backend = torch.distributed.get_backend()
         device = torch.device("cuda") if backend == "nccl" else torch.device("cpu")
         reductions = (
@@ -121,6 +136,10 @@ class SiteStatistics:
             "saliency_row_count": self.saliency_row_count,
             "row_count": self.row_count,
             "tensor_count": self.tensor_count,
+            "phase_ema_abs_max": self.phase_ema_abs_max,
+            "phase_ema_updates": self.phase_ema_updates,
+            "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
+            "phase_tau_ema_factor": 0.99,
         }
 
     def summary(self) -> dict[str, Any]:
@@ -146,12 +165,19 @@ class SiteStatistics:
                 if torch.any(self.saliency_row_count > 0)
                 else 0.0
             ),
+            "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
+            "phase_tau_ema_factor": 0.99,
+            "phase_ema_updates_min_seen": int(
+                self.phase_ema_updates[self.phase_ema_updates > 0].min().item()
+            ) if torch.any(self.phase_ema_updates > 0) else 0,
+            "phase_ema_updates_max": int(self.phase_ema_updates.max().item()),
         }
 
 
 class StatisticsStore:
     def __init__(self, max_channels_by_site: dict[int, int] | None = None):
         self.items: dict[str, SiteStatistics] = {}
+        self.global_items: dict[str, SiteStatistics] = {}
         self.max_channels_by_site = dict(max_channels_by_site or {})
 
     def update(self, layer_index: int, site_index: int, activation: torch.Tensor) -> None:
@@ -169,6 +195,11 @@ class StatisticsStore:
         if key not in self.items:
             raise RuntimeError(f"Activation statistics must be recorded before saliency: {key}")
         self.items[key].update_saliency(score)
+
+    def update_global(self, name: str, activation: torch.Tensor) -> None:
+        if name not in self.global_items:
+            self.global_items[name] = SiteStatistics.create(int(activation.shape[-1]))
+        self.global_items[name].update(activation)
 
     def update_saliency_reduced(
         self,
@@ -193,5 +224,14 @@ class StatisticsStore:
             summary = stats.summary()
             write_json(directory / "statistics_summary.json", summary)
             manifest["sites"][key] = summary
+        manifest["global_states"] = {}
+        for name, stats in sorted(self.global_items.items()):
+            stats.distributed_reduce()
+            directory = root / "_global" / name
+            directory.mkdir(parents=True, exist_ok=True)
+            torch.save(stats.state_dict(), directory / "statistics.pt")
+            summary = stats.summary()
+            write_json(directory / "statistics_summary.json", summary)
+            manifest["global_states"][name] = summary
         write_json(root / "statistics_manifest.json", manifest)
         return manifest

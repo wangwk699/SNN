@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .config import save_yaml
+from .config import conversion_prefix_enabled, is_aware_ann_mode, save_yaml
 
 
 def prefix_enabled_dirname(enabled: bool) -> str:
@@ -203,6 +203,26 @@ class ArtifactLayout:
         return self.post_finetuning_conversion_calibration_dir / "sites"
 
     @property
+    def conversion_prefix_dir(self) -> Path:
+        return (
+            self.ann_training_prefix_dir
+            if is_aware_ann_mode(self._cfg)
+            else self.post_finetuning_prefix_dir
+        )
+
+    @property
+    def conversion_calibration_dir(self) -> Path:
+        return (
+            self.ann_training_calibration_dir
+            if is_aware_ann_mode(self._cfg)
+            else self.post_finetuning_conversion_calibration_dir
+        )
+
+    @property
+    def conversion_site_dir(self) -> Path:
+        return self.conversion_calibration_dir / "sites"
+
+    @property
     def logs_dir(self) -> Path:
         return self.root / "logs"
 
@@ -210,9 +230,7 @@ class ArtifactLayout:
         return self.root / "snn" / neuron
 
     def snn_conversion_dir(self, neuron: str) -> Path:
-        enabled = bool(
-            self._cfg.get("post_finetuning", {}).get("prefix_enabled", True)
-        )
+        enabled = conversion_prefix_enabled(self._cfg)
         return self.snn_dir(neuron) / "conversion" / prefix_enabled_dirname(enabled)
 
     def ensure(self) -> None:

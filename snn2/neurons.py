@@ -78,6 +78,13 @@ class PhaseSurrogate(nn.Module):
     def __init__(self, state: dict[str, Any]):
         super().__init__()
         _validate_state_header(state, "phase")
+        if (
+            state.get("tau_calibration") != "spikingllm_ema_channel_abs_max"
+            or float(state.get("tau_ema_factor", -1.0)) != 0.99
+        ):
+            raise ValueError(
+                "Incompatible Phase tau calibration; SpikingLLM EMA factor 0.99 is required"
+            )
         self.T = int(state["T"])
         self.base = float(state["base"])
         self.group_size = int(state["group_size"])

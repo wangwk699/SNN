@@ -10,6 +10,10 @@ def test_gif_high_qparams_use_two_chunk_capacity():
         "value_max": torch.full((4,), 1.0),
         "saliency_row_count": torch.ones(4, dtype=torch.long),
         "saliency_sum": torch.arange(4, dtype=torch.float64),
+        "phase_ema_abs_max": torch.ones(4),
+        "phase_ema_updates": torch.ones(4, dtype=torch.long),
+        "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
+        "phase_tau_ema_factor": 0.99,
     }
     cfg = {
         "calibration": {"group_size": -1},

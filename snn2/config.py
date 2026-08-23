@@ -10,12 +10,17 @@ import yaml
 
 from .sites import SITE_COUNT
 from .temporal_ops import (
+    EMBEDDING_TEMPORAL_POLICY,
     GIF_ADD_BITS,
     GIF_BASE_BITS,
     GIF_HIGH_QMAX,
     GIF_LOCAL_STEPS,
     GIF_STEP_QMAX,
     PREFIX_TEMPORAL_POLICY,
+    PHASE_FINAL_NORM_POLICY,
+    PHASE_TAU_CALIBRATION,
+    PHASE_TAU_EMA_FACTOR,
+    SOFTMAX_PREFIX_NEURON_POLICY,
     TEMPORAL_IMPLEMENTATION,
     TEMPORAL_LAYOUT,
     TEMPORAL_LINEAR_BIAS_POLICY,
@@ -23,6 +28,7 @@ from .temporal_ops import (
 
 
 ANN_MODES = {"vanilla", "unaware", "phase_aware", "gif_aware"}
+AWARE_ANN_MODES = {"phase_aware", "gif_aware"}
 SNN_NEURONS = {"phase", "gif", "mtn"}
 
 
@@ -60,7 +66,8 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     mode = cfg["experiment"]["ann_mode"]
     if mode == "vanilla":
         cfg["rotation"]["enabled"] = False
-        cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
+        cfg["ann_training"]["prefix_enabled"] = False
+        cfg["prefix"]["enabled"] = False
         cfg["replacement"]["train_mode"] = "none"
     elif mode == "unaware":
         cfg["rotation"]["enabled"] = True
@@ -70,10 +77,22 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
         cfg["rotation"]["enabled"] = True
         cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
         cfg["replacement"]["train_mode"] = "phase"
+        cfg["post_finetuning"].update({
+            "rediscover_prefix": False,
+            "recalibrate_sites": False,
+            "post_finetuning_recalibration": False,
+            "prefix_enabled": False,
+        })
     elif mode == "gif_aware":
         cfg["rotation"]["enabled"] = True
         cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
         cfg["replacement"]["train_mode"] = "gif"
+        cfg["post_finetuning"].update({
+            "rediscover_prefix": False,
+            "recalibrate_sites": False,
+            "post_finetuning_recalibration": False,
+            "prefix_enabled": False,
+        })
     return cfg
 
 
@@ -129,6 +148,11 @@ def validate_config(cfg: dict[str, Any]) -> None:
         "temporal_layout": TEMPORAL_LAYOUT,
         "linear_bias_policy": TEMPORAL_LINEAR_BIAS_POLICY,
         "prefix_temporal_policy": PREFIX_TEMPORAL_POLICY,
+        "embedding_temporal_policy": EMBEDDING_TEMPORAL_POLICY,
+        "softmax_prefix_neuron_policy": SOFTMAX_PREFIX_NEURON_POLICY,
+        "phase_final_norm_policy": PHASE_FINAL_NORM_POLICY,
+        "phase_tau_calibration": PHASE_TAU_CALIBRATION,
+        "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
     }
     unexpected_deployment = sorted(set(deployment) - set(expected_deployment))
     if unexpected_deployment:
@@ -188,9 +212,16 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError(
             "rotation.regression_top1_agreement_threshold must be in [0, 1)"
         )
+    expected_post = not is_aware_ann_mode(cfg)
     for key in ("rediscover_prefix", "recalibrate_sites", "post_finetuning_recalibration"):
-        if not bool(cfg["post_finetuning"].get(key, False)):
-            raise ValueError(f"Main experiments require post_finetuning.{key}=true")
+        if bool(cfg["post_finetuning"].get(key, False)) != expected_post:
+            raise ValueError(
+                f"{mode} requires post_finetuning.{key}={str(expected_post).lower()}"
+            )
+    if mode == "vanilla" and training_prefix_enabled(cfg):
+        raise ValueError("vanilla must not use a Pre-finetuning Prefix")
+    if mode != "vanilla" and not training_prefix_enabled(cfg):
+        raise ValueError(f"{mode} requires the shared Pre-finetuning Prefix")
     for section in ("ann_training", "rotated_pre_finetuning", "post_finetuning", "evaluation"):
         value = cfg[section].get("prefix_enabled")
         if not isinstance(value, bool):
@@ -203,6 +234,38 @@ def training_prefix_enabled(cfg: dict[str, Any]) -> bool:
             "prefix_enabled", cfg["prefix"].get("enabled", False)
         )
     )
+
+
+def is_aware_ann_mode(cfg: dict[str, Any]) -> bool:
+    return cfg["experiment"]["ann_mode"] in AWARE_ANN_MODES
+
+
+def requires_pre_finetuning_prefix(cfg: dict[str, Any]) -> bool:
+    return cfg["experiment"]["ann_mode"] != "vanilla"
+
+
+def requires_ann_training_calibration(cfg: dict[str, Any]) -> bool:
+    return is_aware_ann_mode(cfg)
+
+
+def requires_post_finetuning_artifacts(cfg: dict[str, Any]) -> bool:
+    return not is_aware_ann_mode(cfg)
+
+
+def conversion_reuses_ann_training_artifacts(cfg: dict[str, Any]) -> bool:
+    return is_aware_ann_mode(cfg)
+
+
+def conversion_prefix_enabled(cfg: dict[str, Any]) -> bool:
+    return training_prefix_enabled(cfg) if is_aware_ann_mode(cfg) else post_finetuning_prefix_enabled(cfg)
+
+
+def conversion_calibration_stage(cfg: dict[str, Any]) -> str:
+    return "ann_training" if is_aware_ann_mode(cfg) else "post_finetuning"
+
+
+def final_evaluation_prefix_artifact_stage(cfg: dict[str, Any]) -> str:
+    return "ann_training" if is_aware_ann_mode(cfg) else "post_finetuning"
 
 
 def post_finetuning_prefix_enabled(cfg: dict[str, Any]) -> bool:

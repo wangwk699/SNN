@@ -7,15 +7,21 @@ import torch
 import torch.nn.functional as F
 
 
-TEMPORAL_IMPLEMENTATION_VERSION = 2
-TEMPORAL_IMPLEMENTATION = "sparse_llm_temporal_v2"
+TEMPORAL_IMPLEMENTATION_VERSION = 3
+TEMPORAL_IMPLEMENTATION = "sparse_llm_temporal_v3"
 TEMPORAL_LAYOUT = "time_major_flattened_TB"
 TEMPORAL_LINEAR_BIAS_POLICY = "first_timestep_once"
 PREFIX_TEMPORAL_POLICY = "uniform_kv_divide_by_T"
 
-SITE_STATE_FORMAT_VERSION = 2
-CALIBRATION_MANIFEST_FORMAT_VERSION = 3
-CONVERSION_METADATA_FORMAT_VERSION = 4
+EMBEDDING_TEMPORAL_POLICY = "uniform_embedding_divide_by_T"
+SOFTMAX_PREFIX_NEURON_POLICY = "full_softmax_tensor_including_prefix"
+PHASE_FINAL_NORM_POLICY = "phase_neuron_after_final_temporal_rmsnorm"
+PHASE_TAU_CALIBRATION = "spikingllm_ema_channel_abs_max"
+PHASE_TAU_EMA_FACTOR = 0.99
+
+SITE_STATE_FORMAT_VERSION = 3
+CALIBRATION_MANIFEST_FORMAT_VERSION = 4
+CONVERSION_METADATA_FORMAT_VERSION = 5
 
 GIF_BASE_BITS = 4
 GIF_ADD_BITS = 1
@@ -38,6 +44,11 @@ def temporal_policy_metadata() -> dict[str, Any]:
         "temporal_layout": TEMPORAL_LAYOUT,
         "temporal_linear_bias_policy": TEMPORAL_LINEAR_BIAS_POLICY,
         "prefix_temporal_policy": PREFIX_TEMPORAL_POLICY,
+        "embedding_temporal_policy": EMBEDDING_TEMPORAL_POLICY,
+        "softmax_prefix_neuron_policy": SOFTMAX_PREFIX_NEURON_POLICY,
+        "phase_final_norm_policy": PHASE_FINAL_NORM_POLICY,
+        "phase_tau_calibration": PHASE_TAU_CALIBRATION,
+        "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
         "gif_high_qmax": GIF_HIGH_QMAX,
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         "gif_per_step_qmax": GIF_STEP_QMAX,

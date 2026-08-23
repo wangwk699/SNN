@@ -99,12 +99,7 @@ def snn2_eager_attention_forward(
         cap = float(kwargs["softcap"])
         weights = torch.tanh(weights / cap) * cap
     weights = F.softmax(weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    if past_length:
-        prefix_weights = weights[..., :past_length]
-        current_weights = controller.apply(layer_index, 5, weights[..., past_length:])
-        weights = torch.cat((prefix_weights, current_weights), dim=-1)
-    else:
-        weights = controller.apply(layer_index, 5, weights)
+    weights = controller.apply(layer_index, 5, weights)
     weights = F.dropout(weights, p=dropout, training=module.training)
     output = torch.matmul(weights, value)
     if controller.mode == "collect":
@@ -122,8 +117,6 @@ def snn2_eager_attention_forward(
             position_score.add_(
                 (weights[:, :, start:stop].float() * back.float()).sum(dim=(0, 1, 2))
             )
-        if past_length:
-            position_score = position_score[past_length:]
         controller.record_saliency_reduced(
             layer_index,
             5,
@@ -288,11 +281,15 @@ def install_model_integration(
         if steps <= 0 or output.shape[0] % steps != 0:
             raise ValueError("Temporal embedding batch is incompatible with deployment steps")
         batch = output.shape[0] // steps
-        temporal = output.reshape(steps, batch, *output.shape[1:]).clone()
-        temporal[1:] = 0
+        temporal = output.reshape(steps, batch, *output.shape[1:]) / steps
         return temporal.reshape_as(output)
 
     handles.append(parts.embedding.register_forward_hook(temporal_embedding_hook))
+    handles.append(
+        parts.final_norm.register_forward_hook(
+            lambda _module, _inputs, output: controller.apply_final_norm_phase(output)
+        )
+    )
 
     for layer_index, layer in enumerate(parts.layers):
         attention = layer.self_attn

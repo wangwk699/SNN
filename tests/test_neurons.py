@@ -2,13 +2,16 @@ import pytest
 import torch
 
 from snn2.neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, StaticGIF
-from snn2.temporal_ops import GIF_INTEGER_DECOMPOSITION
+from snn2.temporal_ops import (
+    GIF_INTEGER_DECOMPOSITION, PHASE_TAU_CALIBRATION, PHASE_TAU_EMA_FACTOR,
+    SITE_STATE_FORMAT_VERSION, TEMPORAL_IMPLEMENTATION_VERSION,
+)
 
 def _header(kind):
     return {
         "state_kind": kind,
-        "format_version": 2,
-        "temporal_implementation_version": 2,
+        "format_version": SITE_STATE_FORMAT_VERSION,
+        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
     }
 
 
@@ -53,6 +56,8 @@ def test_phase_training_output_is_static():
             "max_spikes": 2,
             "tau": torch.tensor([2.0]),
             "v0": torch.tensor([0.0625]),
+            "tau_calibration": PHASE_TAU_CALIBRATION,
+            "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
         }
     )
     x = torch.randn(2, 5, 16, requires_grad=True)
@@ -154,6 +159,8 @@ def test_non_gif_neurons_reject_format_v1(kind):
             **_header("phase"), "T": 2, "base": 2.0, "group_size": -1,
             "surrogate_slope": 4.0, "tau": torch.tensor([1.0]),
             "v0": torch.tensor([0.125]),
+            "tau_calibration": PHASE_TAU_CALIBRATION,
+            "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
         }
         factory = PhaseSurrogate
     elif kind == "mtn":

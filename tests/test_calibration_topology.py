@@ -17,6 +17,10 @@ def _statistics():
         "value_max": torch.full((4,), 1.0),
         "saliency_row_count": torch.ones(4, dtype=torch.long),
         "saliency_sum": torch.arange(4, dtype=torch.float64),
+        "phase_ema_abs_max": torch.ones(4),
+        "phase_ema_updates": torch.ones(4, dtype=torch.long),
+        "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
+        "phase_tau_ema_factor": 0.99,
     }
 
 
@@ -34,6 +38,9 @@ def _write_site(root, index, name, layer=0):
     directory.mkdir(parents=True)
     for filename in _REQUIRED:
         torch.save(_statistics(), directory / filename)
+    global_directory = root / "_global" / "final_rmsnorm"
+    global_directory.mkdir(parents=True, exist_ok=True)
+    torch.save(_statistics(), global_directory / "statistics.pt")
     return directory
 
 
