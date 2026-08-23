@@ -39,7 +39,7 @@ def _write_bundle(root):
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
         "mtn": {"T": 2, "K": 2, "threshold_factor": 0.75},
     }
-    materialize_calibration_states(root, cfg, include_clip=True)
+    materialize_calibration_states(root, cfg, include_clip=True, expected_num_hidden_layers=1)
 
 
 

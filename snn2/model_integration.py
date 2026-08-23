@@ -346,6 +346,34 @@ def install_model_integration(
     model.config.snn2_site_integration = True
 
 
+def _repeat_temporal_batch_tensor(
+    value: torch.Tensor,
+    *,
+    steps: int,
+    batch: int,
+    name: str,
+) -> torch.Tensor:
+    """Expand a batch tensor in time-major order, failing on ambiguous shapes."""
+    if value.ndim == 0:
+        raise ValueError(f"{name} cannot be scalar")
+    if value.shape[0] == steps * batch:
+        temporal = value.reshape(steps, batch, *value.shape[1:])
+        if any(
+            not torch.equal(temporal[0], temporal[timestep])
+            for timestep in range(1, steps)
+        ):
+            raise ValueError(f"{name} must be identical in every temporal frame")
+        return value
+    if value.shape[0] == batch:
+        return value.repeat(steps, *([1] * (value.ndim - 1)))
+    if value.shape[0] == 1:
+        expanded = value.expand(batch, *value.shape[1:])
+        return expanded.repeat(steps, *([1] * (value.ndim - 1)))
+    raise ValueError(
+        f"{name} leading dimension is incompatible with T={steps}, B={batch}"
+    )
+
+
 def temporal_forward(
     model: torch.nn.Module,
     controller: SiteController,
@@ -357,14 +385,31 @@ def temporal_forward(
         raise RuntimeError("Temporal deployment requires model.eval()")
     if controller.temporal_steps is None:
         raise RuntimeError("Controller deployment timestep is unset")
-    steps = controller.temporal_steps
+    steps = int(controller.temporal_steps)
+    batch = int(input_ids.shape[0])
     repeated_ids = input_ids.repeat(steps, 1)
     repeated_mask = attention_mask.repeat(steps, 1)
+    model_kwargs = dict(kwargs)
+    if model_kwargs.get("position_ids") is not None:
+        position_ids = model_kwargs["position_ids"]
+        if position_ids.ndim != 2 or position_ids.shape[-1] != input_ids.shape[-1]:
+            raise ValueError("position_ids must have shape [B, L] or [T*B, L]")
+        model_kwargs["position_ids"] = _repeat_temporal_batch_tensor(
+            position_ids,
+            steps=steps,
+            batch=batch,
+            name="position_ids",
+        )
+    cache_position = model_kwargs.get("cache_position")
+    if cache_position is not None and (
+        cache_position.ndim != 1 or cache_position.shape[0] != input_ids.shape[-1]
+    ):
+        raise ValueError("cache_position must be one-dimensional with length L")
     outputs = model(
         input_ids=repeated_ids,
         attention_mask=repeated_mask,
         use_cache=False,
-        **kwargs,
+        **model_kwargs,
     )
-    logits = outputs.logits.reshape(steps, input_ids.shape[0], *outputs.logits.shape[1:]).sum(dim=0)
+    logits = outputs.logits.reshape(steps, batch, *outputs.logits.shape[1:]).sum(dim=0)
     return logits

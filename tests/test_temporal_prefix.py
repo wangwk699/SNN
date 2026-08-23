@@ -4,6 +4,8 @@ import pytest
 from types import SimpleNamespace
 import torch
 
+from snn2.evaluation import position_ids_from_attention_mask
+from snn2.model_integration import temporal_forward
 from snn2.prefix_cache import (
     _extend_attention_mask,
     _fresh_dynamic_cache,
@@ -84,8 +86,9 @@ class _ForwardEcho(torch.nn.Module):
         return kwargs
 
 
-def test_temporal_prefix_offsets_position_and_cache_position_once():
-    steps, batch, current = 2, 3, 4
+@pytest.mark.parametrize("steps", [2, 4])
+def test_temporal_prefix_offsets_position_and_cache_position_once(steps):
+    batch, current = 3, 4
     model = _ForwardEcho()
     controller = SimpleNamespace(mode="deploy_phase", temporal_steps=steps)
     install_prefix_kv_forward(model, _prefix(layer_count=1), controller=controller)
@@ -103,3 +106,107 @@ def test_temporal_prefix_offsets_position_and_cache_position_once():
     torch.testing.assert_close(result["cache_position"], cache_position + prefix_len)
     assert result["attention_mask"].shape[-1] == current + prefix_len
     assert torch.all(result["attention_mask"][:, :prefix_len] == 1)
+
+
+@pytest.mark.parametrize(
+    ("mask", "expected"),
+    [
+        (
+            [[0, 0, 1, 1], [1, 1, 1, 1]],
+            [[0, 0, 0, 1], [0, 1, 2, 3]],
+        ),
+        (
+            [[1, 1, 0, 0], [1, 1, 1, 1]],
+            [[0, 1, 0, 0], [0, 1, 2, 3]],
+        ),
+        (
+            [[1, 1, 1], [1, 1, 1]],
+            [[0, 1, 2], [0, 1, 2]],
+        ),
+    ],
+)
+def test_position_ids_from_attention_mask(mask, expected):
+    attention_mask = torch.tensor(mask, dtype=torch.bool)
+    actual = position_ids_from_attention_mask(attention_mask)
+    torch.testing.assert_close(actual, torch.tensor(expected, dtype=torch.long))
+    assert actual.dtype == torch.long
+    assert actual.device == attention_mask.device
+
+
+@pytest.mark.parametrize("shape", [(4,), (1, 2, 3)])
+def test_position_ids_from_attention_mask_rejects_non_matrix(shape):
+    with pytest.raises(ValueError, match="2-D"):
+        position_ids_from_attention_mask(torch.ones(shape))
+
+
+class _TemporalCapture(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.anchor = torch.nn.Parameter(torch.zeros(()))
+        self.received = None
+
+    def forward(self, **kwargs):
+        self.received = kwargs
+        ids = kwargs["input_ids"]
+        return SimpleNamespace(
+            logits=torch.zeros((*ids.shape, 2), device=ids.device)
+        )
+
+
+@pytest.mark.parametrize("steps", [2, 4])
+@pytest.mark.parametrize("batch", [1, 3])
+def test_temporal_forward_repeats_positions_time_major(steps, batch):
+    model = _TemporalCapture().eval()
+    controller = SimpleNamespace(mode="deploy_phase", temporal_steps=steps)
+    ids = torch.arange(batch * 3).reshape(batch, 3)
+    mask = torch.ones_like(ids)
+    positions = ids + 100
+    cache_position = torch.arange(3)
+    temporal_forward(
+        model,
+        controller,
+        ids,
+        mask,
+        position_ids=positions,
+        cache_position=cache_position,
+    )
+    expected = positions.repeat(steps, 1)
+    torch.testing.assert_close(model.received["position_ids"], expected)
+    torch.testing.assert_close(model.received["cache_position"], cache_position)
+    for timestep in range(steps):
+        torch.testing.assert_close(
+            model.received["position_ids"].reshape(steps, batch, 3)[timestep],
+            positions,
+        )
+
+
+def test_ann_prefix_offsets_positions_once():
+    batch, current = 3, 4
+    model = _ForwardEcho()
+    install_prefix_kv_forward(model, _prefix(layer_count=1))
+    position_ids = torch.arange(current).expand(batch, -1)
+    cache_position = torch.arange(current)
+    result = model(
+        input_ids=torch.zeros(batch, current, dtype=torch.long),
+        attention_mask=torch.ones(batch, current, dtype=torch.long),
+        position_ids=position_ids,
+        cache_position=cache_position,
+    )
+    torch.testing.assert_close(result["position_ids"], position_ids + 3)
+    torch.testing.assert_close(result["cache_position"], cache_position + 3)
+
+
+def test_temporal_forward_rejects_positions_that_change_between_frames():
+    steps, batch = 2, 2
+    model = _TemporalCapture().eval()
+    controller = SimpleNamespace(mode="deploy_phase", temporal_steps=steps)
+    ids = torch.ones(batch, 3, dtype=torch.long)
+    positions = torch.arange(steps * batch * 3).reshape(steps * batch, 3)
+    with pytest.raises(ValueError, match="identical in every temporal frame"):
+        temporal_forward(
+            model,
+            controller,
+            ids,
+            torch.ones_like(ids),
+            position_ids=positions,
+        )

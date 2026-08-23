@@ -274,13 +274,24 @@ def materialize_calibration_states(
     metadata: dict[str, Any] | None = None,
     *,
     include_clip: bool,
+    expected_num_hidden_layers: int,
 ) -> dict[str, Any]:
+    if (
+        not isinstance(expected_num_hidden_layers, int)
+        or isinstance(expected_num_hidden_layers, bool)
+        or expected_num_hidden_layers <= 0
+    ):
+        raise ValueError("expected_num_hidden_layers must be a positive integer")
     root = Path(site_root)
     manifest: dict[str, Any] = {
+        **(metadata or {}),
         "format_version": CALIBRATION_MANIFEST_FORMAT_VERSION,
         **topology_metadata(),
-        **(metadata or {}),
         **temporal_policy_metadata(),
+        "expected_num_hidden_layers": expected_num_hidden_layers,
+        "expected_layer_names": [
+            f"layer_{index:03d}" for index in range(expected_num_hidden_layers)
+        ],
         "sites": {},
     }
     for statistics_path in sorted(root.glob("layer_*/site_*/statistics.pt")):
@@ -318,7 +329,9 @@ def materialize_calibration_states(
             "calibration.expected_sites_per_layer must match "
             f"the code topology: config={expected}, code={SITE_COUNT}"
         )
-    site_sets = validate_site_topology(root)
+    site_sets = validate_site_topology(
+        root, expected_num_hidden_layers=expected_num_hidden_layers
+    )
     manifest["layer_site_counts"] = {layer: len(sites) for layer, sites in site_sets.items()}
     write_json(root / "calibration_state_manifest.json", manifest)
     return manifest
@@ -339,9 +352,18 @@ def collect_site_statistics(
     extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = Path(site_root)
+    expected_num_hidden_layers = getattr(model.config, "num_hidden_layers", None)
+    if (
+        not isinstance(expected_num_hidden_layers, int)
+        or isinstance(expected_num_hidden_layers, bool)
+        or expected_num_hidden_layers <= 0
+    ):
+        raise ValueError("model.config.num_hidden_layers must be a positive integer")
     existing_layers = [path for path in root.glob("layer_*") if path.is_dir()]
     if existing_layers:
-        validate_site_topology(root)
+        validate_site_topology(
+            root, expected_num_hidden_layers=expected_num_hidden_layers
+        )
         for manifest_name in ("statistics_manifest.json", "calibration_state_manifest.json"):
             manifest_path = root / manifest_name
             if not manifest_path.exists():
@@ -376,6 +398,9 @@ def collect_site_statistics(
             use_cache=False,
         )
     stats_manifest = controller.statistics.reduce_and_save(site_root)
+    validate_site_topology(
+        root, expected_num_hidden_layers=expected_num_hidden_layers
+    )
     eligible_ann = purpose == "ann_training_calibration"
     eligible_conversion = purpose == "post_finetuning_conversion_calibration"
     state_profile = {
@@ -411,6 +436,10 @@ def collect_site_statistics(
         "learning_rate": None,
         "seed": int(cfg["experiment"]["seed"]),
         **(extra_metadata or {}),
+        "expected_num_hidden_layers": expected_num_hidden_layers,
+        "expected_layer_names": [
+            f"layer_{index:03d}" for index in range(expected_num_hidden_layers)
+        ],
     }
     stats_manifest.update(metadata)
     write_json(root / "statistics_manifest.json", stats_manifest)
@@ -420,13 +449,18 @@ def collect_site_statistics(
             cfg,
             metadata,
             include_clip=eligible_ann or eligible_conversion,
+            expected_num_hidden_layers=expected_num_hidden_layers,
         )
         if materialize_states
         else {
+            **metadata,
             "format_version": CALIBRATION_MANIFEST_FORMAT_VERSION,
             **topology_metadata(),
-            **metadata,
             **temporal_policy_metadata(),
+            "expected_num_hidden_layers": expected_num_hidden_layers,
+            "expected_layer_names": [
+                f"layer_{index:03d}" for index in range(expected_num_hidden_layers)
+            ],
             "sites": {},
         }
     )

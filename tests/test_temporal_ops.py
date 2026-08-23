@@ -5,6 +5,10 @@ import torch
 import torch.nn.functional as F
 
 from snn2.temporal_ops import (
+    CALIBRATION_MANIFEST_FORMAT_VERSION,
+    CONVERSION_METADATA_FORMAT_VERSION,
+    SITE_STATE_FORMAT_VERSION,
+    TEMPORAL_IMPLEMENTATION_VERSION,
     from_temporal,
     temporal_bias_once,
     temporal_clip,
@@ -169,3 +173,10 @@ def test_temporal_linear_bias_is_kept_only_at_timestep_zero():
     without_bias = F.linear(x, linear.weight, None)
     torch.testing.assert_close(output[0], without_bias[0] + linear.bias)
     torch.testing.assert_close(output[1:], without_bias[1:])
+
+
+def test_artifact_schema_versions_do_not_change_temporal_arithmetic():
+    assert CALIBRATION_MANIFEST_FORMAT_VERSION == 3
+    assert CONVERSION_METADATA_FORMAT_VERSION == 3
+    assert SITE_STATE_FORMAT_VERSION == 2
+    assert TEMPORAL_IMPLEMENTATION_VERSION == 2

@@ -6,7 +6,7 @@ from typing import Any
 from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
 from .config import post_finetuning_prefix_enabled
 from .controller import SiteController
-from .sites import SITE_COUNT, SITE_TOPOLOGY_VERSION, topology_metadata, validate_site_topology
+from .sites import topology_metadata
 from .state_validation import validate_site_state_bundle
 from .temporal_ops import (
     CONVERSION_METADATA_FORMAT_VERSION,
@@ -16,9 +16,26 @@ from .temporal_ops import (
 )
 
 
-def validate_calibration(site_root: str | Path) -> dict[str, Any]:
+def _ann_num_hidden_layers(ann_config: Path) -> int:
+    if not ann_config.exists():
+        raise FileNotFoundError(ann_config)
+    value = read_json(ann_config).get("num_hidden_layers")
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{ann_config} num_hidden_layers must be a positive integer")
+    return value
+
+
+def validate_calibration(
+    site_root: str | Path,
+    *,
+    expected_num_hidden_layers: int | None = None,
+) -> dict[str, Any]:
     root = Path(site_root)
-    validation = validate_site_state_bundle(root, require_clip=True)
+    validation = validate_site_state_bundle(
+        root,
+        require_clip=True,
+        expected_num_hidden_layers=expected_num_hidden_layers,
+    )
     for directory in sorted(path for path in root.glob("layer_*/site_*") if path.is_dir()):
         for name in (
             "statistics.pt",
@@ -30,6 +47,7 @@ def validate_calibration(site_root: str | Path) -> dict[str, Any]:
             if not (directory / name).exists():
                 raise FileNotFoundError(directory / name)
     return {
+        "expected_num_hidden_layers": validation["expected_num_hidden_layers"],
         "layers": validation["layers"],
         "sites": validation["sites"],
         "temporal_steps": validation["temporal_steps"],
@@ -76,18 +94,28 @@ def validate_conversion_metadata(
     metadata = read_json(path)
     if metadata.get("format_version") != CONVERSION_METADATA_FORMAT_VERSION:
         raise ValueError(
-            f"{path} uses a legacy conversion metadata format; re-run conversion"
+            f"{path} uses a legacy conversion descriptor schema; format v3 is "
+            "required while temporal arithmetic remains v2. Re-run conversion"
         )
     validate_temporal_policy(metadata, context=str(path))
     expected_prefix = post_finetuning_prefix_enabled(cfg)
     prefix = validate_post_finetuning_prefix(layout, enabled=expected_prefix)
+    ann_config = layout.ann_checkpoint_dir / "config.json"
+    expected_num_hidden_layers = _ann_num_hidden_layers(ann_config)
     bundle = validate_site_state_bundle(
-        layout.post_finetuning_site_dir, require_clip=True
+        layout.post_finetuning_site_dir,
+        require_clip=True,
+        expected_num_hidden_layers=expected_num_hidden_layers,
     )
     expected_root = str(layout.post_finetuning_site_dir.resolve())
     manifest_path = layout.post_finetuning_site_dir / "calibration_state_manifest.json"
+    rotation_path = layout.rotation_dir / "rotation_state.pt"
+    rotation_enabled = bool(cfg["rotation"]["enabled"])
+    if rotation_enabled and not rotation_path.exists():
+        raise FileNotFoundError(
+            f"Rotation is enabled but rotation state is missing: {rotation_path}"
+        )
     mismatched: dict[str, dict[str, Any]] = {}
-    ann_config = layout.ann_checkpoint_dir / "config.json"
     expected = {
         "deployment_neuron": neuron,
         "full_temporal_steps": bundle["temporal_steps"].get(neuron),
@@ -96,7 +124,11 @@ def validate_conversion_metadata(
             sha256_file(ann_config) if ann_config.exists() else None
         ),
         "post_finetuning_recalibration": True,
-        "rotation_enabled": bool(cfg["rotation"]["enabled"]),
+        "rotation_enabled": rotation_enabled,
+        "rotation_state_sha256": (
+            sha256_file(rotation_path) if rotation_enabled else None
+        ),
+        "expected_num_hidden_layers": expected_num_hidden_layers,
         "prefix_enabled": expected_prefix,
         "prefix_token_ids": prefix["prefix_token_ids"],
         "prefix_state_sha256": prefix["prefix_state_sha256"],
@@ -119,7 +151,8 @@ def validate_conversion_metadata(
         }
     if mismatched:
         raise ValueError(
-            f"{path} does not match the requested v2 SNN evaluation: {mismatched}. "
+            f"{path} does not match the requested v3 conversion descriptor "
+            f"(temporal implementation remains v2): {mismatched}. "
             "Re-run scripts/convert_snn.py."
         )
     return metadata
@@ -128,7 +161,6 @@ def validate_conversion_metadata(
 def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) -> dict[str, Any]:
     prefix_enabled = post_finetuning_prefix_enabled(cfg)
     prefix = validate_post_finetuning_prefix(layout, enabled=prefix_enabled)
-    validation = validate_calibration(layout.post_finetuning_site_dir)
     ann_checkpoint = layout.ann_checkpoint_dir
     ann_config = ann_checkpoint / "config.json"
     if not ann_config.exists():
@@ -136,6 +168,11 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
             "The final fine-tuned ANN checkpoint is required before conversion: "
             f"{ann_config}"
         )
+    expected_num_hidden_layers = _ann_num_hidden_layers(ann_config)
+    validation = validate_calibration(
+        layout.post_finetuning_site_dir,
+        expected_num_hidden_layers=expected_num_hidden_layers,
+    )
     calibration_manifest = layout.post_finetuning_site_dir / "calibration_state_manifest.json"
     if not calibration_manifest.exists():
         raise FileNotFoundError(
@@ -162,6 +199,11 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
     output = layout.snn_conversion_dir(neuron)
     output.mkdir(parents=True, exist_ok=True)
     rotation_path = layout.rotation_dir / "rotation_state.pt"
+    rotation_enabled = bool(cfg["rotation"]["enabled"])
+    if rotation_enabled and not rotation_path.exists():
+        raise FileNotFoundError(
+            f"Rotation is enabled but rotation state is missing: {rotation_path}"
+        )
     metadata = {
         "format_version": CONVERSION_METADATA_FORMAT_VERSION,
         "experiment": cfg["experiment"],
@@ -172,11 +214,12 @@ def create_conversion(cfg: dict[str, Any], layout: ArtifactLayout, neuron: str) 
         "deployment_neuron": neuron,
         "full_temporal_steps": steps,
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
-        "rotation_enabled": bool(cfg["rotation"]["enabled"]),
+        "rotation_enabled": rotation_enabled,
+        "expected_num_hidden_layers": expected_num_hidden_layers,
         "prefix_enabled": prefix_enabled,
         "prefix_token_ids": prefix["prefix_token_ids"],
         "rotation_state_sha256": (
-            sha256_file(rotation_path) if bool(cfg["rotation"]["enabled"]) else None
+            sha256_file(rotation_path) if rotation_enabled else None
         ),
         "prefix_state_sha256": prefix["prefix_state_sha256"],
         "prefix_kv_sha256": prefix["prefix_kv_sha256"],

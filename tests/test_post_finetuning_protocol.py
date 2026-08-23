@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from pathlib import Path
 
 from snn2.artifacts import ArtifactLayout
 from snn2.config import post_finetuning_prefix_enabled, training_prefix_enabled
@@ -13,11 +14,17 @@ def _cfg(mode):
 
 def test_stage_specific_artifact_paths():
     layout = ArtifactLayout(_cfg("phase_aware"))
-    assert "pre_finetuning_prefix" in str(layout.ann_training_prefix_dir)
-    assert "ann_training_calibration/prefix_enabled_ture/sites" in str(layout.ann_training_site_dir)
-    assert "vanilla_analysis_calibration/sites" in str(layout.vanilla_analysis_site_dir)
-    assert "post_finetuning/prefix" in str(layout.post_finetuning_prefix_dir)
-    assert "post_finetuning/conversion_calibration/prefix_enabled_ture/sites" in str(layout.post_finetuning_site_dir)
+    assert layout.ann_training_prefix_dir.parts[-1:] == ("pre_finetuning_prefix",)
+    assert layout.ann_training_site_dir.parts[-3:] == (
+        "ann_training_calibration", "prefix_enabled_ture", "sites"
+    )
+    assert layout.vanilla_analysis_site_dir.parts[-2:] == (
+        "vanilla_analysis_calibration", "sites"
+    )
+    assert layout.post_finetuning_prefix_dir.parts[-2:] == ("post_finetuning", "prefix")
+    assert layout.post_finetuning_site_dir.parts[-4:] == (
+        "post_finetuning", "conversion_calibration", "prefix_enabled_ture", "sites"
+    )
 
 
 @pytest.mark.parametrize(
@@ -31,7 +38,7 @@ def test_tldr_training_sample_count_is_part_of_run_path(configured, suffix):
     cfg = _cfg("vanilla")
     cfg["experiment"]["task"] = "tldr"
     cfg["training"]["tldr_train_samples"] = configured
-    assert str(ArtifactLayout(cfg).root).endswith(suffix)
+    assert ArtifactLayout(cfg).root.parts[-3:] == Path(suffix).parts[-3:]
 
 
 def test_vanilla_prefix_policy_and_shared_analysis_paths():
@@ -39,9 +46,9 @@ def test_vanilla_prefix_policy_and_shared_analysis_paths():
     layout = ArtifactLayout(cfg)
     assert training_prefix_enabled(cfg)
     assert post_finetuning_prefix_enabled(cfg)
-    assert str(layout.policy_root).endswith("vanilla_original")
-    assert "_shared" in str(layout.policy_config_dir)
-    assert "_shared" in str(layout.policy_logs_dir)
+    assert layout.policy_root.parts[-1] == "vanilla_original"
+    assert "_shared" in layout.policy_config_dir.parts
+    assert "_shared" in layout.policy_logs_dir.parts
 
 
 @pytest.mark.parametrize("mode", ["unaware", "phase_aware", "gif_aware"])

@@ -5,14 +5,11 @@ from _common import parser, setup
 
 from snn2.artifacts import prefix_enabled_dirname, read_json, sha256_file, write_json
 from snn2.config import evaluation_prefix_enabled, post_finetuning_prefix_enabled, training_prefix_enabled
-from snn2.conversion import validate_calibration
+from snn2.conversion import validate_calibration, validate_conversion_metadata
 from snn2.sites import topology_metadata
 from snn2.evaluation import resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
-from snn2.temporal_ops import (
-    CONVERSION_METADATA_FORMAT_VERSION,
-    validate_temporal_policy,
-)
+from snn2.temporal_ops import validate_temporal_policy
 
 
 def _require_manifest_flags(manifest, expected, label):
@@ -578,24 +575,13 @@ def main():
 
         for neuron in ("phase", "gif", "mtn"):
             metadata_path = layout.snn_conversion_dir(neuron) / "conversion_metadata.json"
-            metadata = read_json(metadata_path)
-            validate_temporal_policy(metadata, context=str(metadata_path))
+            metadata = validate_conversion_metadata(cfg, layout, neuron)
             if (
-                metadata.get("format_version") != CONVERSION_METADATA_FORMAT_VERSION
-                or not metadata.get("post_finetuning_recalibration")
-                or Path(metadata.get("calibration_root", "")).resolve()
-                != layout.post_finetuning_site_dir.resolve()
-                or metadata.get("calibration_state_manifest_sha256")
-                != sha256_file(layout.post_finetuning_site_dir / "calibration_state_manifest.json")
-                or metadata.get("prefix_enabled")
-                != post_finetuning_prefix_enabled(cfg)
-                or metadata.get("common_clip_applied") is not True
-                or metadata.get("deployment_neuron") != neuron
-                or int(metadata.get("full_temporal_steps", -1))
+                int(metadata.get("full_temporal_steps", -1))
                 != int(calibration["temporal_steps"][neuron])
             ):
                 raise ValueError(
-                    f"Conversion has incompatible temporal/calibration metadata: {neuron}"
+                    f"Conversion has incompatible calibration timestep metadata: {neuron}"
                 )
             metrics_path = evaluation_paths(layout.snn_dir(neuron))[0]
             metrics = read_json(metrics_path)

@@ -238,9 +238,23 @@ def install_prefix_kv_forward(
             device=device,
         )
         if kwargs.get("position_ids") is not None:
-            kwargs["position_ids"] = kwargs["position_ids"] + cached_prefix_length
+            position_ids = kwargs["position_ids"]
+            if position_ids.ndim != 2 or position_ids.shape != (batch_size, current_length):
+                raise ValueError(
+                    "Prefix position_ids must be current-token logical positions "
+                    "with shape [B, L]"
+                )
+            # Current-token positions are 0-based per logical sample. Prefix
+            # positions occupy [0, P), so add the fixed P exactly once. Temporal
+            # frames keep identical positions: no division or timestep offset.
+            kwargs["position_ids"] = position_ids + cached_prefix_length
         if kwargs.get("cache_position") is not None:
-            kwargs["cache_position"] = kwargs["cache_position"] + cached_prefix_length
+            cache_position = kwargs["cache_position"]
+            if cache_position.ndim != 1 or cache_position.shape[0] != current_length:
+                raise ValueError(
+                    "Prefix cache_position must be one-dimensional with current length L"
+                )
+            kwargs["cache_position"] = cache_position + cached_prefix_length
         return original_forward(*args, **kwargs)
 
     model._snn2_prefix_original_forward = original_forward

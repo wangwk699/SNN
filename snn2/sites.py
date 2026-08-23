@@ -37,12 +37,35 @@ def topology_metadata() -> dict[str, Any]:
     }
 
 
-def validate_site_topology(root: str | Path) -> dict[str, set[str]]:
-    """Require every calibration layer to contain exactly the current site set."""
+def validate_site_topology(
+    root: str | Path,
+    *,
+    expected_num_hidden_layers: int | None = None,
+) -> dict[str, set[str]]:
+    """Require complete layers and exactly the current site set in each layer."""
     root = Path(root)
     layers = sorted(path for path in root.glob("layer_*") if path.is_dir())
     if not layers:
         raise FileNotFoundError(f"No calibration layers under {root}")
+    if expected_num_hidden_layers is not None:
+        if (
+            not isinstance(expected_num_hidden_layers, int)
+            or isinstance(expected_num_hidden_layers, bool)
+            or expected_num_hidden_layers <= 0
+        ):
+            raise ValueError("expected_num_hidden_layers must be a positive integer")
+        expected_layers = {
+            f"layer_{index:03d}" for index in range(expected_num_hidden_layers)
+        }
+        actual_layers = {path.name for path in layers}
+        if actual_layers != expected_layers:
+            raise RuntimeError(
+                "Calibration layer topology is incomplete or non-contiguous "
+                f"(expected_num_hidden_layers={expected_num_hidden_layers}, "
+                f"actual_num_hidden_layers={len(actual_layers)}, "
+                f"missing_layers={sorted(expected_layers - actual_layers)}, "
+                f"unexpected_layers={sorted(actual_layers - expected_layers)})"
+            )
     expected = expected_site_dirnames()
     actual_by_layer: dict[str, set[str]] = {}
     invalid: dict[str, dict[str, list[str]]] = {}

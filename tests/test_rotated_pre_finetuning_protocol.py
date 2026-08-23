@@ -44,13 +44,16 @@ def test_rotated_pre_finetuning_paths_are_model_shared(mode, learning_rate):
     layout = ArtifactLayout(_cfg(mode, learning_rate))
 
     assert layout.rotated_pre_finetuning_dir == reference.rotated_pre_finetuning_dir
-    assert str(layout.rotated_pre_finetuning_dir).endswith(
-        "model_name/_shared/seed42/rotated_prefix/rotated_pre_finetuning"
+    assert layout.rotated_pre_finetuning_dir.parts[-5:] == (
+        "model_name", "_shared", "seed42", "rotated_prefix",
+        "rotated_pre_finetuning",
     )
     assert layout.rotated_pre_finetuning_config_dir.parent == layout.rotated_pre_finetuning_dir
     assert layout.rotated_pre_finetuning_logs_dir.parent == layout.rotated_pre_finetuning_dir
     assert layout.rotated_pre_finetuning_prefix_dir == layout.ann_training_prefix_dir
-    assert str(layout.ann_training_prefix_dir).endswith("rotated_prefix/pre_finetuning_prefix")
+    assert layout.ann_training_prefix_dir.parts[-2:] == (
+        "rotated_prefix", "pre_finetuning_prefix"
+    )
 
 
 def test_rotated_pre_finetuning_stage_uses_shared_pre_finetuning_prefix(tmp_path):

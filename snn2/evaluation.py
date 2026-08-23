@@ -12,6 +12,17 @@ from .prefix_cache import install_prefix_kv_forward
 from .temporal_ops import temporal_policy_metadata
 
 
+def position_ids_from_attention_mask(
+    attention_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Return per-sample 0-based logical positions for visible tokens."""
+    if attention_mask.ndim != 2:
+        raise ValueError("Position IDs require a 2-D [B, L] attention mask")
+    visible = attention_mask.to(dtype=torch.long)
+    position_ids = visible.cumsum(dim=-1) - 1
+    return position_ids.masked_fill(visible == 0, 0)
+
+
 
 def deployment_policy_metadata(controller: SiteController | None) -> dict[str, object]:
     if controller is None or not controller.mode.startswith("deploy_"):
@@ -149,6 +160,7 @@ def greedy_generate(
     )
 
     for _ in range(max_new_tokens):
+        position_ids = position_ids_from_attention_mask(mask)
 
         # 当前这个 generation step 中，
         # 还有多少样本在逻辑上需要继续生成。
@@ -186,6 +198,7 @@ def greedy_generate(
             logits = model(
                 input_ids=generated,
                 attention_mask=mask,
+                position_ids=position_ids,
                 use_cache=False,
             ).logits
 
@@ -196,6 +209,7 @@ def greedy_generate(
                 controller,
                 generated,
                 mask,
+                position_ids=position_ids,
             )
 
         # 每个样本独立选择下一个 token
@@ -314,6 +328,20 @@ class EvaluationModelProxy(nn.Module):
                 attention_mask,
             )
         )
+        position_ids = kwargs.get("position_ids")
+        if position_ids is None:
+            position_ids = position_ids_from_attention_mask(prefixed_mask)
+        elif (
+            position_ids.ndim != 2
+            or position_ids.shape[0] not in {1, prefixed_ids.shape[0]}
+            or position_ids.shape[-1] != prefixed_ids.shape[-1]
+        ):
+            raise ValueError(
+                "position_ids must have shape [B, L] (or [1, L]) compatible "
+                "with input_ids"
+            )
+        elif position_ids.shape[0] == 1 and prefixed_ids.shape[0] != 1:
+            position_ids = position_ids.expand(prefixed_ids.shape[0], -1)
 
         batch_size = int(
             prefixed_ids.shape[0]
@@ -327,6 +355,7 @@ class EvaluationModelProxy(nn.Module):
                 self.controller,
                 prefixed_ids,
                 prefixed_mask,
+                position_ids=position_ids,
             )
 
             temporal = int(
@@ -338,6 +367,7 @@ class EvaluationModelProxy(nn.Module):
             logits = self.model(
                 input_ids=prefixed_ids,
                 attention_mask=prefixed_mask,
+                position_ids=position_ids,
                 use_cache=False,
             ).logits
 

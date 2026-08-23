@@ -32,8 +32,10 @@ def load_calibration_manifest(site_root: str | Path) -> dict[str, Any]:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     if manifest.get("format_version") != CALIBRATION_MANIFEST_FORMAT_VERSION:
         raise ValueError(
-            "Incompatible legacy calibration manifest; re-materialize calibration "
-            "states and conversion descriptors before SNN evaluation"
+            "Incompatible legacy calibration manifest schema; calibration manifest "
+            "v3 is required while site state and temporal arithmetic remain v2. "
+            "Re-materialize calibration states and conversion descriptors before "
+            "SNN evaluation"
         )
     validate_temporal_policy(manifest, context=str(path))
     return manifest
@@ -44,12 +46,43 @@ def validate_site_state_bundle(
     manifest: dict[str, Any] | None = None,
     *,
     require_clip: bool,
+    expected_num_hidden_layers: int | None = None,
 ) -> dict[str, Any]:
     root = Path(site_root)
-    site_sets = validate_site_topology(root)
     manifest = load_calibration_manifest(root) if manifest is None else manifest
     if manifest.get("format_version") != CALIBRATION_MANIFEST_FORMAT_VERSION:
-        raise ValueError("Incompatible legacy calibration manifest format")
+        raise ValueError(
+            "Incompatible legacy calibration manifest schema; re-materialize "
+            "calibration states (temporal implementation remains v2)"
+        )
+    manifest_layers = manifest.get("expected_num_hidden_layers")
+    if (
+        not isinstance(manifest_layers, int)
+        or isinstance(manifest_layers, bool)
+        or manifest_layers <= 0
+    ):
+        raise ValueError(
+            "Calibration manifest expected_num_hidden_layers must be a positive integer"
+        )
+    expected_layer_names = [
+        f"layer_{index:03d}" for index in range(manifest_layers)
+    ]
+    if manifest.get("expected_layer_names") != expected_layer_names:
+        raise ValueError(
+            "Calibration manifest expected_layer_names does not match "
+            "expected_num_hidden_layers"
+        )
+    if (
+        expected_num_hidden_layers is not None
+        and expected_num_hidden_layers != manifest_layers
+    ):
+        raise ValueError(
+            "ANN config num_hidden_layers does not match calibration manifest "
+            f"expected_num_hidden_layers: {expected_num_hidden_layers} != {manifest_layers}"
+        )
+    site_sets = validate_site_topology(
+        root, expected_num_hidden_layers=manifest_layers
+    )
     validate_temporal_policy(manifest, context=str(root / "calibration_state_manifest.json"))
 
     steps_by_neuron: dict[str, set[int]] = {"phase": set(), "gif": set(), "mtn": set()}
@@ -92,6 +125,7 @@ def validate_site_state_bundle(
     if inconsistent:
         raise ValueError(f"Inconsistent temporal steps across site states: {inconsistent}")
     return {
+        "expected_num_hidden_layers": manifest_layers,
         "layers": len(site_sets),
         "sites": site_count,
         "temporal_steps": {

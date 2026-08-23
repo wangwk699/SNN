@@ -60,6 +60,7 @@ def test_conversion_materialization_keeps_temporal_common_clip(tmp_path):
             "common_clip_required": True,
         },
         include_clip=True,
+        expected_num_hidden_layers=1,
     )
 
     assert manifest["state_profile"] == "snn_conversion_with_common_clip"
@@ -82,6 +83,7 @@ def test_ann_training_materialization_keeps_common_clip(tmp_path):
             "common_clip_required": True,
         },
         include_clip=True,
+        expected_num_hidden_layers=1,
     )
 
     assert manifest["state_profile"] == "ann_training_with_common_clip"

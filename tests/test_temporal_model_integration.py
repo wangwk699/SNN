@@ -6,12 +6,14 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from snn2.evaluation import position_ids_from_attention_mask
 from snn2.model_integration import (
     _make_mlp_forward,
     install_model_integration,
     repeat_kv,
     temporal_forward,
 )
+from snn2.prefix_cache import build_prefix_key_values, install_prefix_kv_forward
 from snn2.temporal_model import deployment_attention_forward
 from snn2.temporal_ops import from_temporal, to_temporal
 
@@ -192,3 +194,72 @@ def test_model_integration_keeps_non_deploy_forward_unchanged():
     ids = torch.tensor([[1, 2, 3], [4, 5, 6]])
     mask = torch.ones_like(ids)
     torch.testing.assert_close(model(ids, mask).logits, reference(ids, mask).logits)
+
+
+def _hf_tiny_model(kind):
+    if kind == "qwen3":
+        from transformers import Qwen3Config, Qwen3ForCausalLM
+
+        config = Qwen3Config(
+            vocab_size=32,
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=8,
+            max_position_embeddings=32,
+            attention_dropout=0.0,
+            pad_token_id=0,
+        )
+        return Qwen3ForCausalLM(config)
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    config = LlamaConfig(
+        vocab_size=32,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        max_position_embeddings=32,
+        attention_dropout=0.0,
+        pad_token_id=0,
+    )
+    return LlamaForCausalLM(config)
+
+
+@pytest.mark.parametrize("kind", ["qwen3", "llama"])
+@pytest.mark.parametrize("steps", [None, 2, 4])
+def test_prefix_left_padding_batch_invariance(kind, steps):
+    torch.manual_seed(37)
+    model = _hf_tiny_model(kind).eval()
+    prefix = build_prefix_key_values(model, [7, 8])
+    controller = _BypassController(
+        steps=steps or 1,
+        mode="identity" if steps is None else "deploy_phase",
+    )
+    install_model_integration(model, controller, rotation_state=None)
+    install_prefix_kv_forward(model, prefix, controller=controller)
+
+    alone_ids = torch.tensor([[5, 6]])
+    alone_mask = torch.ones_like(alone_ids)
+    batch_ids = torch.tensor([[0, 0, 5, 6], [10, 11, 12, 13]])
+    batch_mask = torch.tensor([[0, 0, 1, 1], [1, 1, 1, 1]])
+
+    def run(ids, mask):
+        positions = position_ids_from_attention_mask(mask)
+        if steps is None:
+            return model(
+                input_ids=ids,
+                attention_mask=mask,
+                position_ids=positions,
+                use_cache=False,
+            ).logits
+        return temporal_forward(
+            model, controller, ids, mask, position_ids=positions
+        )
+
+    alone = run(alone_ids, alone_mask)[0, -1]
+    batched = run(batch_ids, batch_mask)[0, -1]
+    torch.testing.assert_close(batched, alone, rtol=1e-5, atol=1e-5)
