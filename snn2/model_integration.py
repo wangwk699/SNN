@@ -70,13 +70,9 @@ def snn2_eager_attention_forward(
 
     query = controller.apply(layer_index, 2, query)
 
-    if past_length:
-        prefix_key, current_key = key[..., :past_length, :], key[..., past_length:, :]
-        prefix_value, current_value = value[..., :past_length, :], value[..., past_length:, :]
-        current_key = controller.apply(layer_index, 3, current_key)
-        current_value = controller.apply(layer_index, 4, current_value)
-        key = torch.cat((prefix_key, current_key), dim=-2)
-        value = torch.cat((prefix_value, current_value), dim=-2)
+    if controller.mode == "collect" and past_length:
+        controller.record_activation(layer_index, 3, key[..., past_length:, :])
+        controller.record_activation(layer_index, 4, value[..., past_length:, :])
     else:
         key = controller.apply(layer_index, 3, key)
         value = controller.apply(layer_index, 4, value)

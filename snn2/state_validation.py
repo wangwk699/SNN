@@ -34,7 +34,7 @@ def load_calibration_manifest(site_root: str | Path) -> dict[str, Any]:
     if manifest.get("format_version") != CALIBRATION_MANIFEST_FORMAT_VERSION:
         raise ValueError(
             "Incompatible legacy calibration manifest schema; calibration manifest "
-            "v4 with temporal implementation v3 is required. "
+            f"v{CALIBRATION_MANIFEST_FORMAT_VERSION} with temporal implementation v3 is required. "
             "Re-materialize calibration states and conversion descriptors before "
             "SNN evaluation"
         )

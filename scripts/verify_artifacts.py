@@ -548,6 +548,8 @@ def main():
             {
                 "purpose": "ann_training_calibration",
                 "eligible_for_ann_training": True,
+                "eligible_for_conversion": True,
+                "conversion_reuse_policy": "aware_modes_only",
                 "post_finetuning_recalibration": False,
                 "state_profile": "ann_training_with_common_clip",
                 "common_clip_required": True,
@@ -555,7 +557,9 @@ def main():
             if reused
             else {
                 "purpose": "post_finetuning_conversion_calibration",
+                "eligible_for_ann_training": False,
                 "eligible_for_conversion": True,
+                "conversion_reuse_policy": "final_ann_only",
                 "post_finetuning_recalibration": True,
                 "state_profile": "snn_conversion_without_clip",
                 "common_clip_required": False,

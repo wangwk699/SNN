@@ -23,7 +23,7 @@ def _statistics():
 def _cfg():
     return {
         "calibration": {"group_size": -1, "expected_sites_per_layer": 10},
-        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 4.0, "max_spikes": 4},
+        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0, "max_spikes": 4},
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
     }
@@ -52,6 +52,8 @@ def test_build_site_states_without_common_clip():
     states = build_site_states(_statistics(), _cfg(), include_clip=False)
 
     assert set(states) == {"phase", "gif", "mtn"}
+    assert states["phase"]["tau"].dtype == torch.float32
+    assert states["phase"]["tau_accumulator_dtype"] == "float32"
 
 
 def test_conversion_materialization_removes_common_clip(tmp_path):

@@ -62,10 +62,11 @@ experiments:
       phase_final_norm_policy: phase_neuron_after_final_temporal_rmsnorm
       phase_tau_calibration: spikingllm_ema_channel_abs_max
       phase_tau_ema_factor: 0.99
+      phase_tau_accumulator_dtype: float32
     phase:
       T: 4
       base: 2.0
-      surrogate_slope: 4.0
+      surrogate_slope: 1.0
       max_spikes: 4
       timestep_indexing: t_0_to_T_minus_1
       threshold_rule: tau_times_2_pow_minus_t_plus_1
@@ -221,10 +222,11 @@ experiments:
       phase_final_norm_policy: phase_neuron_after_final_temporal_rmsnorm
       phase_tau_calibration: spikingllm_ema_channel_abs_max
       phase_tau_ema_factor: 0.99
+      phase_tau_accumulator_dtype: float32
     phase:
       T: 4
       base: 2.0
-      surrogate_slope: 4.0
+      surrogate_slope: 1.0
       max_spikes: 4
       timestep_indexing: t_0_to_T_minus_1
       threshold_rule: tau_times_2_pow_minus_t_plus_1
@@ -382,10 +384,11 @@ experiments:
       phase_final_norm_policy: phase_neuron_after_final_temporal_rmsnorm
       phase_tau_calibration: spikingllm_ema_channel_abs_max
       phase_tau_ema_factor: 0.99
+      phase_tau_accumulator_dtype: float32
     phase:
       T: 4
       base: 2.0
-      surrogate_slope: 4.0
+      surrogate_slope: 1.0
       max_spikes: 4
       timestep_indexing: t_0_to_T_minus_1
       threshold_rule: tau_times_2_pow_minus_t_plus_1

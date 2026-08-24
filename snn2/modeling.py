@@ -100,7 +100,7 @@ def prefix_ids_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: 
         artifact_stage = final_evaluation_prefix_artifact_stage(cfg)
         path = (
             layout.ann_training_prefix_dir
-            if artifact_stage == "ann_training"
+            if artifact_stage == "pre_finetuning"
             else layout.post_finetuning_prefix_dir
         ) / "prefix_state.json"
     elif stage == "rotated_pre_finetuning":
@@ -135,7 +135,7 @@ def prefix_key_values_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, 
     elif stage == "final_evaluation":
         directory = (
             layout.ann_training_prefix_dir
-            if final_evaluation_prefix_artifact_stage(cfg) == "ann_training"
+            if final_evaluation_prefix_artifact_stage(cfg) == "pre_finetuning"
             else layout.post_finetuning_prefix_dir
         )
     else:

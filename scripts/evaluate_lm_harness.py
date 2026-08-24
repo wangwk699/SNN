@@ -16,7 +16,11 @@ from snn2.config import (
 )
 from snn2.controller import SiteController
 from snn2.conversion import validate_conversion_metadata
-from snn2.evaluation import EvaluationModelProxy, deployment_policy_metadata
+from snn2.evaluation import (
+    EvaluationModelProxy,
+    activation_neuron_operators_per_temporal_forward,
+    deployment_policy_metadata,
+)
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
 from snn2.sites import SITE_COUNT, SITE_TOPOLOGY_VERSION
@@ -359,6 +363,9 @@ def main():
             )
         )
 
+        per_forward_operators = activation_neuron_operators_per_temporal_forward(
+            num_hidden_layers=layers, neuron=args.neuron
+        )
         results["snn2_metadata"] = {
             # ----------------------------------
             # 明确区分原始 Base 与 fine-tuned ANN
@@ -394,6 +401,8 @@ def main():
             "site_count": SITE_COUNT,
 
             "site_topology_version": SITE_TOPOLOGY_VERSION,
+            "per_temporal_forward_activation_neuron_operators": per_forward_operators,
+            "global_final_norm_phase_neuron_present": args.neuron == "phase",
             **deployment_policy_metadata(controller),
 
             "batch_size": batch_size,
@@ -437,16 +446,12 @@ def main():
             # Batch-size-independent logical
             # activation-site operator equivalents
             "activation_site_temporal_operator_calls": (
-                temporal_sample_step_forwards
-                * layers
-                * SITE_COUNT
+                temporal_sample_step_forwards * per_forward_operators
             ),
 
             # Actual batched sample-slot execution
             "batched_activation_site_temporal_slots": (
-                batched_temporal_sample_slots
-                * layers
-                * SITE_COUNT
+                batched_temporal_sample_slots * per_forward_operators
             ),
         }
 

@@ -36,8 +36,8 @@ def _cfg(mode, root="artifacts"):
     [
         ("vanilla", False, False, True, False, "post_finetuning"),
         ("unaware", True, False, True, False, "post_finetuning"),
-        ("phase_aware", True, True, False, True, "ann_training"),
-        ("gif_aware", True, True, False, True, "ann_training"),
+        ("phase_aware", True, True, False, True, "pre_finetuning"),
+        ("gif_aware", True, True, False, True, "pre_finetuning"),
     ],
 )
 def test_mode_aware_protocol_table(mode, pre, ann_cal, post, reused, stage):
@@ -46,7 +46,9 @@ def test_mode_aware_protocol_table(mode, pre, ann_cal, post, reused, stage):
     assert requires_ann_training_calibration(cfg) is ann_cal
     assert requires_post_finetuning_artifacts(cfg) is post
     assert conversion_reuses_ann_training_artifacts(cfg) is reused
-    assert conversion_calibration_stage(cfg) == stage
+    assert conversion_calibration_stage(cfg) == (
+        "ann_training" if reused else "post_finetuning"
+    )
     assert final_evaluation_prefix_artifact_stage(cfg) == stage
     assert conversion_prefix_enabled(cfg) is True
 

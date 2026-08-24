@@ -11,9 +11,11 @@ from snn2.model_integration import (
     _make_mlp_forward,
     install_model_integration,
     repeat_kv,
+    snn2_eager_attention_forward,
     temporal_forward,
 )
 from snn2.prefix_cache import build_prefix_key_values, install_prefix_kv_forward
+from snn2.sites import site_key
 from snn2.temporal_model import deployment_attention_forward
 from snn2.temporal_ops import from_temporal, to_temporal
 
@@ -99,7 +101,50 @@ def test_temporal_attention_sum_matches_ann_with_gqa_mask_and_batch(with_prefix)
         to_temporal(weights, steps).sum(0), reference_weights, rtol=1e-5, atol=1e-5
     )
     assert controller.applied == [2, 3, 4, 5, 6]
+    assert controller.applied_shapes[1][-2] == key_len
+    assert controller.applied_shapes[2][-2] == key_len
     assert controller.applied_shapes[3][-1] == key_len
+
+
+def test_static_attention_runtime_applies_sites_3_and_4_to_full_prefix_kv():
+    controller = _BypassController(steps=1, mode="identity")
+    module = SimpleNamespace(
+        _snn2_controller=controller,
+        _snn2_layer_index=0,
+        training=False,
+        num_key_value_groups=1,
+        scaling=0.5,
+    )
+    query = torch.randn(1, 1, 2, 4)
+    key = torch.randn(1, 1, 5, 4)
+    value = torch.randn_like(key)
+    snn2_eager_attention_forward(
+        module, query, key, value, None, dropout=0.0
+    )
+    assert controller.applied[:3] == [2, 3, 4]
+    assert controller.applied_shapes[1][-2] == 5
+    assert controller.applied_shapes[2][-2] == 5
+
+
+def test_collect_attention_excludes_prefix_from_site_3_and_4_statistics():
+    from snn2.controller import SiteController
+
+    controller = SiteController(mode="collect")
+    module = SimpleNamespace(
+        _snn2_controller=controller,
+        _snn2_layer_index=0,
+        training=False,
+        num_key_value_groups=1,
+        scaling=0.5,
+    )
+    query = torch.randn(1, 1, 2, 4)
+    key = torch.randn(1, 1, 5, 4)
+    value = torch.randn_like(key)
+    snn2_eager_attention_forward(
+        module, query, key, value, None, dropout=0.0
+    )
+    assert controller.statistics.items[site_key(0, 3)].row_count.item() == 2
+    assert controller.statistics.items[site_key(0, 4)].row_count.item() == 2
 
 
 class _RMSNorm(torch.nn.Module):

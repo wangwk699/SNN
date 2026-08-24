@@ -9,6 +9,7 @@ from .artifacts import prefix_enabled_dirname
 from .controller import SiteController
 from .model_integration import temporal_forward
 from .prefix_cache import install_prefix_kv_forward
+from .sites import SITE_COUNT
 from .temporal_ops import temporal_policy_metadata
 
 
@@ -28,6 +29,15 @@ def deployment_policy_metadata(controller: SiteController | None) -> dict[str, o
     if controller is None or not controller.mode.startswith("deploy_"):
         return {}
     return temporal_policy_metadata()
+
+
+def activation_neuron_operators_per_temporal_forward(
+    *, num_hidden_layers: int, neuron: str
+) -> int:
+    base = int(num_hidden_layers) * SITE_COUNT
+    if neuron == "phase":
+        base += 1
+    return base
 
 
 

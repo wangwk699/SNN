@@ -23,6 +23,7 @@ def test_phase_tau_ema_matches_spikingllm_update_and_forgets_outlier():
     store.update(0, 1, second)
     stats = next(iter(store.items.values()))
     expected = torch.tensor([0.99 * 100.0 + 0.01 * 1.0, 0.99 * 2.0 + 0.01 * 4.0])
-    torch.testing.assert_close(stats.phase_ema_abs_max, expected.to(torch.float64))
+    assert stats.phase_ema_abs_max.dtype == torch.float32
+    torch.testing.assert_close(stats.phase_ema_abs_max, expected.to(torch.float32))
     assert stats.phase_ema_abs_max[0] < stats.value_max[0]
     assert stats.phase_ema_updates.tolist() == [2, 2]

@@ -77,7 +77,11 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "purpose": purpose,
         "analysis_only": stage == "vanilla_analysis",
         "eligible_for_ann_training": stage == "ann_training",
-        "eligible_for_conversion": post,
+        "eligible_for_conversion": stage in {"ann_training", "post_finetuning"},
+        "conversion_reuse_policy": (
+            "aware_modes_only" if stage == "ann_training" else
+            ("final_ann_only" if stage == "post_finetuning" else "none")
+        ),
         "post_finetuning_recalibration": post,
         "state_profile": state_profile,
         "common_clip_required": stage == "ann_training",
@@ -153,7 +157,9 @@ def build_phase_state(
     channels = int(phase_stat.numel())
     reduction_group_size = channels if configured_group <= 0 else configured_group
     runtime_group_size = -1 if configured_group <= 0 else configured_group
-    tau = _group_reduce(phase_stat.double(), reduction_group_size, "max").float()
+    if phase_stat.dtype != torch.float32:
+        raise ValueError("Phase EMA accumulator must use float32")
+    tau = _group_reduce(phase_stat.float(), reduction_group_size, "max").float()
     phase_cfg = cfg["phase"]
     steps = int(phase_cfg["T"])
     return {
@@ -169,6 +175,7 @@ def build_phase_state(
         "v0": (0.5 * tau * 2 ** (-steps)).float(),
         "tau_calibration": "spikingllm_ema_channel_abs_max",
         "tau_ema_factor": 0.99,
+        "tau_accumulator_dtype": "float32",
     }
 
 
@@ -345,6 +352,7 @@ def materialize_calibration_states(
             "clip_state_present": include_clip,
             "phase_tau_calibration": states["phase"]["tau_calibration"],
             "phase_tau_ema_factor": states["phase"]["tau_ema_factor"],
+            "phase_tau_accumulator_dtype": states["phase"]["tau_accumulator_dtype"],
             "state_sha256": {
                 name: sha256_file(directory / f"{name}_state.pt")
                 for name in states
@@ -466,7 +474,15 @@ def collect_site_statistics(
         root, expected_num_hidden_layers=expected_num_hidden_layers
     )
     eligible_ann = purpose == "ann_training_calibration"
-    eligible_conversion = purpose == "post_finetuning_conversion_calibration"
+    eligible_conversion = purpose in {
+        "ann_training_calibration",
+        "post_finetuning_conversion_calibration",
+    }
+    conversion_reuse_policy = {
+        "ann_training_calibration": "aware_modes_only",
+        "vanilla_analysis_calibration": "none",
+        "post_finetuning_conversion_calibration": "final_ann_only",
+    }[purpose]
     state_profile = {
         "ann_training_calibration": "ann_training_with_common_clip",
         "vanilla_analysis_calibration": "analysis_statistics_only",
@@ -477,7 +493,8 @@ def collect_site_statistics(
         "analysis_only": purpose == "vanilla_analysis_calibration",
         "eligible_for_ann_training": eligible_ann,
         "eligible_for_conversion": eligible_conversion,
-        "post_finetuning_recalibration": eligible_conversion,
+        "conversion_reuse_policy": conversion_reuse_policy,
+        "post_finetuning_recalibration": purpose == "post_finetuning_conversion_calibration",
         "state_profile": state_profile,
         "common_clip_required": eligible_ann,
         "source_model_stage": None,
@@ -506,7 +523,8 @@ def collect_site_statistics(
         "analysis_only": purpose == "vanilla_analysis_calibration",
         "eligible_for_ann_training": eligible_ann,
         "eligible_for_conversion": eligible_conversion,
-        "post_finetuning_recalibration": eligible_conversion,
+        "conversion_reuse_policy": conversion_reuse_policy,
+        "post_finetuning_recalibration": purpose == "post_finetuning_conversion_calibration",
         "state_profile": state_profile,
         "common_clip_required": eligible_ann,
         "expected_num_hidden_layers": expected_num_hidden_layers,

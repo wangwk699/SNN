@@ -1,7 +1,13 @@
 import pytest
 import torch
 
-from snn2.neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, StaticGIF
+from snn2.neurons import (
+    Clipper,
+    HeavisideSigmoid,
+    MultiThresholdNeuron,
+    PhaseSurrogate,
+    StaticGIF,
+)
 from snn2.temporal_ops import (
     GIF_INTEGER_DECOMPOSITION, PHASE_TAU_CALIBRATION, PHASE_TAU_EMA_FACTOR,
     SITE_STATE_FORMAT_VERSION, TEMPORAL_IMPLEMENTATION_VERSION,
@@ -52,7 +58,7 @@ def test_phase_training_output_is_static():
             "T": 4,
             "base": 2.0,
             "group_size": -1,
-            "surrogate_slope": 4.0,
+            "surrogate_slope": 1.0,
             "max_spikes": 2,
             "tau": torch.tensor([2.0]),
             "v0": torch.tensor([0.0625]),
@@ -65,6 +71,15 @@ def test_phase_training_output_is_static():
     assert output.shape == x.shape
     output.sum().backward()
     assert x.grad is not None
+
+
+def test_phase_surrogate_keeps_hard_forward_and_uses_unit_slope_backward():
+    x = torch.tensor([-1.0, 0.0, 1.0], requires_grad=True)
+    output = HeavisideSigmoid.apply(x, 1.0)
+    torch.testing.assert_close(output, torch.tensor([0.0, 0.0, 1.0]))
+    output.sum().backward()
+    expected = torch.sigmoid(x.detach()) * (1.0 - torch.sigmoid(x.detach()))
+    torch.testing.assert_close(x.grad, expected)
 
 
 def test_static_gif_unsigned_temporal_chunks_sum_to_fake_quant():
@@ -157,7 +172,7 @@ def test_non_gif_neurons_reject_format_v1(kind):
     if kind == "phase":
         state = {
             **_header("phase"), "T": 2, "base": 2.0, "group_size": -1,
-            "surrogate_slope": 4.0, "tau": torch.tensor([1.0]),
+            "surrogate_slope": 1.0, "tau": torch.tensor([1.0]),
             "v0": torch.tensor([0.125]),
             "tau_calibration": PHASE_TAU_CALIBRATION,
             "tau_ema_factor": PHASE_TAU_EMA_FACTOR,

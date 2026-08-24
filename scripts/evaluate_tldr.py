@@ -25,6 +25,7 @@ from snn2.data import (
     tldr_prompt_and_reference,
 )
 from snn2.evaluation import (
+    activation_neuron_operators_per_temporal_forward,
     greedy_generate,
     deployment_policy_metadata,
     resolve_tldr_evaluation_layout,
@@ -465,10 +466,11 @@ def main():
             # × Transformer layers
             # × SITE_COUNT activation replacement sites
             # ----------------------------------------
+            per_forward_operators = activation_neuron_operators_per_temporal_forward(
+                num_hidden_layers=layers, neuron=args.neuron
+            )
             activation_site_temporal_operator_calls = (
-                temporal_sample_step_forwards
-                * layers
-                * SITE_COUNT
+                temporal_sample_step_forwards * per_forward_operators
             )
 
             # ----------------------------------------
@@ -478,9 +480,7 @@ def main():
             # 但因其它样本仍在生成而继续占据的 tensor slot。
             # ----------------------------------------
             batched_activation_site_temporal_slots = (
-                batched_temporal_sample_slots
-                * layers
-                * SITE_COUNT
+                batched_temporal_sample_slots * per_forward_operators
             )
 
             metrics.update(
@@ -512,6 +512,8 @@ def main():
                     "full_temporal_steps": steps,
                     "site_count": SITE_COUNT,
                     "site_topology_version": SITE_TOPOLOGY_VERSION,
+                    "per_temporal_forward_activation_neuron_operators": per_forward_operators,
+                    "global_final_norm_phase_neuron_present": args.neuron == "phase",
                     **deployment_policy_metadata(controller),
                     "decode": "greedy",
                     "input_length": input_length,

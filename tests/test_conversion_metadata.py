@@ -54,7 +54,7 @@ def _cfg(rotation_enabled=False):
         "rotation": {"enabled": rotation_enabled},
         "post_finetuning": {"prefix_enabled": False},
         "calibration": {"group_size": -1, "expected_sites_per_layer": 10},
-        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 4.0, "max_spikes": 4},
+        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0, "max_spikes": 4},
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
     }
@@ -74,7 +74,9 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         _cfg(rotation_enabled),
         {
             "purpose": "post_finetuning_conversion_calibration",
+            "eligible_for_ann_training": False,
             "eligible_for_conversion": True,
+            "conversion_reuse_policy": "final_ann_only",
             "post_finetuning_recalibration": True,
             "state_profile": "snn_conversion_without_clip",
             "common_clip_required": False,

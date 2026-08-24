@@ -43,7 +43,7 @@ class SiteStatistics:
             saliency_row_count=torch.zeros(channels, dtype=torch.int64),
             row_count=torch.zeros((), dtype=torch.int64),
             tensor_count=torch.zeros((), dtype=torch.int64),
-            phase_ema_abs_max=torch.zeros(channels, dtype=torch.float64),
+            phase_ema_abs_max=torch.zeros(channels, dtype=torch.float32),
             phase_ema_updates=torch.zeros(channels, dtype=torch.int64),
         )
 
@@ -61,6 +61,7 @@ class SiteStatistics:
         current_min = work.amin(dim=0).double().cpu()
         current_max = work.amax(dim=0).double().cpu()
         current_abs_max = work.abs().amax(dim=0).double().cpu()
+        current_phase_abs_max = work.abs().amax(dim=0).float().cpu()
         self.value_min[:active].copy_(torch.minimum(self.value_min[:active], current_min))
         self.value_max[:active].copy_(torch.maximum(self.value_max[:active], current_max))
         self.abs_max[:active].copy_(torch.maximum(self.abs_max[:active], current_abs_max))
@@ -68,7 +69,13 @@ class SiteStatistics:
         previous_updates = self.phase_ema_updates[:active]
         first = previous_updates == 0
         ema = self.phase_ema_abs_max[:active]
-        ema.copy_(torch.where(first, current_abs_max, 0.99 * ema + 0.01 * current_abs_max))
+        ema.copy_(
+            torch.where(
+                first,
+                current_phase_abs_max,
+                0.99 * ema + 0.01 * current_phase_abs_max,
+            )
+        )
         previous_updates.add_(1)
 
         self.sum_abs[:active].add_(work.abs().sum(dim=0).double().cpu())
@@ -140,6 +147,7 @@ class SiteStatistics:
             "phase_ema_updates": self.phase_ema_updates,
             "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
             "phase_tau_ema_factor": 0.99,
+            "phase_tau_accumulator_dtype": "float32",
         }
 
     def summary(self) -> dict[str, Any]:
@@ -167,6 +175,7 @@ class SiteStatistics:
             ),
             "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
             "phase_tau_ema_factor": 0.99,
+            "phase_tau_accumulator_dtype": "float32",
             "phase_ema_updates_min_seen": int(
                 self.phase_ema_updates[self.phase_ema_updates > 0].min().item()
             ) if torch.any(self.phase_ema_updates > 0) else 0,

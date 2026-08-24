@@ -18,10 +18,11 @@ SOFTMAX_PREFIX_NEURON_POLICY = "full_softmax_tensor_including_prefix"
 PHASE_FINAL_NORM_POLICY = "phase_neuron_after_final_temporal_rmsnorm"
 PHASE_TAU_CALIBRATION = "spikingllm_ema_channel_abs_max"
 PHASE_TAU_EMA_FACTOR = 0.99
+PHASE_TAU_ACCUMULATOR_DTYPE = "float32"
 
-SITE_STATE_FORMAT_VERSION = 3
-CALIBRATION_MANIFEST_FORMAT_VERSION = 4
-CONVERSION_METADATA_FORMAT_VERSION = 5
+SITE_STATE_FORMAT_VERSION = 4
+CALIBRATION_MANIFEST_FORMAT_VERSION = 5
+CONVERSION_METADATA_FORMAT_VERSION = 6
 
 GIF_BASE_BITS = 4
 GIF_ADD_BITS = 1
@@ -49,6 +50,7 @@ def temporal_policy_metadata() -> dict[str, Any]:
         "phase_final_norm_policy": PHASE_FINAL_NORM_POLICY,
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
         "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
         "gif_high_qmax": GIF_HIGH_QMAX,
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         "gif_per_step_qmax": GIF_STEP_QMAX,

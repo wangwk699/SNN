@@ -83,6 +83,13 @@ class SiteController:
                 layer_index, site_index, score_sum, row_count
             )
 
+    def record_activation(
+        self, layer_index: int, site_index: int, x: torch.Tensor
+    ) -> None:
+        """Record calibration statistics without changing the runtime tensor."""
+        if self.mode == "collect":
+            self.statistics.update(layer_index, site_index, x)
+
     def apply(self, layer_index: int, site_index: int, x: torch.Tensor) -> torch.Tensor:
         if self.mode in {"identity", "none"}:
             return x

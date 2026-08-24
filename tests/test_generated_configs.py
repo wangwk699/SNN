@@ -16,6 +16,7 @@ from snn2.temporal_ops import (
     PHASE_FINAL_NORM_POLICY,
     PHASE_TAU_CALIBRATION,
     PHASE_TAU_EMA_FACTOR,
+    PHASE_TAU_ACCUMULATOR_DTYPE,
     PREFIX_TEMPORAL_POLICY,
     TEMPORAL_IMPLEMENTATION,
     TEMPORAL_LAYOUT,
@@ -50,7 +51,9 @@ def test_all_twelve_generated_configs_carry_temporal_v2_and_qmax30(generated_con
             "phase_final_norm_policy": PHASE_FINAL_NORM_POLICY,
             "phase_tau_calibration": PHASE_TAU_CALIBRATION,
             "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+            "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
         }
+        assert cfg["phase"]["surrogate_slope"] == 1.0
         assert cfg["gif"]["high_qmax"] == GIF_HIGH_QMAX
         assert cfg["gif"]["temporal_steps"] == GIF_LOCAL_STEPS
         assert cfg["gif"]["per_step_qmax"] == GIF_STEP_QMAX

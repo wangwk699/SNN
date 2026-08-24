@@ -20,6 +20,7 @@ from .temporal_ops import (
     PHASE_FINAL_NORM_POLICY,
     PHASE_TAU_CALIBRATION,
     PHASE_TAU_EMA_FACTOR,
+    PHASE_TAU_ACCUMULATOR_DTYPE,
     SOFTMAX_PREFIX_NEURON_POLICY,
     TEMPORAL_IMPLEMENTATION,
     TEMPORAL_LAYOUT,
@@ -130,6 +131,10 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("Calibration sampling must be done without replacement")
     if int(cfg["data"]["max_seq_length"]) != 2048:
         raise ValueError("Main experiments require max_seq_length=2048")
+    if float(cfg["phase"]["surrogate_slope"]) != 1.0:
+        raise ValueError(
+            "Main experiments require SpikingLLM Phase surrogate_slope=1.0"
+        )
     if bool(cfg["data"].get("packing", True)):
         raise ValueError("Packing must be disabled")
     if not bool(cfg["data"].get("truncation", False)):
@@ -153,6 +158,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
         "phase_final_norm_policy": PHASE_FINAL_NORM_POLICY,
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
         "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
     }
     unexpected_deployment = sorted(set(deployment) - set(expected_deployment))
     if unexpected_deployment:
@@ -265,7 +271,7 @@ def conversion_calibration_stage(cfg: dict[str, Any]) -> str:
 
 
 def final_evaluation_prefix_artifact_stage(cfg: dict[str, Any]) -> str:
-    return "ann_training" if is_aware_ann_mode(cfg) else "post_finetuning"
+    return "pre_finetuning" if is_aware_ann_mode(cfg) else "post_finetuning"
 
 
 def post_finetuning_prefix_enabled(cfg: dict[str, Any]) -> bool:

@@ -5,7 +5,20 @@ from snn2.data import load_selected_raw, prepare_manifests
 import pytest
 
 from snn2.artifacts import prefix_enabled_dirname
-from snn2.evaluation import resolve_tldr_evaluation_layout
+from snn2.evaluation import (
+    activation_neuron_operators_per_temporal_forward,
+    resolve_tldr_evaluation_layout,
+)
+
+
+@pytest.mark.parametrize(
+    ("neuron", "expected"),
+    [("phase", 281), ("gif", 280), ("mtn", 280), ("ann", 280)],
+)
+def test_activation_neuron_operator_count_includes_global_phase(neuron, expected):
+    assert activation_neuron_operators_per_temporal_forward(
+        num_hidden_layers=28, neuron=neuron
+    ) == expected
 
 
 @pytest.mark.parametrize(

@@ -33,19 +33,9 @@ def deployment_attention_forward(
     if module.training or float(dropout) != 0.0:
         raise RuntimeError("Temporal deployment attention requires model.eval() and dropout=0")
 
-    current_length = int(query.shape[-2])
-    past_length = max(int(key.shape[-2]) - current_length, 0)
     query = controller.apply(layer_index, 2, query)
-    if past_length:
-        prefix_key, current_key = key[..., :past_length, :], key[..., past_length:, :]
-        prefix_value, current_value = value[..., :past_length, :], value[..., past_length:, :]
-        current_key = controller.apply(layer_index, 3, current_key)
-        current_value = controller.apply(layer_index, 4, current_value)
-        key = torch.cat((prefix_key, current_key), dim=-2)
-        value = torch.cat((prefix_value, current_value), dim=-2)
-    else:
-        key = controller.apply(layer_index, 3, key)
-        value = controller.apply(layer_index, 4, value)
+    key = controller.apply(layer_index, 3, key)
+    value = controller.apply(layer_index, 4, value)
 
     groups = int(getattr(module, "num_key_value_groups", 1))
     key = repeat_kv(key, groups)
