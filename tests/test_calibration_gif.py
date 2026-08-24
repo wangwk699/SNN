@@ -14,6 +14,8 @@ def test_gif_high_qparams_use_two_chunk_capacity():
         "phase_ema_updates": torch.ones(4, dtype=torch.long),
         "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
         "phase_tau_ema_factor": 0.99,
+        "phase_statistical_view": "spikingllm_identity_input_layout",
+        "phase_statistical_view_version": 1,
     }
     cfg = {
         "calibration": {"group_size": -1},

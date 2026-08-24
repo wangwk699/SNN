@@ -33,6 +33,8 @@ def _statistics():
         "phase_ema_updates": torch.ones(3, dtype=torch.long),
         "phase_tau_statistic": PHASE_TAU_CALIBRATION,
         "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "phase_statistical_view": "spikingllm_identity_input_layout",
+        "phase_statistical_view_version": 1,
     }
 
 
@@ -72,6 +74,11 @@ def _phase_state():
         "v0": torch.tensor([0.125]),
         "tau_calibration": PHASE_TAU_CALIBRATION,
         "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "tau_accumulator_dtype": "float32",
+        "tau_channel_policy": "spikingllm_flatten_attention_heads_before_channel_ema",
+        "tau_reduction_policy": "per_channel_ema_then_global_max",
+        "phase_statistical_view": "spikingllm_identity_input_layout",
+        "phase_statistical_view_version": 1,
     }
 
 

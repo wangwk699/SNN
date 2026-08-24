@@ -15,6 +15,7 @@ from snn2.model_integration import (
     temporal_forward,
 )
 from snn2.prefix_cache import build_prefix_key_values, install_prefix_kv_forward
+from snn2.phase_statistics import phase_statistical_view
 from snn2.sites import site_key
 from snn2.temporal_model import deployment_attention_forward
 from snn2.temporal_ops import from_temporal, to_temporal
@@ -27,7 +28,7 @@ class _BypassController:
         self.applied = []
         self.applied_shapes = []
 
-    def apply(self, layer, site, value):
+    def apply(self, layer, site, value, **kwargs):
         self.applied.append(site)
         self.applied_shapes.append(tuple(value.shape))
         return value
@@ -115,8 +116,8 @@ def test_static_attention_runtime_applies_sites_3_and_4_to_full_prefix_kv():
         num_key_value_groups=1,
         scaling=0.5,
     )
-    query = torch.randn(1, 1, 2, 4)
-    key = torch.randn(1, 1, 5, 4)
+    query = torch.randn(1, 2, 2, 4)
+    key = torch.randn(1, 2, 5, 4)
     value = torch.randn_like(key)
     snn2_eager_attention_forward(
         module, query, key, value, None, dropout=0.0
@@ -137,14 +138,24 @@ def test_collect_attention_excludes_prefix_from_site_3_and_4_statistics():
         num_key_value_groups=1,
         scaling=0.5,
     )
-    query = torch.randn(1, 1, 2, 4)
-    key = torch.randn(1, 1, 5, 4)
+    query = torch.randn(1, 2, 2, 4)
+    key = torch.randn(1, 2, 5, 4)
     value = torch.randn_like(key)
     snn2_eager_attention_forward(
         module, query, key, value, None, dropout=0.0
     )
-    assert controller.statistics.items[site_key(0, 3)].row_count.item() == 2
-    assert controller.statistics.items[site_key(0, 4)].row_count.item() == 2
+    key_stats = controller.statistics.items[site_key(0, 3)]
+    value_stats = controller.statistics.items[site_key(0, 4)]
+    assert key_stats.row_count.item() == 4
+    assert value_stats.row_count.item() == 4
+    assert key_stats.channels == 4
+    assert value_stats.channels == 4
+    assert key_stats.phase_channels == 8
+    assert value_stats.phase_channels == 8
+    expected_key = phase_statistical_view(3, key[..., 3:, :]).abs().amax(dim=(0, 1))
+    expected_value = phase_statistical_view(4, value[..., 3:, :]).abs().amax(dim=(0, 1))
+    torch.testing.assert_close(key_stats.phase_ema_abs_max, expected_key)
+    torch.testing.assert_close(value_stats.phase_ema_abs_max, expected_value)
 
 
 class _RMSNorm(torch.nn.Module):

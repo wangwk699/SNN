@@ -7,6 +7,7 @@ from typing import Any
 import torch
 
 from .artifacts import write_json
+from .phase_statistics import PHASE_STATISTICAL_VIEW, PHASE_STATISTICAL_VIEW_VERSION
 
 from .sites import (
     SITE_COORDINATES, SITE_COUNT, SITE_IDS, SITE_NAMES, SITE_TOPOLOGY_VERSION,
@@ -26,6 +27,7 @@ class SiteStatistics:
     saliency_row_count: torch.Tensor
     row_count: torch.Tensor
     tensor_count: torch.Tensor
+    phase_channels: int | None
     phase_ema_abs_max: torch.Tensor
     phase_ema_updates: torch.Tensor
 
@@ -43,12 +45,33 @@ class SiteStatistics:
             saliency_row_count=torch.zeros(channels, dtype=torch.int64),
             row_count=torch.zeros((), dtype=torch.int64),
             tensor_count=torch.zeros((), dtype=torch.int64),
-            phase_ema_abs_max=torch.zeros(channels, dtype=torch.float32),
-            phase_ema_updates=torch.zeros(channels, dtype=torch.int64),
+            phase_channels=None,
+            phase_ema_abs_max=torch.empty(0, dtype=torch.float32),
+            phase_ema_updates=torch.empty(0, dtype=torch.int64),
         )
 
+    def _ensure_phase_channels(self, channels: int) -> None:
+        channels = int(channels)
+        if channels <= 0:
+            raise ValueError("Phase channel dimension must be positive")
+        if self.phase_channels is None:
+            self.phase_channels = channels
+            self.phase_ema_abs_max = torch.zeros(channels, dtype=torch.float32)
+            self.phase_ema_updates = torch.zeros(channels, dtype=torch.int64)
+            return
+        if self.phase_channels != channels:
+            raise ValueError(
+                "Phase channel dimension changed from "
+                f"{self.phase_channels} to {channels}"
+            )
+
     @torch.no_grad()
-    def update(self, activation: torch.Tensor) -> None:
+    def update(
+        self,
+        activation: torch.Tensor,
+        *,
+        phase_activation: torch.Tensor | None = None,
+    ) -> None:
         values = activation.detach().reshape(-1, activation.shape[-1])
         active = int(values.shape[-1])
         if (not self.variable_channels and active != self.channels) or active > self.channels:
@@ -61,14 +84,19 @@ class SiteStatistics:
         current_min = work.amin(dim=0).double().cpu()
         current_max = work.amax(dim=0).double().cpu()
         current_abs_max = work.abs().amax(dim=0).double().cpu()
-        current_phase_abs_max = work.abs().amax(dim=0).float().cpu()
         self.value_min[:active].copy_(torch.minimum(self.value_min[:active], current_min))
         self.value_max[:active].copy_(torch.maximum(self.value_max[:active], current_max))
         self.abs_max[:active].copy_(torch.maximum(self.abs_max[:active], current_abs_max))
 
-        previous_updates = self.phase_ema_updates[:active]
+        phase_source = activation if phase_activation is None else phase_activation
+        phase_values = phase_source.detach().reshape(-1, phase_source.shape[-1])
+        phase_work = phase_values.float()
+        phase_active = int(phase_values.shape[-1])
+        self._ensure_phase_channels(phase_active)
+        current_phase_abs_max = phase_work.abs().amax(dim=0).float().cpu()
+        previous_updates = self.phase_ema_updates
         first = previous_updates == 0
-        ema = self.phase_ema_abs_max[:active]
+        ema = self.phase_ema_abs_max
         ema.copy_(
             torch.where(
                 first,
@@ -143,17 +171,21 @@ class SiteStatistics:
             "saliency_row_count": self.saliency_row_count,
             "row_count": self.row_count,
             "tensor_count": self.tensor_count,
+            "phase_channels": self.phase_channels,
             "phase_ema_abs_max": self.phase_ema_abs_max,
             "phase_ema_updates": self.phase_ema_updates,
             "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
             "phase_tau_ema_factor": 0.99,
             "phase_tau_accumulator_dtype": "float32",
+            "phase_statistical_view": PHASE_STATISTICAL_VIEW,
+            "phase_statistical_view_version": PHASE_STATISTICAL_VIEW_VERSION,
         }
 
     def summary(self) -> dict[str, Any]:
         count = max(int(self.row_count.item()), 1)
         return {
             "channels": self.channels,
+            "phase_channels": self.phase_channels,
             "row_count": int(self.row_count.item()),
             "tensor_count": int(self.tensor_count.item()),
             "global_min": float(self.value_min.min().item()),
@@ -176,6 +208,8 @@ class SiteStatistics:
             "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
             "phase_tau_ema_factor": 0.99,
             "phase_tau_accumulator_dtype": "float32",
+            "phase_statistical_view": PHASE_STATISTICAL_VIEW,
+            "phase_statistical_view_version": PHASE_STATISTICAL_VIEW_VERSION,
             "phase_ema_updates_min_seen": int(
                 self.phase_ema_updates[self.phase_ema_updates > 0].min().item()
             ) if torch.any(self.phase_ema_updates > 0) else 0,
@@ -189,13 +223,20 @@ class StatisticsStore:
         self.global_items: dict[str, SiteStatistics] = {}
         self.max_channels_by_site = dict(max_channels_by_site or {})
 
-    def update(self, layer_index: int, site_index: int, activation: torch.Tensor) -> None:
+    def update(
+        self,
+        layer_index: int,
+        site_index: int,
+        activation: torch.Tensor,
+        *,
+        phase_activation: torch.Tensor | None = None,
+    ) -> None:
         key = site_key(layer_index, site_index)
         if key not in self.items:
             variable = site_index in self.max_channels_by_site
             channels = self.max_channels_by_site.get(site_index, int(activation.shape[-1]))
             self.items[key] = SiteStatistics.create(channels, variable_channels=variable)
-        self.items[key].update(activation)
+        self.items[key].update(activation, phase_activation=phase_activation)
 
     def update_saliency(
         self, layer_index: int, site_index: int, score: torch.Tensor

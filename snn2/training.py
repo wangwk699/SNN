@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .artifacts import ArtifactLayout, sha256_file, write_json
+from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
 from .config import is_aware_ann_mode, training_prefix_enabled
 from .controller import SiteController
 from .data import CausalLMCollator, load_selected_raw, tokenize_dataset
@@ -23,6 +23,80 @@ def format_runtime_hms(runtime_seconds: float) -> str:
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{fractional_units:04d}"
+
+
+def capture_training_artifact_provenance(
+    cfg: dict[str, Any],
+    layout: ArtifactLayout,
+    *,
+    prefix_ids: list[int],
+) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+    if training_prefix_enabled(cfg):
+        prefix_state_path = layout.ann_training_prefix_dir / "prefix_state.json"
+        if not prefix_state_path.exists():
+            raise FileNotFoundError(prefix_state_path)
+        saved_ids = [
+            int(value)
+            for value in read_json(prefix_state_path).get("prefix_token_ids", [])
+        ]
+        if saved_ids != [int(value) for value in prefix_ids]:
+            raise ValueError("Loaded ANN-training Prefix IDs do not match prefix_state.json")
+        prefix_kv_path = layout.ann_training_prefix_dir / "prefixed_key_values.pt"
+        if saved_ids and not prefix_kv_path.exists():
+            raise FileNotFoundError(prefix_kv_path)
+        captured.update(
+            {
+                "ann_training_prefix_root": str(
+                    layout.ann_training_prefix_dir.resolve()
+                ),
+                "ann_training_prefix_state_sha256": sha256_file(prefix_state_path),
+                "ann_training_prefix_kv_sha256": (
+                    sha256_file(prefix_kv_path) if saved_ids else None
+                ),
+                "ann_training_prefix_token_ids": saved_ids,
+            }
+        )
+    if is_aware_ann_mode(cfg):
+        validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)
+        calibration_manifest = (
+            layout.ann_training_site_dir / "calibration_state_manifest.json"
+        )
+        captured.update(
+            {
+                "ann_training_calibration_root": str(
+                    layout.ann_training_site_dir.resolve()
+                ),
+                "ann_training_calibration_manifest_sha256": sha256_file(
+                    calibration_manifest
+                ),
+            }
+        )
+    return captured
+
+
+def verify_training_artifact_provenance_unchanged(
+    captured: dict[str, Any],
+    cfg: dict[str, Any],
+    layout: ArtifactLayout,
+) -> None:
+    try:
+        current = capture_training_artifact_provenance(
+            cfg,
+            layout,
+            prefix_ids=[
+                int(value)
+                for value in captured.get("ann_training_prefix_token_ids", [])
+            ],
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "ANN-training Prefix/calibration artifacts changed during training"
+        ) from exc
+    if current != captured:
+        raise RuntimeError(
+            "ANN-training Prefix/calibration artifacts changed during training"
+        )
 
 
 def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, Any]:
@@ -87,6 +161,9 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             f"configured={configured_train_samples}, selected={len(bundle.train)}"
         )
     prefixes = prefix_ids_for_stage(cfg, layout, stage="ann_training")
+    captured_provenance = capture_training_artifact_provenance(
+        cfg, layout, prefix_ids=prefixes
+    )
     install_prefix_kv_forward(
         model,
         prefix_key_values_for_stage(cfg, layout, stage="ann_training"),
@@ -139,6 +216,7 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         processing_class=tokenizer,
     )
     result = trainer.train(resume_from_checkpoint=training_cfg.get("resume_from_checkpoint"))
+    verify_training_artifact_provenance_unchanged(captured_provenance, cfg, layout)
     final_dir = layout.ann_checkpoint_dir
     trainer.save_model(str(final_dir))
     if trainer.is_world_process_zero():
@@ -160,37 +238,9 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
                 * int(training_cfg["gradient_accumulation_steps"])
                 * int(os.environ.get("WORLD_SIZE", "1"))
             ),
+            **captured_provenance,
         }
     )
-    if training_prefix_enabled(cfg):
-        prefix_state_path = layout.ann_training_prefix_dir / "prefix_state.json"
-        prefix_kv_path = layout.ann_training_prefix_dir / "prefixed_key_values.pt"
-        if not prefix_state_path.exists():
-            raise FileNotFoundError(prefix_state_path)
-        metrics.update(
-            {
-                "ann_training_prefix_root": str(layout.ann_training_prefix_dir.resolve()),
-                "ann_training_prefix_state_sha256": sha256_file(prefix_state_path),
-                "ann_training_prefix_kv_sha256": (
-                    sha256_file(prefix_kv_path) if prefixes else None
-                ),
-                "ann_training_prefix_token_ids": prefixes,
-            }
-        )
-    if is_aware_ann_mode(cfg):
-        calibration_manifest = (
-            layout.ann_training_site_dir / "calibration_state_manifest.json"
-        )
-        metrics.update(
-            {
-                "ann_training_calibration_root": str(
-                    layout.ann_training_site_dir.resolve()
-                ),
-                "ann_training_calibration_manifest_sha256": sha256_file(
-                    calibration_manifest
-                ),
-            }
-        )
     if "train_runtime" in metrics:
         metrics["train_runtime_hms"] = format_runtime_hms(metrics["train_runtime"])
     if trainer.is_world_process_zero():

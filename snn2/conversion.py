@@ -200,7 +200,10 @@ def validate_conversion_metadata(
         )
     metadata = read_json(path)
     if metadata.get("format_version") != CONVERSION_METADATA_FORMAT_VERSION:
-        raise ValueError(f"{path} uses a legacy conversion schema; format v5 is required")
+        raise ValueError(
+            f"{path} uses a legacy conversion schema; "
+            f"format v{CONVERSION_METADATA_FORMAT_VERSION} is required"
+        )
     validate_temporal_policy(metadata, context=str(path))
     prefix, bundle, manifest_path, _ = _source_bundle(cfg, layout)
     reused = conversion_reuses_ann_training_artifacts(cfg)

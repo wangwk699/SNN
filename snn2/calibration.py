@@ -29,6 +29,12 @@ from .temporal_ops import (
 )
 from .prefix_cache import install_prefix_kv_forward
 from .prefix_cache import prefix_length
+from .phase_statistics import (
+    PHASE_STATISTICAL_VIEW,
+    PHASE_STATISTICAL_VIEW_VERSION,
+    PHASE_TAU_CHANNEL_POLICY,
+    PHASE_TAU_REDUCTION_POLICY,
+)
 from .rotation import get_model_parts
 
 
@@ -153,13 +159,13 @@ def build_phase_state(
         raise ValueError("Phase EMA statistics are missing")
     if phase_stat.numel() != updates.numel() or not torch.any(updates > 0):
         raise ValueError("Phase EMA statistics have invalid update metadata")
-    configured_group = int(cfg["calibration"].get("group_size", -1))
-    channels = int(phase_stat.numel())
-    reduction_group_size = channels if configured_group <= 0 else configured_group
-    runtime_group_size = -1 if configured_group <= 0 else configured_group
     if phase_stat.dtype != torch.float32:
         raise ValueError("Phase EMA accumulator must use float32")
-    tau = _group_reduce(phase_stat.float(), reduction_group_size, "max").float()
+    if statistics.get("phase_statistical_view") != PHASE_STATISTICAL_VIEW:
+        raise ValueError("Phase statistics use an incompatible statistical view")
+    if statistics.get("phase_statistical_view_version") != PHASE_STATISTICAL_VIEW_VERSION:
+        raise ValueError("Phase statistics use an incompatible statistical-view version")
+    tau = phase_stat.float().amax().reshape(1)
     phase_cfg = cfg["phase"]
     steps = int(phase_cfg["T"])
     return {
@@ -170,12 +176,16 @@ def build_phase_state(
         "base": float(phase_cfg["base"]),
         "surrogate_slope": float(phase_cfg["surrogate_slope"]),
         "max_spikes": int(phase_cfg.get("max_spikes", steps)),
-        "group_size": runtime_group_size,
+        "group_size": -1,
         "tau": tau,
         "v0": (0.5 * tau * 2 ** (-steps)).float(),
         "tau_calibration": "spikingllm_ema_channel_abs_max",
         "tau_ema_factor": 0.99,
         "tau_accumulator_dtype": "float32",
+        "tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
+        "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+        "phase_statistical_view": PHASE_STATISTICAL_VIEW,
+        "phase_statistical_view_version": PHASE_STATISTICAL_VIEW_VERSION,
     }
 
 

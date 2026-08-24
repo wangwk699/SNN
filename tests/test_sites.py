@@ -12,7 +12,7 @@ class _Controller:
         self.applied = []
         self.saliency = {}
 
-    def apply(self, layer, site, value):
+    def apply(self, layer, site, value, **kwargs):
         self.applied.append(site)
         return value
 
@@ -66,7 +66,7 @@ def test_mlp_applies_site_nine_before_r4_and_site_ten(monkeypatch):
     events = []
 
     class Controller(_Controller):
-        def apply(self, layer, site, value):
+        def apply(self, layer, site, value, **kwargs):
             events.append(f"site_{site}")
             return value
 
@@ -91,7 +91,7 @@ def test_down_proj_saliency_is_recorded_at_site_ten():
 
 def test_deploy_mode_does_not_bypass_site_nine():
     class DeployController(_Controller):
-        def apply(self, layer, site, value):
+        def apply(self, layer, site, value, **kwargs):
             self.applied.append(site)
             return value + 10 if site == 9 else value
 

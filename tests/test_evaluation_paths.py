@@ -7,18 +7,38 @@ import pytest
 from snn2.artifacts import prefix_enabled_dirname
 from snn2.evaluation import (
     activation_neuron_operators_per_temporal_forward,
+    evaluation_calibration_metadata,
     resolve_tldr_evaluation_layout,
 )
 
 
 @pytest.mark.parametrize(
     ("neuron", "expected"),
-    [("phase", 281), ("gif", 280), ("mtn", 280), ("ann", 280)],
+    [("phase", 281), ("gif", 280), ("mtn", 280), ("ann", 0)],
 )
 def test_activation_neuron_operator_count_includes_global_phase(neuron, expected):
     assert activation_neuron_operators_per_temporal_forward(
         num_hidden_layers=28, neuron=neuron
     ) == expected
+
+
+def test_activation_neuron_operator_count_rejects_unknown_neuron():
+    with pytest.raises(ValueError, match="Unknown neuron"):
+        activation_neuron_operators_per_temporal_forward(
+            num_hidden_layers=28, neuron="unknown"
+        )
+
+
+@pytest.mark.parametrize("mode", ["vanilla", "unaware", "phase_aware", "gif_aware"])
+def test_final_ann_evaluation_has_no_calibration_metadata(mode):
+    cfg = {"experiment": {"ann_mode": mode}}
+    layout = SimpleNamespace(conversion_site_dir="sites")
+    assert evaluation_calibration_metadata(cfg, layout, neuron="ann") == {
+        "calibration_source_stage": None,
+        "reused_ann_training_artifacts": False,
+        "post_finetuning_recalibration": False,
+        "calibration_root": None,
+    }
 
 
 @pytest.mark.parametrize(

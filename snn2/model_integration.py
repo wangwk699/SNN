@@ -9,6 +9,7 @@ import torch.nn.functional as F
 
 from .controller import SiteController
 from .hadamard import HadamardSpec, random_hadamard
+from .phase_statistics import phase_statistical_view
 from .rotation import get_model_parts, load_specs
 from .temporal_model import deployment_attention_forward
 from .temporal_ops import (
@@ -68,14 +69,51 @@ def snn2_eager_attention_forward(
             softcap=kwargs.get("softcap"),
         )
 
-    query = controller.apply(layer_index, 2, query)
+    query = controller.apply(
+        layer_index,
+        2,
+        query,
+        phase_activation=(
+            phase_statistical_view(2, query) if controller.mode == "collect" else None
+        ),
+    )
 
     if controller.mode == "collect" and past_length:
-        controller.record_activation(layer_index, 3, key[..., past_length:, :])
-        controller.record_activation(layer_index, 4, value[..., past_length:, :])
+        current_key = key[..., past_length:, :]
+        current_value = value[..., past_length:, :]
+        controller.record_activation(
+            layer_index,
+            3,
+            current_key,
+            phase_activation=phase_statistical_view(3, current_key),
+        )
+        controller.record_activation(
+            layer_index,
+            4,
+            current_value,
+            phase_activation=phase_statistical_view(4, current_value),
+        )
     else:
-        key = controller.apply(layer_index, 3, key)
-        value = controller.apply(layer_index, 4, value)
+        key = controller.apply(
+            layer_index,
+            3,
+            key,
+            phase_activation=(
+                phase_statistical_view(3, key)
+                if controller.mode == "collect"
+                else None
+            ),
+        )
+        value = controller.apply(
+            layer_index,
+            4,
+            value,
+            phase_activation=(
+                phase_statistical_view(4, value)
+                if controller.mode == "collect"
+                else None
+            ),
+        )
 
     groups = int(getattr(module, "num_key_value_groups", 1))
     key = repeat_kv(key, groups)
@@ -95,7 +133,16 @@ def snn2_eager_attention_forward(
         cap = float(kwargs["softcap"])
         weights = torch.tanh(weights / cap) * cap
     weights = F.softmax(weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    weights = controller.apply(layer_index, 5, weights)
+    weights = controller.apply(
+        layer_index,
+        5,
+        weights,
+        phase_activation=(
+            phase_statistical_view(5, weights)
+            if controller.mode == "collect"
+            else None
+        ),
+    )
     weights = F.dropout(weights, p=dropout, training=module.training)
     output = torch.matmul(weights, value)
     if controller.mode == "collect":
@@ -119,7 +166,16 @@ def snn2_eager_attention_forward(
             position_score,
             weights.shape[0] * weights.shape[1] * weights.shape[2],
         )
-    output = controller.apply(layer_index, 6, output)
+    output = controller.apply(
+        layer_index,
+        6,
+        output,
+        phase_activation=(
+            phase_statistical_view(6, output)
+            if controller.mode == "collect"
+            else None
+        ),
+    )
     return output.transpose(1, 2).contiguous(), weights
 
 

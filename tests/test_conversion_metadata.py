@@ -44,6 +44,8 @@ def _statistics():
         "phase_ema_updates": torch.ones(4, dtype=torch.long),
         "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
         "phase_tau_ema_factor": 0.99,
+        "phase_statistical_view": "spikingllm_identity_input_layout",
+        "phase_statistical_view_version": 1,
     }
 
 
@@ -125,7 +127,7 @@ def _prepare(tmp_path, *, rotation_enabled=False):
     return layout, path
 
 
-def test_conversion_metadata_v5_is_accepted(tmp_path):
+def test_conversion_metadata_v7_is_accepted(tmp_path):
     layout, _ = _prepare(tmp_path)
     metadata = validate_conversion_metadata(_cfg(), layout, "gif")
     assert metadata["gif_high_qmax"] == 30

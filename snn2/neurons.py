@@ -6,6 +6,13 @@ from typing import Any
 import torch
 from torch import nn
 
+from .phase_statistics import (
+    PHASE_STATISTICAL_VIEW,
+    PHASE_STATISTICAL_VIEW_VERSION,
+    PHASE_TAU_CHANNEL_POLICY,
+    PHASE_TAU_REDUCTION_POLICY,
+)
+
 from .temporal_ops import (
     GIF_ADD_BITS,
     GIF_BASE_BITS,
@@ -81,6 +88,12 @@ class PhaseSurrogate(nn.Module):
         if (
             state.get("tau_calibration") != "spikingllm_ema_channel_abs_max"
             or float(state.get("tau_ema_factor", -1.0)) != 0.99
+            or state.get("tau_accumulator_dtype") != "float32"
+            or state.get("tau_channel_policy") != PHASE_TAU_CHANNEL_POLICY
+            or state.get("tau_reduction_policy") != PHASE_TAU_REDUCTION_POLICY
+            or state.get("phase_statistical_view") != PHASE_STATISTICAL_VIEW
+            or state.get("phase_statistical_view_version")
+            != PHASE_STATISTICAL_VIEW_VERSION
         ):
             raise ValueError(
                 "Incompatible Phase tau calibration; SpikingLLM EMA factor 0.99 is required"
@@ -88,6 +101,8 @@ class PhaseSurrogate(nn.Module):
         self.T = int(state["T"])
         self.base = float(state["base"])
         self.group_size = int(state["group_size"])
+        if self.group_size != -1 or state["tau"].numel() != 1:
+            raise ValueError("SpikingLLM-aligned Phase requires scalar tau and group_size=-1")
         self.slope = float(state["surrogate_slope"])
         self.max_spikes = int(state.get("max_spikes", 2))
         self.register_buffer("tau", state["tau"].float())

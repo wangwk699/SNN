@@ -6,6 +6,10 @@ import torch
 from torch import nn
 
 from .artifacts import prefix_enabled_dirname
+from .config import (
+    conversion_calibration_stage,
+    conversion_reuses_ann_training_artifacts,
+)
 from .controller import SiteController
 from .model_integration import temporal_forward
 from .prefix_cache import install_prefix_kv_forward
@@ -34,10 +38,36 @@ def deployment_policy_metadata(controller: SiteController | None) -> dict[str, o
 def activation_neuron_operators_per_temporal_forward(
     *, num_hidden_layers: int, neuron: str
 ) -> int:
+    if neuron == "ann":
+        return 0
     base = int(num_hidden_layers) * SITE_COUNT
     if neuron == "phase":
-        base += 1
-    return base
+        return base + 1
+    if neuron in {"gif", "mtn"}:
+        return base
+    raise ValueError(f"Unknown neuron: {neuron}")
+
+
+def evaluation_calibration_metadata(
+    cfg: dict[str, object],
+    layout: object,
+    *,
+    neuron: str,
+    base: bool = False,
+    rotated_pre_finetuning: bool = False,
+) -> dict[str, object]:
+    inactive = base or rotated_pre_finetuning or neuron == "ann"
+    reused = False if inactive else conversion_reuses_ann_training_artifacts(cfg)
+    return {
+        "calibration_source_stage": (
+            None if inactive else conversion_calibration_stage(cfg)
+        ),
+        "reused_ann_training_artifacts": reused,
+        "post_finetuning_recalibration": False if inactive else not reused,
+        "calibration_root": (
+            None if inactive else str(layout.conversion_site_dir)
+        ),
+    }
 
 
 

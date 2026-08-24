@@ -32,6 +32,8 @@ Aware ANN-training bundle 为局部静态 replacement 保留 `clip_state.pt`，�
 
 Prefix K/V 在 ANN-aware replacement 与 SNN deployment runtime 中都经过 Site 3/4 neuron；calibration statistics 仍排除 Prefix positions。普通 Phase main experiment 固定 `surrogate_slope=1.0`，Phase `tau` 按 SpikingLLM 的逐 forward、逐 channel absolute-max EMA（factor `0.99`）校准且 accumulator 固定为 FP32。Aware ANN-training calibration manifest 明确允许 `aware_modes_only` conversion reuse。Temporal deployment 对全部 Softmax（含 Prefix columns）执行 Site 5，embedding 均匀分配为 `x/T`，且仅 Phase deployment 在最终 RMSNorm 后执行独立的 global Phase neuron。
 
+Phase τ 使用 SpikingLLM-aligned channel view：attention heads 只在 Phase statistics 中按参考实现 reshape，每个 channel 完成 FP32 EMA 后再取 global max 得到 scalar τ；该 statistical view 不改变 generic GIF/MTN/Clip statistics 或 runtime neuron tensor layout。
+
 ## 主要入口
 
 - `实验执行总结.md`：当前实验执行顺序与命令。

@@ -8,8 +8,6 @@ from _common import parser, setup
 
 from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
 from snn2.config import (
-    conversion_calibration_stage,
-    conversion_reuses_ann_training_artifacts,
     evaluation_prefix_enabled,
     final_evaluation_prefix_artifact_stage,
     rotated_pre_finetuning_prefix_enabled,
@@ -20,6 +18,7 @@ from snn2.evaluation import (
     EvaluationModelProxy,
     activation_neuron_operators_per_temporal_forward,
     deployment_policy_metadata,
+    evaluation_calibration_metadata,
 )
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
@@ -420,22 +419,12 @@ def main():
                 None if args.base or args.rotated_pre_finetuning
                 else final_evaluation_prefix_artifact_stage(cfg)
             ),
-            "calibration_source_stage": (
-                None if args.base or args.rotated_pre_finetuning
-                else conversion_calibration_stage(cfg)
-            ),
-            "reused_ann_training_artifacts": (
-                False if args.base or args.rotated_pre_finetuning
-                else conversion_reuses_ann_training_artifacts(cfg)
-            ),
-            "post_finetuning_recalibration": (
-                False if args.base or args.rotated_pre_finetuning
-                else not conversion_reuses_ann_training_artifacts(cfg)
-            ),
-            "calibration_root": (
-                None
-                if args.base or args.rotated_pre_finetuning
-                else str(layout.conversion_site_dir)
+            **evaluation_calibration_metadata(
+                cfg,
+                layout,
+                neuron=args.neuron,
+                base=args.base,
+                rotated_pre_finetuning=args.rotated_pre_finetuning,
             ),
 
             # 保存全部原始 execution counter

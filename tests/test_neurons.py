@@ -64,6 +64,11 @@ def test_phase_training_output_is_static():
             "v0": torch.tensor([0.0625]),
             "tau_calibration": PHASE_TAU_CALIBRATION,
             "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+            "tau_accumulator_dtype": "float32",
+            "tau_channel_policy": "spikingllm_flatten_attention_heads_before_channel_ema",
+            "tau_reduction_policy": "per_channel_ema_then_global_max",
+            "phase_statistical_view": "spikingllm_identity_input_layout",
+            "phase_statistical_view_version": 1,
         }
     )
     x = torch.randn(2, 5, 16, requires_grad=True)
@@ -176,6 +181,11 @@ def test_non_gif_neurons_reject_format_v1(kind):
             "v0": torch.tensor([0.125]),
             "tau_calibration": PHASE_TAU_CALIBRATION,
             "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+            "tau_accumulator_dtype": "float32",
+            "tau_channel_policy": "spikingllm_flatten_attention_heads_before_channel_ema",
+            "tau_reduction_policy": "per_channel_ema_then_global_max",
+            "phase_statistical_view": "spikingllm_identity_input_layout",
+            "phase_statistical_view_version": 1,
         }
         factory = PhaseSurrogate
     elif kind == "mtn":

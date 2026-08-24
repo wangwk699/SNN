@@ -6,6 +6,12 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from .phase_statistics import (
+    PHASE_STATISTICAL_VIEW,
+    PHASE_STATISTICAL_VIEW_VERSION,
+    PHASE_TAU_REDUCTION_POLICY,
+)
+
 
 TEMPORAL_IMPLEMENTATION_VERSION = 3
 TEMPORAL_IMPLEMENTATION = "sparse_llm_temporal_v3"
@@ -20,9 +26,9 @@ PHASE_TAU_CALIBRATION = "spikingllm_ema_channel_abs_max"
 PHASE_TAU_EMA_FACTOR = 0.99
 PHASE_TAU_ACCUMULATOR_DTYPE = "float32"
 
-SITE_STATE_FORMAT_VERSION = 4
-CALIBRATION_MANIFEST_FORMAT_VERSION = 5
-CONVERSION_METADATA_FORMAT_VERSION = 6
+SITE_STATE_FORMAT_VERSION = 5
+CALIBRATION_MANIFEST_FORMAT_VERSION = 6
+CONVERSION_METADATA_FORMAT_VERSION = 7
 
 GIF_BASE_BITS = 4
 GIF_ADD_BITS = 1
@@ -51,6 +57,9 @@ def temporal_policy_metadata() -> dict[str, Any]:
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
         "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
         "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
+        "phase_statistical_view": PHASE_STATISTICAL_VIEW,
+        "phase_statistical_view_version": PHASE_STATISTICAL_VIEW_VERSION,
+        "phase_tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
         "gif_high_qmax": GIF_HIGH_QMAX,
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         "gif_per_step_qmax": GIF_STEP_QMAX,

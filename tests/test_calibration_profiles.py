@@ -17,6 +17,8 @@ def _statistics():
         "phase_ema_updates": torch.ones(4, dtype=torch.long),
         "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
         "phase_tau_ema_factor": 0.99,
+        "phase_statistical_view": "spikingllm_identity_input_layout",
+        "phase_statistical_view_version": 1,
     }
 
 
@@ -53,7 +55,10 @@ def test_build_site_states_without_common_clip():
 
     assert set(states) == {"phase", "gif", "mtn"}
     assert states["phase"]["tau"].dtype == torch.float32
+    assert states["phase"]["tau"].numel() == 1
+    assert states["phase"]["group_size"] == -1
     assert states["phase"]["tau_accumulator_dtype"] == "float32"
+    assert states["phase"]["tau_reduction_policy"] == "per_channel_ema_then_global_max"
 
 
 def test_conversion_materialization_removes_common_clip(tmp_path):

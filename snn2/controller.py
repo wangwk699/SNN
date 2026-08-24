@@ -84,17 +84,39 @@ class SiteController:
             )
 
     def record_activation(
-        self, layer_index: int, site_index: int, x: torch.Tensor
+        self,
+        layer_index: int,
+        site_index: int,
+        x: torch.Tensor,
+        *,
+        phase_activation: torch.Tensor | None = None,
     ) -> None:
         """Record calibration statistics without changing the runtime tensor."""
         if self.mode == "collect":
-            self.statistics.update(layer_index, site_index, x)
+            self.statistics.update(
+                layer_index,
+                site_index,
+                x,
+                phase_activation=phase_activation,
+            )
 
-    def apply(self, layer_index: int, site_index: int, x: torch.Tensor) -> torch.Tensor:
+    def apply(
+        self,
+        layer_index: int,
+        site_index: int,
+        x: torch.Tensor,
+        *,
+        phase_activation: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if self.mode in {"identity", "none"}:
             return x
         if self.mode == "collect":
-            self.statistics.update(layer_index, site_index, x)
+            self.statistics.update(
+                layer_index,
+                site_index,
+                x,
+                phase_activation=phase_activation,
+            )
             return x
         modules = self._load(layer_index, site_index)
         for module in modules.values():
