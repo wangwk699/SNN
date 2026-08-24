@@ -15,3 +15,13 @@
 7. ANN-training calibration 对 `phase_aware` / `gif_aware` 始终生成 `clip_state.pt`；`replacement.common_clip_enabled` 只控制 ANN training forward 是否应用 Clip，不得改变 shared calibration 内容。
 
 8. aware run root 必须包含 `common_clip_enabled_true` 或 `common_clip_enabled_false`；shared Pre-finetuning Prefix 和 ANN-training calibration 不得因为该开关拆成两套。
+
+9. Final ANN evaluation (`--neuron ann`) 必须复现对应 ANN training 的 static activation semantics：`vanilla`/`unaware` 为 `identity(x)`，`phase_aware` 为 `PhaseSurrogate.forward()`，`gif_aware` 为当前 `StaticGIF.forward()`。
+
+10. `--neuron ann` 只表示 non-temporal ANN execution，不等价于 identity；`--neuron phase|gif|mtn` 在正式 evaluation 中始终表示 full-temporal `deploy_*` SNN deployment。
+
+11. `phase_aware`/`gif_aware` final ANN evaluation 必须读取对应 ANN training 的同一 calibration states、验证训练 provenance，并镜像 `replacement.common_clip_enabled`；不得改用 Post-finetuning conversion calibration。
+
+12. 任何 `ann_mode` 进入 SNN evaluation 后都必须使用选定 neuron 的 `deploy_*` temporal path；不得用 static surrogate 代替 Temporal SNN neuron。
+
+13. Base baseline 与 rotated-pre-finetuning ANN diagnostic 保持 identity activation semantics；mode-aware static surrogate 只作用于 final ANN checkpoint evaluation。

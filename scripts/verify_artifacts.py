@@ -10,6 +10,7 @@ from snn2.config import (
     evaluation_prefix_enabled,
     requires_ann_training_calibration,
     requires_pre_finetuning_prefix,
+    training_common_clip_enabled,
     training_prefix_enabled,
 )
 from snn2.conversion import (
@@ -18,10 +19,51 @@ from snn2.conversion import (
     validate_conversion_prefix,
 )
 from snn2.sites import topology_metadata
-from snn2.evaluation import resolve_tldr_evaluation_layout
+from snn2.evaluation import final_ann_replacement_mode, resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
 from snn2.state_validation import validate_site_state_bundle
 from snn2.temporal_ops import validate_temporal_policy
+
+
+def _evaluation_metadata(path):
+    payload = read_json(path)
+    return payload.get("snn2_metadata", payload)
+
+
+def _verify_final_ann_forward_metadata(cfg, layout, path):
+    metadata = _evaluation_metadata(path)
+    mode = final_ann_replacement_mode(cfg)
+    expected = {
+        "identity": ("identity_ann", False, None),
+        "phase": ("phase_surrogate_ann", True, "PhaseSurrogate.forward"),
+        "gif": ("gif_surrogate_ann", True, "StaticGIF.forward"),
+    }[mode]
+    required = {
+        "evaluation_forward_kind": expected[0],
+        "controller_mode": mode,
+        "temporal_execution": False,
+        "static_replacement_enabled": expected[1],
+        "static_replacement_impl": expected[2],
+        "evaluation_common_clip_applied": (
+            training_common_clip_enabled(cfg) if expected[1] else False
+        ),
+    }
+    for key, value in required.items():
+        if metadata.get(key) != value:
+            raise ValueError(
+                f"Final ANN evaluation has stale/incompatible {key}: {path}. "
+                "Re-run final ANN evaluation."
+            )
+    expected_root = layout.ann_training_site_dir if expected[1] else None
+    actual_root = metadata.get("replacement_state_root")
+    if expected_root is None:
+        if actual_root is not None:
+            raise ValueError(f"Identity ANN evaluation unexpectedly uses replacement states: {path}")
+    elif actual_root is None or Path(actual_root).resolve() != Path(expected_root).resolve():
+        raise ValueError(f"Final aware ANN evaluation uses the wrong state root: {path}")
+    expected_stage = "ann_training" if expected[1] else None
+    if metadata.get("calibration_source_stage") != expected_stage:
+        raise ValueError(f"Final ANN evaluation has incompatible calibration provenance: {path}")
 
 
 def _require_manifest_flags(manifest, expected, label):
@@ -608,6 +650,10 @@ def main():
                 + "\n".join(missing)
             )
 
+        _verify_final_ann_forward_metadata(
+            cfg, layout, evaluation_paths(layout.ann_dir)[0]
+        )
+
         for neuron in ("phase", "gif", "mtn"):
             metadata_path = layout.snn_conversion_dir(neuron) / "conversion_metadata.json"
             metadata = validate_conversion_metadata(cfg, layout, neuron)
@@ -628,6 +674,15 @@ def main():
                 != int(metadata["full_temporal_steps"])
             ):
                 raise ValueError(f"SNN metrics disagree with conversion: {metrics_path}")
+            if "evaluation_forward_kind" in policy_source:
+                expected_forward = {
+                    "evaluation_forward_kind": f"temporal_{neuron}_snn",
+                    "controller_mode": f"deploy_{neuron}",
+                    "temporal_execution": True,
+                    "evaluation_common_clip_applied": False,
+                }
+                if any(policy_source.get(key) != value for key, value in expected_forward.items()):
+                    raise ValueError(f"SNN metrics have incompatible temporal forward metadata: {metrics_path}")
 
         if tldr_layout is not None:
             expected_count = int(tldr_layout["selected_test_samples"])

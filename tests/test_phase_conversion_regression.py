@@ -9,6 +9,7 @@ import torch
 import snn2.phase_conversion_regression as regression
 from snn2.artifacts import sha256_file
 from snn2.controller import SiteController
+from snn2.evaluation import build_evaluation_controller
 from snn2.neurons import PhaseSurrogate
 from snn2.phase_conversion_regression import (
     PhaseConversionRegressionRecorder,
@@ -177,3 +178,17 @@ def test_regression_rejects_training_provenance_mismatch(tmp_path, monkeypatch):
     monkeypatch.setattr(regression, "validate_conversion_metadata", lambda *_args: {})
     with pytest.raises(ValueError, match="provenance mismatch"):
         validate_phase_conversion_artifacts(cfg, layout)
+
+
+def test_official_phase_ann_controller_matches_graph_p(monkeypatch):
+    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {})
+    layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
+    cfg = {
+        "experiment": {"ann_mode": "phase_aware"},
+        "replacement": {"common_clip_enabled": False},
+    }
+    controller, steps = build_evaluation_controller(cfg, layout, neuron="ann")
+    assert controller.mode == "phase"
+    assert str(controller.site_root) == "training"
+    assert controller.common_clip_enabled is False
+    assert steps == 1

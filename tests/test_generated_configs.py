@@ -8,6 +8,7 @@ import copy
 
 from scripts.materialize_configs import materialize_configs
 from snn2.config import validate_config
+from snn2.evaluation import final_ann_replacement_mode
 from snn2.temporal_ops import (
     GIF_HIGH_QMAX,
     GIF_LOCAL_STEPS,
@@ -104,3 +105,15 @@ def test_config_rejects_legacy_or_unsupported_policy(
     cfg[section][key] = value
     with pytest.raises(ValueError):
         validate_config(cfg)
+
+
+def test_generated_configs_define_final_ann_forward_semantics(generated_configs):
+    expected = {
+        "vanilla": "identity",
+        "unaware": "identity",
+        "phase_aware": "phase",
+        "gif_aware": "gif",
+    }
+    for path in generated_configs:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert final_ann_replacement_mode(cfg) == expected[cfg["experiment"]["ann_mode"]]

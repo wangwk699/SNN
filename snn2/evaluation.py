@@ -9,12 +9,14 @@ from .artifacts import prefix_enabled_dirname
 from .config import (
     conversion_calibration_stage,
     conversion_reuses_ann_training_artifacts,
+    is_aware_ann_mode,
     training_common_clip_enabled,
 )
 from .controller import SiteController
 from .model_integration import temporal_forward
 from .prefix_cache import install_prefix_kv_forward
 from .sites import SITE_COUNT
+from .state_validation import validate_site_state_bundle
 from .temporal_ops import temporal_policy_metadata
 
 
@@ -49,6 +51,105 @@ def activation_neuron_operators_per_temporal_forward(
     raise ValueError(f"Unknown neuron: {neuron}")
 
 
+def final_ann_replacement_mode(cfg: dict[str, object]) -> str:
+    """Return the non-temporal forward mode used by final ANN evaluation."""
+    mode = cfg["experiment"]["ann_mode"]
+    mapping = {
+        "vanilla": "identity",
+        "unaware": "identity",
+        "phase_aware": "phase",
+        "gif_aware": "gif",
+    }
+    try:
+        return mapping[mode]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unsupported ANN mode for final evaluation: {mode}"
+        ) from exc
+
+
+def build_evaluation_controller(
+    cfg: dict[str, object],
+    layout: object,
+    *,
+    neuron: str,
+    base: bool = False,
+    rotated_pre_finetuning: bool = False,
+) -> tuple[SiteController, int]:
+    """Build the single canonical controller for ANN and SNN evaluation."""
+    if base or rotated_pre_finetuning:
+        if neuron != "ann":
+            raise ValueError("Base/pre-finetuning evaluation only supports neuron=ann")
+        return SiteController(
+            mode="identity", site_root=None, common_clip_enabled=False
+        ), 1
+
+    if neuron == "ann":
+        mode = final_ann_replacement_mode(cfg)
+        aware = is_aware_ann_mode(cfg)
+        if aware:
+            validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)
+        controller = SiteController(
+            mode=mode,
+            site_root=layout.ann_training_site_dir if aware else None,
+            common_clip_enabled=(
+                training_common_clip_enabled(cfg) if aware else False
+            ),
+        )
+        return controller, 1
+
+    if neuron not in {"phase", "gif", "mtn"}:
+        raise ValueError(f"Unknown neuron: {neuron}")
+    controller = SiteController(
+        mode="identity",
+        site_root=layout.conversion_site_dir,
+        common_clip_enabled=False,
+    )
+    return controller, controller.set_deployment(neuron)
+
+
+def evaluation_forward_metadata(
+    cfg: dict[str, object],
+    layout: object,
+    *,
+    neuron: str,
+    controller: SiteController,
+    base: bool = False,
+    rotated_pre_finetuning: bool = False,
+) -> dict[str, object]:
+    """Describe the actual evaluation graph with stable, shared enums."""
+    ann_mode = cfg["experiment"]["ann_mode"]
+    diagnostic_identity = base or rotated_pre_finetuning
+    if neuron == "ann":
+        if diagnostic_identity or controller.mode == "identity":
+            kind, enabled, implementation, root = "identity_ann", False, None, None
+        elif controller.mode == "phase":
+            kind, enabled = "phase_surrogate_ann", True
+            implementation, root = "PhaseSurrogate.forward", str(layout.ann_training_site_dir)
+        elif controller.mode == "gif":
+            kind, enabled = "gif_surrogate_ann", True
+            implementation, root = "StaticGIF.forward", str(layout.ann_training_site_dir)
+        else:
+            raise ValueError(f"Invalid final ANN controller mode: {controller.mode}")
+        temporal = False
+        clip_applied = bool(enabled and controller.common_clip_enabled)
+    else:
+        kind = f"temporal_{neuron}_snn"
+        enabled, implementation = False, None
+        root = str(layout.conversion_site_dir)
+        temporal, clip_applied = True, False
+    return {
+        "ann_mode": ann_mode,
+        "evaluation_forward_kind": kind,
+        "controller_mode": controller.mode,
+        "temporal_execution": temporal,
+        "static_replacement_enabled": enabled,
+        "static_replacement_impl": implementation,
+        "evaluation_common_clip_applied": clip_applied,
+        "replacement_state_root": root,
+    }
+
+
 def evaluation_calibration_metadata(
     cfg: dict[str, object],
     layout: object,
@@ -57,16 +158,27 @@ def evaluation_calibration_metadata(
     base: bool = False,
     rotated_pre_finetuning: bool = False,
 ) -> dict[str, object]:
-    inactive = base or rotated_pre_finetuning or neuron == "ann"
-    reused = False if inactive else conversion_reuses_ann_training_artifacts(cfg)
+    inactive = base or rotated_pre_finetuning
+    aware_ann = neuron == "ann" and is_aware_ann_mode(cfg) and not inactive
+    identity_ann = neuron == "ann" and not aware_ann
+    inactive = inactive or identity_ann
+    reused = (
+        True
+        if aware_ann
+        else (False if inactive else conversion_reuses_ann_training_artifacts(cfg))
+    )
     return {
         "calibration_source_stage": (
-            None if inactive else conversion_calibration_stage(cfg)
+            "ann_training"
+            if aware_ann
+            else (None if inactive else conversion_calibration_stage(cfg))
         ),
         "reused_ann_training_artifacts": reused,
         "post_finetuning_recalibration": False if inactive else not reused,
         "calibration_root": (
-            None if inactive else str(layout.conversion_site_dir)
+            str(layout.ann_training_site_dir)
+            if aware_ann
+            else (None if inactive else str(layout.conversion_site_dir))
         ),
     }
 

@@ -10,7 +10,6 @@ import torch
 from _common import parser, setup
 from tqdm.auto import tqdm
 from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
-from snn2.controller import SiteController
 from snn2.conversion import validate_conversion_metadata
 from snn2.config import (
     evaluation_prefix_enabled,
@@ -24,9 +23,11 @@ from snn2.data import (
 )
 from snn2.evaluation import (
     activation_neuron_operators_per_temporal_forward,
+    build_evaluation_controller,
     greedy_generate,
     deployment_policy_metadata,
     evaluation_calibration_metadata,
+    evaluation_forward_metadata,
     evaluation_ann_common_clip_enabled,
     resolve_tldr_evaluation_layout,
 )
@@ -42,6 +43,7 @@ from snn2.modeling import (
     rotation_state,
 )
 from snn2.prefix_cache import install_prefix_kv_forward
+from snn2.training import validate_recorded_training_artifact_provenance
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -229,15 +231,20 @@ def main():
                 else "final_evaluation"
             )
         )
-        controller = SiteController(
-            mode="identity",
-            site_root=(
-                layout.conversion_site_dir
-                if not args.base and not args.rotated_pre_finetuning
-                else None
-            ),
+        if (
+            args.neuron == "ann"
+            and not args.base
+            and not args.rotated_pre_finetuning
+            and cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}
+        ):
+            validate_recorded_training_artifact_provenance(cfg, layout)
+        controller, steps = build_evaluation_controller(
+            cfg,
+            layout,
+            neuron=args.neuron,
+            base=args.base,
+            rotated_pre_finetuning=args.rotated_pre_finetuning,
         )
-        steps = 1 if args.neuron == "ann" else controller.set_deployment(args.neuron)
         if args.neuron != "ann" or cfg["rotation"]["enabled"]:
             install_model_integration(model, controller, rotation_state(cfg, layout))
         prefixes = prefix_ids_for_stage(cfg, layout, stage=prefix_stage)
@@ -542,6 +549,14 @@ def main():
                         cfg,
                         layout,
                         neuron=args.neuron,
+                        base=args.base,
+                        rotated_pre_finetuning=args.rotated_pre_finetuning,
+                    ),
+                    **evaluation_forward_metadata(
+                        cfg,
+                        layout,
+                        neuron=args.neuron,
+                        controller=controller,
                         base=args.base,
                         rotated_pre_finetuning=args.rotated_pre_finetuning,
                     ),

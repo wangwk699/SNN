@@ -12,13 +12,14 @@ from snn2.config import (
     final_evaluation_prefix_artifact_stage,
     rotated_pre_finetuning_prefix_enabled,
 )
-from snn2.controller import SiteController
 from snn2.conversion import validate_conversion_metadata
 from snn2.evaluation import (
     EvaluationModelProxy,
     activation_neuron_operators_per_temporal_forward,
+    build_evaluation_controller,
     deployment_policy_metadata,
     evaluation_calibration_metadata,
+    evaluation_forward_metadata,
     evaluation_ann_common_clip_enabled,
 )
 from snn2.logging_utils import StageRun
@@ -32,6 +33,7 @@ from snn2.modeling import (
     prefix_key_values_for_stage,
     rotation_state,
 )
+from snn2.training import validate_recorded_training_artifact_provenance
 
 
 def main():
@@ -211,21 +213,19 @@ def main():
             source,
         )
 
-        controller = SiteController(
-            mode="identity",
-            site_root=(
-                layout.conversion_site_dir
-                if not args.base and not args.rotated_pre_finetuning
-                else None
-            ),
-        )
-
-        steps = (
-            1
-            if args.neuron == "ann"
-            else controller.set_deployment(
-                args.neuron
-            )
+        if (
+            args.neuron == "ann"
+            and not args.base
+            and not args.rotated_pre_finetuning
+            and cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}
+        ):
+            validate_recorded_training_artifact_provenance(cfg, layout)
+        controller, steps = build_evaluation_controller(
+            cfg,
+            layout,
+            neuron=args.neuron,
+            base=args.base,
+            rotated_pre_finetuning=args.rotated_pre_finetuning,
         )
 
         # Base + vanilla + ann：
@@ -429,6 +429,14 @@ def main():
                 cfg,
                 layout,
                 neuron=args.neuron,
+                base=args.base,
+                rotated_pre_finetuning=args.rotated_pre_finetuning,
+            ),
+            **evaluation_forward_metadata(
+                cfg,
+                layout,
+                neuron=args.neuron,
+                controller=controller,
                 base=args.base,
                 rotated_pre_finetuning=args.rotated_pre_finetuning,
             ),

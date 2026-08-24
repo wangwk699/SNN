@@ -22,6 +22,19 @@
 
 `phase_aware` 与 `gif_aware` 在 ANN fine-tuning 阶段分别使用 Phase 或 GIF replacement。ANN-training calibration 始终为 aware mode 生成 `clip_state.pt`；`replacement.common_clip_enabled` 决定 ANN forward 是否实际在 replacement 后执行该 Clip。SNN conversion/deployment 始终不使用 common Clip。
 
+## ANN Training / Final ANN Evaluation / SNN Evaluation Semantics
+
+`--neuron ann` 表示 non-temporal final ANN execution，并不等价于 identity。Final ANN evaluation 会按 checkpoint 的 `ann_mode` 自动恢复训练期 static activation semantics。
+
+| Mode | ANN training | Final ANN `--neuron ann` | SNN `--neuron phase/gif/mtn` |
+|---|---|---|---|
+| `vanilla` | identity | identity | temporal selected neuron |
+| `unaware` | identity | identity | temporal selected neuron |
+| `phase_aware` | `PhaseSurrogate.forward()` | 同一 ANN-training states 的 `PhaseSurrogate.forward()` | temporal selected neuron |
+| `gif_aware` | `StaticGIF.forward()` | 同一 ANN-training states 的 `StaticGIF.forward()` | temporal selected neuron |
+
+Aware final ANN evaluation 同时镜像训练期 common Clip 开关；SNN evaluation 永远不执行 common Clip。`phase_aware`/`gif_aware` 的 site-local surrogate 会立即聚合回 static tensor，时间维度不跨层传播，因此仍是 ANN fine-tuning；只有 `deploy_phase/gif/mtn` 属于 full-temporal SNN。Base 与 rotated-pre-finetuning diagnostic 始终保持 identity semantics。
+
 ## Mode-aware SNN Conversion
 
 `vanilla` 不使用 Pre-finetuning Prefix；`vanilla` 和 `unaware` 在 ANN 微调后生成 Post-finetuning Prefix 与 clip-free conversion calibration。`phase_aware` 和 `gif_aware` 则跳过这两个 Post-finetuning 步骤，最终 Phase/GIF/MTN conversion 必须复用 ANN 微调前固定的 Pre-finetuning Prefix 与 ANN-training calibration，并用 SHA-256 校验它们与训练记录完全一致。

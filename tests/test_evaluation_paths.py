@@ -7,8 +7,11 @@ import pytest
 from snn2.artifacts import prefix_enabled_dirname
 from snn2.evaluation import (
     activation_neuron_operators_per_temporal_forward,
+    build_evaluation_controller,
     evaluation_calibration_metadata,
     evaluation_ann_common_clip_enabled,
+    evaluation_forward_metadata,
+    final_ann_replacement_mode,
     resolve_tldr_evaluation_layout,
 )
 
@@ -30,15 +33,27 @@ def test_activation_neuron_operator_count_rejects_unknown_neuron():
         )
 
 
-@pytest.mark.parametrize("mode", ["vanilla", "unaware", "phase_aware", "gif_aware"])
-def test_final_ann_evaluation_has_no_calibration_metadata(mode):
+@pytest.mark.parametrize("mode", ["vanilla", "unaware"])
+def test_identity_final_ann_evaluation_has_no_calibration_metadata(mode):
     cfg = {"experiment": {"ann_mode": mode}}
-    layout = SimpleNamespace(conversion_site_dir="sites")
+    layout = SimpleNamespace(conversion_site_dir="conversion", ann_training_site_dir="training")
     assert evaluation_calibration_metadata(cfg, layout, neuron="ann") == {
         "calibration_source_stage": None,
         "reused_ann_training_artifacts": False,
         "post_finetuning_recalibration": False,
         "calibration_root": None,
+    }
+
+
+@pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
+def test_aware_final_ann_evaluation_uses_training_calibration_metadata(mode):
+    cfg = {"experiment": {"ann_mode": mode}}
+    layout = SimpleNamespace(conversion_site_dir="conversion", ann_training_site_dir="training")
+    assert evaluation_calibration_metadata(cfg, layout, neuron="ann") == {
+        "calibration_source_stage": "ann_training",
+        "reused_ann_training_artifacts": True,
+        "post_finetuning_recalibration": False,
+        "calibration_root": "training",
     }
 
 
@@ -214,3 +229,88 @@ def test_ann_training_subset_rejects_more_rows_than_raw_split(monkeypatch, tmp_p
 
     with pytest.raises(ValueError, match="contains only 5 rows"):
         load_selected_raw(cfg, layout, use_configured_train_subset=True)
+
+
+@pytest.mark.parametrize(
+    ("ann_mode", "expected"),
+    [("vanilla", "identity"), ("unaware", "identity"),
+     ("phase_aware", "phase"), ("gif_aware", "gif")],
+)
+def test_final_ann_replacement_mode_mapping(ann_mode, expected):
+    assert final_ann_replacement_mode({"experiment": {"ann_mode": ann_mode}}) == expected
+
+
+def _evaluation_cfg(ann_mode, clip=False):
+    return {
+        "experiment": {"ann_mode": ann_mode},
+        "replacement": {"common_clip_enabled": clip},
+    }
+
+
+@pytest.mark.parametrize(
+    ("ann_mode", "clip", "expected_mode"),
+    [("vanilla", False, "identity"), ("unaware", False, "identity"),
+     ("phase_aware", False, "phase"), ("phase_aware", True, "phase"),
+     ("gif_aware", False, "gif"), ("gif_aware", True, "gif")],
+)
+def test_build_final_ann_controller(monkeypatch, ann_mode, clip, expected_mode):
+    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {})
+    layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
+    controller, steps = build_evaluation_controller(
+        _evaluation_cfg(ann_mode, clip), layout, neuron="ann"
+    )
+    assert controller.mode == expected_mode
+    assert steps == 1
+    assert controller.common_clip_enabled is (clip if ann_mode.endswith("aware") and ann_mode != "unaware" else False)
+    if ann_mode in {"phase_aware", "gif_aware"}:
+        assert str(controller.site_root) == "training"
+    else:
+        assert controller.site_root is None
+
+
+@pytest.mark.parametrize("flag", ["base", "rotated_pre_finetuning"])
+def test_diagnostic_ann_controller_remains_identity(flag):
+    kwargs = {flag: True}
+    controller, steps = build_evaluation_controller(
+        _evaluation_cfg("phase_aware", True), SimpleNamespace(), neuron="ann", **kwargs
+    )
+    assert controller.mode == "identity"
+    assert controller.common_clip_enabled is False
+    assert steps == 1
+
+
+@pytest.mark.parametrize("ann_mode", ["vanilla", "unaware", "phase_aware", "gif_aware"])
+@pytest.mark.parametrize("neuron", ["phase", "gif", "mtn"])
+def test_all_ann_modes_use_temporal_snn_controller(monkeypatch, ann_mode, neuron):
+    monkeypatch.setattr("snn2.controller.validate_site_state_bundle", lambda *_a, **_k: {"temporal_steps": {"phase": 4, "gif": 2, "mtn": 4}})
+    layout = SimpleNamespace(conversion_site_dir="conversion")
+    controller, _ = build_evaluation_controller(
+        _evaluation_cfg(ann_mode, True), layout, neuron=neuron
+    )
+    assert controller.mode == f"deploy_{neuron}"
+    assert controller.common_clip_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("ann_mode", "neuron", "kind"),
+    [("vanilla", "ann", "identity_ann"), ("unaware", "ann", "identity_ann"),
+     ("phase_aware", "ann", "phase_surrogate_ann"),
+     ("gif_aware", "ann", "gif_surrogate_ann"),
+     ("phase_aware", "phase", "temporal_phase_snn"),
+     ("phase_aware", "gif", "temporal_gif_snn"),
+     ("phase_aware", "mtn", "temporal_mtn_snn")],
+)
+def test_evaluation_forward_metadata(monkeypatch, ann_mode, neuron, kind):
+    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {})
+    monkeypatch.setattr("snn2.controller.validate_site_state_bundle", lambda *_a, **_k: {"temporal_steps": {"phase": 4, "gif": 2, "mtn": 4}})
+    cfg = _evaluation_cfg(ann_mode, True)
+    layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
+    controller, _ = build_evaluation_controller(cfg, layout, neuron=neuron)
+    metadata = evaluation_forward_metadata(
+        cfg, layout, neuron=neuron, controller=controller
+    )
+    assert metadata["evaluation_forward_kind"] == kind
+    assert metadata["temporal_execution"] is (neuron != "ann")
+    assert metadata["evaluation_common_clip_applied"] is (
+        neuron == "ann" and ann_mode in {"phase_aware", "gif_aware"}
+    )

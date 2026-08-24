@@ -112,6 +112,43 @@ def verify_training_artifact_provenance_unchanged(
         )
 
 
+def validate_recorded_training_artifact_provenance(
+    cfg: dict[str, Any], layout: ArtifactLayout
+) -> dict[str, Any]:
+    """Validate current aware-evaluation artifacts against training_result.json."""
+    result_path = layout.ann_dir / "training_result.json"
+    if not result_path.exists():
+        raise FileNotFoundError(result_path)
+    recorded_result = read_json(result_path)
+    keys = (
+        "ann_training_prefix_root",
+        "ann_training_prefix_state_sha256",
+        "ann_training_prefix_kv_sha256",
+        "ann_training_prefix_token_ids",
+        "ann_training_calibration_root",
+        "ann_training_calibration_manifest_sha256",
+    )
+    recorded = {key: recorded_result[key] for key in keys if key in recorded_result}
+    try:
+        current = capture_training_artifact_provenance(
+            cfg,
+            layout,
+            prefix_ids=[
+                int(value)
+                for value in recorded.get("ann_training_prefix_token_ids", [])
+            ],
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Recorded ANN-training Prefix/calibration provenance is invalid"
+        ) from exc
+    if current != recorded:
+        raise RuntimeError(
+            "Recorded ANN-training Prefix/calibration provenance does not match current artifacts"
+        )
+    return recorded
+
+
 def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, Any]:
     from transformers import Trainer, TrainingArguments
 
