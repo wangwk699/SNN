@@ -133,8 +133,14 @@ def temporal_rmsnorm(x: torch.Tensor, module: torch.nn.Module) -> torch.Tensor:
     def rmsnorm(cumulative: torch.Tensor) -> torch.Tensor:
         variance = cumulative.square().mean(dim=-1, keepdim=True)
         normalized = cumulative * torch.rsqrt(variance + epsilon)
+        # Qwen/Llama RMSNorm casts the normalized activation back to the
+        # incoming dtype before applying the learned weight. Matching that
+        # order matters at BF16 Phase thresholds.
+        normalized = normalized.to(dtype=x.dtype)
         if weight is not None:
-            normalized = normalized * weight.float()
+            normalized = normalized * weight.to(
+                device=normalized.device, dtype=normalized.dtype
+            )
         return normalized
 
     return temporal_difference(x, rmsnorm)

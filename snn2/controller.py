@@ -31,6 +31,16 @@ class SiteController:
         self._modules: dict[str, dict[str, torch.nn.Module]] = {}
         self.temporal_steps: int | None = None
         self._final_norm_phase: PhaseSurrogate | None = None
+        self.regression_recorder = None
+        self.regression_bypass_final_norm_phase = False
+
+    def set_regression_recorder(self, recorder) -> None:
+        self.regression_recorder = recorder
+
+    def record_regression(self, name: str, value: torch.Tensor) -> None:
+        recorder = self.regression_recorder
+        if recorder is not None:
+            recorder.record(name, value, temporal=self.mode.startswith("deploy_"))
 
     def _load(self, layer_index: int, site_index: int) -> dict[str, torch.nn.Module]:
         key = site_key(layer_index, site_index)
@@ -121,7 +131,13 @@ class SiteController:
         *,
         phase_activation: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        recorder = self.regression_recorder
+        checkpoint = f"layer_{layer_index:03d}/site_{site_index:02d}"
+        if recorder is not None:
+            self.record_regression(f"{checkpoint}/pre", x)
         if self.mode in {"identity", "none"}:
+            if recorder is not None:
+                self.record_regression(f"{checkpoint}/post", x)
             return x
         if self.mode == "collect":
             self.statistics.update(
@@ -130,6 +146,8 @@ class SiteController:
                 x,
                 phase_activation=phase_activation,
             )
+            if recorder is not None:
+                self.record_regression(f"{checkpoint}/post", x)
             return x
         modules = self._load(layer_index, site_index)
         for module in modules.values():
@@ -138,10 +156,16 @@ class SiteController:
                 module.to(x.device)
         if self.mode == "phase":
             output = modules["phase"](x)
-            return modules["clip"](output) if self.common_clip_enabled else output
+            output = modules["clip"](output) if self.common_clip_enabled else output
+            if recorder is not None:
+                self.record_regression(f"{checkpoint}/post", output)
+            return output
         if self.mode == "gif":
             output = modules["gif"](x)
-            return modules["clip"](output) if self.common_clip_enabled else output
+            output = modules["clip"](output) if self.common_clip_enabled else output
+            if recorder is not None:
+                self.record_regression(f"{checkpoint}/post", output)
+            return output
         if self.mode.startswith("deploy_"):
             if self.temporal_steps is None:
                 raise RuntimeError("Call set_deployment before a temporal forward")
@@ -154,11 +178,19 @@ class SiteController:
                 )
             if output.dtype != x.dtype or output.device != x.device:
                 raise ValueError("Deployment site changed dtype or device")
-            return from_temporal(output)
+            output = from_temporal(output)
+            if recorder is not None:
+                self.record_regression(f"{checkpoint}/post", output)
+            return output
         raise ValueError(f"Unknown controller mode: {self.mode}")
 
     def apply_final_norm_phase(self, x: torch.Tensor) -> torch.Tensor:
-        if self.mode != "deploy_phase":
+        recorder = self.regression_recorder
+        if recorder is not None:
+            self.record_regression("final_norm/before_global_phase", x)
+        if self.mode != "deploy_phase" or self.regression_bypass_final_norm_phase:
+            if recorder is not None:
+                self.record_regression("final_norm/after_global_phase", x)
             return x
         if self.site_root is None or self.temporal_steps is None:
             raise RuntimeError("Final RMSNorm Phase deployment requires initialized site states")
@@ -173,4 +205,7 @@ class SiteController:
         output = self._final_norm_phase.temporal(temporal)
         if output.shape != temporal.shape or output.dtype != x.dtype or output.device != x.device:
             raise ValueError("Final RMSNorm Phase neuron changed shape, dtype, or device")
-        return from_temporal(output)
+        output = from_temporal(output)
+        if recorder is not None:
+            self.record_regression("final_norm/after_global_phase", output)
+        return output

@@ -161,3 +161,24 @@ def test_artifact_schema_versions_do_not_change_temporal_arithmetic():
     assert CONVERSION_METADATA_FORMAT_VERSION == 7
     assert SITE_STATE_FORMAT_VERSION == 5
     assert TEMPORAL_IMPLEMENTATION_VERSION == 3
+
+
+def test_temporal_rmsnorm_matches_qwen_bf16_cast_order_at_first_frame():
+    class QwenStyleRMSNorm(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.linspace(0.7, 1.3, 8).bfloat16())
+            self.variance_epsilon = 1e-6
+
+        def forward(self, value):
+            hidden = value.float()
+            hidden = hidden * torch.rsqrt(
+                hidden.square().mean(-1, keepdim=True) + self.variance_epsilon
+            )
+            return self.weight * hidden.to(value.dtype)
+
+    torch.manual_seed(12)
+    value = torch.randn(1, 2, 3, 8).bfloat16()
+    module = QwenStyleRMSNorm()
+    output = temporal_rmsnorm(value, module)
+    torch.testing.assert_close(output[0], module(value[0]), rtol=0, atol=0)

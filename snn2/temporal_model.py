@@ -13,6 +13,12 @@ from .temporal_ops import (
 )
 
 
+def _record_regression(controller: SiteController, name: str, value: torch.Tensor) -> None:
+    recorder = getattr(controller, "regression_recorder", None)
+    if recorder is not None:
+        recorder.record(name, value, temporal=True)
+
+
 def deployment_attention_forward(
     module: torch.nn.Module,
     query: torch.Tensor,
@@ -49,6 +55,11 @@ def deployment_attention_forward(
         else getattr(module, "scaling", query.shape[-1] ** -0.5)
     )
     score_increment = qk_increment * scale
+    _record_regression(
+        controller,
+        f"layer_{layer_index:03d}/attn/qk_scaled",
+        from_temporal(score_increment),
+    )
     if attention_mask is not None:
         attention_mask = attention_mask[..., : key.shape[-2]]
     weight_increment = temporal_softmax(
@@ -57,10 +68,19 @@ def deployment_attention_forward(
         softcap=softcap,
     )
     flat_weights = from_temporal(weight_increment)
+    _record_regression(
+        controller,
+        f"layer_{layer_index:03d}/attn/softmax_before_site5",
+        flat_weights,
+    )
     flat_weights = controller.apply(layer_index, 5, flat_weights)
     weight_increment = to_temporal(flat_weights, steps)
     output_increment = temporal_seq_matmul(
         weight_increment, to_temporal(value, steps)
     )
-    output = controller.apply(layer_index, 6, from_temporal(output_increment))
+    flat_output = from_temporal(output_increment)
+    _record_regression(
+        controller, f"layer_{layer_index:03d}/attn/pv_before_site6", flat_output
+    )
+    output = controller.apply(layer_index, 6, flat_output)
     return output.transpose(1, 2).contiguous(), flat_weights

@@ -22,6 +22,14 @@ from .temporal_ops import (
 )
 
 
+def _record_regression(
+    controller: SiteController, name: str, value: torch.Tensor
+) -> None:
+    recorder = getattr(controller, "regression_recorder", None)
+    if recorder is not None:
+        recorder.record(name, value, temporal=controller.mode.startswith("deploy_"))
+
+
 def repeat_kv(hidden_states: torch.Tensor, groups: int) -> torch.Tensor:
     if groups == 1:
         return hidden_states
@@ -48,6 +56,12 @@ def snn2_eager_attention_forward(
     past_length = max(int(key.shape[-2]) - current_length, 0)
 
     r3: HadamardSpec | None = getattr(module, "_snn2_r3", None)
+    _record_regression(
+        controller, f"layer_{layer_index:03d}/attn/q_post_rope_before_r3", query
+    )
+    _record_regression(
+        controller, f"layer_{layer_index:03d}/attn/k_post_rope_before_r3", key
+    )
     if r3 is not None:
         # RoSTE-aligned R3 preserves the activation dtype. Unsupported CUDA
         # dtypes fail in the pinned FHT backend instead of silently falling back.
@@ -111,12 +125,18 @@ def snn2_eager_attention_forward(
         controller.record_saliency(layer_index, 3, key_score)
     scale = float(scaling if scaling is not None else getattr(module, "scaling", 1.0 / math.sqrt(query.shape[-1])))
     weights = qk * scale
+    _record_regression(controller, f"layer_{layer_index:03d}/attn/qk_scaled", weights)
     if attention_mask is not None:
         weights = weights + attention_mask[..., : key.shape[-2]]
     if kwargs.get("softcap") is not None:
         cap = float(kwargs["softcap"])
         weights = torch.tanh(weights / cap) * cap
     weights = F.softmax(weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    _record_regression(
+        controller,
+        f"layer_{layer_index:03d}/attn/softmax_before_site5",
+        weights,
+    )
     weights = controller.apply(
         layer_index,
         5,
@@ -129,6 +149,9 @@ def snn2_eager_attention_forward(
     )
     weights = F.dropout(weights, p=dropout, training=module.training)
     output = torch.matmul(weights, value)
+    _record_regression(
+        controller, f"layer_{layer_index:03d}/attn/pv_before_site6", output
+    )
     if controller.mode == "collect":
         value_score = value * torch.matmul(weights.transpose(2, 3), output)
         if past_length:
@@ -197,20 +220,28 @@ def register_attention_backend() -> None:
 
 def _make_mlp_forward(controller: SiteController, layer_index: int, r4: HadamardSpec | None):
     def forward(mlp, x: torch.Tensor):
+        gate_projection = mlp.gate_proj(x)
+        _record_regression(
+            controller, f"layer_{layer_index:03d}/mlp/gate_proj", gate_projection
+        )
+        up_projection = mlp.up_proj(x)
+        _record_regression(
+            controller, f"layer_{layer_index:03d}/mlp/up_proj", up_projection
+        )
         if controller.mode.startswith("deploy_"):
             steps = int(controller.temporal_steps or 0)
-            gate = from_temporal(temporal_silu(to_temporal(mlp.gate_proj(x), steps)))
+            gate = from_temporal(temporal_silu(to_temporal(gate_projection, steps)))
             gate = controller.apply(layer_index, 8, gate)
-            up = controller.apply(layer_index, 9, mlp.up_proj(x))
+            up = controller.apply(layer_index, 9, up_projection)
             product = from_temporal(
                 temporal_symmetric_hadamard(
                     to_temporal(gate, steps), to_temporal(up, steps)
                 )
             )
         else:
-            gate = mlp.act_fn(mlp.gate_proj(x))
+            gate = mlp.act_fn(gate_projection)
             gate = controller.apply(layer_index, 8, gate)
-            up = mlp.up_proj(x)
+            up = up_projection
             up = controller.apply(layer_index, 9, up)
             if controller.mode == "collect":
                 product_saliency = gate.square() * up.square()
@@ -220,8 +251,17 @@ def _make_mlp_forward(controller: SiteController, layer_index: int, r4: Hadamard
         if r4 is not None:
             product_dtype = product.dtype
             product = random_hadamard(product.to(torch.float32), r4).to(product_dtype)
+        _record_regression(
+            controller,
+            f"layer_{layer_index:03d}/mlp/product_before_site10",
+            product,
+        )
         product = controller.apply(layer_index, 10, product)
-        return mlp.down_proj(product)
+        output = mlp.down_proj(product)
+        _record_regression(
+            controller, f"layer_{layer_index:03d}/mlp/down_proj_output", output
+        )
+        return output
 
     return forward
 
@@ -312,13 +352,16 @@ def install_model_integration(
 
     def temporal_embedding_hook(_module, _inputs, output):
         if not controller.mode.startswith("deploy_"):
+            _record_regression(controller, "embedding/output", output)
             return output
         steps = int(controller.temporal_steps or 0)
         if steps <= 0 or output.shape[0] % steps != 0:
             raise ValueError("Temporal embedding batch is incompatible with deployment steps")
         batch = output.shape[0] // steps
         temporal = output.reshape(steps, batch, *output.shape[1:]) / steps
-        return temporal.reshape_as(output)
+        output = temporal.reshape_as(output)
+        _record_regression(controller, "embedding/output", output)
+        return output
 
     handles.append(parts.embedding.register_forward_hook(temporal_embedding_hook))
     handles.append(
@@ -327,11 +370,51 @@ def install_model_integration(
         )
     )
 
+    def lm_head_regression_hook(_module, _inputs, output):
+        _record_regression(controller, "lm_head/output", output)
+
+    def model_regression_hook(_module, _inputs, output):
+        logits = getattr(output, "logits", None)
+        if logits is not None:
+            _record_regression(controller, "model/logits", logits)
+
+    handles.append(parts.lm_head.register_forward_hook(lm_head_regression_hook))
+    handles.append(model.register_forward_hook(model_regression_hook))
+
     for layer_index, layer in enumerate(parts.layers):
         attention = layer.self_attn
         attention._snn2_controller = controller
         attention._snn2_layer_index = layer_index
         attention._snn2_r3 = r3
+
+        def q_norm_regression_hook(_module, _inputs, output, index=layer_index):
+            _record_regression(
+                controller, f"layer_{index:03d}/attn/q_after_norm", output
+            )
+
+        def k_norm_regression_hook(_module, _inputs, output, index=layer_index):
+            _record_regression(
+                controller, f"layer_{index:03d}/attn/k_after_norm", output
+            )
+
+        q_norm = getattr(attention, "q_norm", None)
+        k_norm = getattr(attention, "k_norm", None)
+        if q_norm is not None:
+            handles.append(q_norm.register_forward_hook(q_norm_regression_hook))
+        if k_norm is not None:
+            handles.append(k_norm.register_forward_hook(k_norm_regression_hook))
+
+        def layer_input_hook(_module, inputs, index=layer_index, attn=attention):
+            if getattr(controller, "regression_recorder", None) is not None:
+                attn._snn2_regression_residual = inputs[0]
+                _record_regression(controller, f"layer_{index:03d}/input", inputs[0])
+
+        def layer_output_hook(_module, _inputs, output, index=layer_index):
+            hidden = output[0] if isinstance(output, tuple) else output
+            _record_regression(controller, f"layer_{index:03d}/output", hidden)
+
+        handles.append(layer.register_forward_pre_hook(layer_input_hook))
+        handles.append(layer.register_forward_hook(layer_output_hook))
 
         def norm1_hook(_module, _inputs, output, index=layer_index):
             return controller.apply(index, 1, output)
@@ -342,13 +425,30 @@ def install_model_integration(
         handles.append(layer.input_layernorm.register_forward_hook(norm1_hook))
         handles.append(layer.post_attention_layernorm.register_forward_hook(norm2_hook))
 
-        def branch_linear_hook(_module, inputs, output, index=layer_index):
-            controller.record_saliency(index, 1, _linear_score(inputs[0], output, _module.weight))
+        def make_branch_linear_hook(label, index=layer_index):
+            def branch_linear_hook(_module, inputs, output):
+                _record_regression(
+                    controller, f"layer_{index:03d}/attn/{label}_proj_output", output
+                )
+                controller.record_saliency(
+                    index, 1, _linear_score(inputs[0], output, _module.weight)
+                )
+            return branch_linear_hook
 
-        for projection in (attention.q_proj, attention.k_proj, attention.v_proj):
-            handles.append(projection.register_forward_hook(branch_linear_hook))
+        for label, projection in (("q", attention.q_proj), ("k", attention.k_proj), ("v", attention.v_proj)):
+            handles.append(projection.register_forward_hook(make_branch_linear_hook(label)))
 
         def output_linear_hook(_module, inputs, output, index=layer_index, attn=attention):
+            _record_regression(
+                controller, f"layer_{index:03d}/attn/o_proj_output", output
+            )
+            residual = getattr(attn, "_snn2_regression_residual", None)
+            if residual is not None:
+                _record_regression(
+                    controller,
+                    f"layer_{index:03d}/post_attention_residual",
+                    residual + output,
+                )
             score = _linear_score(inputs[0], output, _module.weight)
             heads = getattr(attn, "num_heads", None)
             if heads is None:
