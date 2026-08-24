@@ -8,6 +8,7 @@ from .config import (
     conversion_calibration_stage,
     conversion_prefix_enabled,
     conversion_reuses_ann_training_artifacts,
+    training_common_clip_enabled,
 )
 from .controller import SiteController
 from .sites import topology_metadata
@@ -73,6 +74,8 @@ def _validate_source_manifest(manifest: dict[str, Any], *, reused: bool) -> None
             "post_finetuning_recalibration": False,
             "state_profile": "ann_training_with_common_clip",
             "common_clip_required": True,
+            "common_clip_generated": True,
+            "common_clip_application_control": "replacement.common_clip_enabled",
         }
         if reused
         else {
@@ -83,6 +86,8 @@ def _validate_source_manifest(manifest: dict[str, Any], *, reused: bool) -> None
             "post_finetuning_recalibration": True,
             "state_profile": "snn_conversion_without_clip",
             "common_clip_required": False,
+            "common_clip_generated": False,
+            "common_clip_application_control": "replacement.common_clip_enabled",
         }
     )
     mismatched = {
@@ -229,6 +234,7 @@ def validate_conversion_metadata(
         "rotation_state_sha256": sha256_file(rotation_path) if rotation_enabled else None,
         "expected_num_hidden_layers": _ann_num_hidden_layers(ann_config),
         "snn_clip_applied": False,
+        "source_ann_common_clip_enabled": training_common_clip_enabled(cfg),
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
     }
     mismatched = {
@@ -279,6 +285,7 @@ def create_conversion(
         "prefix_kv_sha256": prefix["prefix_kv_sha256"],
         "post_finetuning_recalibration": not reused,
         "snn_clip_applied": False,
+        "source_ann_common_clip_enabled": training_common_clip_enabled(cfg),
         "prefix_root": prefix["prefix_root"],
         "calibration_validation": validation,
         "training_artifact_provenance": training_provenance,

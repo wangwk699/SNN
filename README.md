@@ -20,7 +20,7 @@
 
 `vanilla` 和 `unaware` 不执行 activation replacement。
 
-`phase_aware` 与 `gif_aware` 在 ANN fine-tuning 阶段分别使用 Phase 或 GIF replacement。**Clip 只属于这两个 ANN-aware training 路径**：ANN-training calibration 会生成 `clip_state.pt`，用于约束 Phase/GIF replacement 的输出范围。
+`phase_aware` 与 `gif_aware` 在 ANN fine-tuning 阶段分别使用 Phase 或 GIF replacement。ANN-training calibration 始终为 aware mode 生成 `clip_state.pt`；`replacement.common_clip_enabled` 决定 ANN forward 是否实际在 replacement 后执行该 Clip。SNN conversion/deployment 始终不使用 common Clip。
 
 ## Mode-aware SNN Conversion
 

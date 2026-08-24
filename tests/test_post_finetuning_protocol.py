@@ -16,7 +16,7 @@ from snn2.config import (
 from snn2.conversion import validate_conversion_prefix
 
 
-def _cfg(mode, root="artifacts"):
+def _cfg(mode, root="artifacts", common_clip_enabled=True):
     aware = mode in {"phase_aware", "gif_aware"}
     return {
         "experiment": {
@@ -28,6 +28,7 @@ def _cfg(mode, root="artifacts"):
         "prefix": {"enabled": mode != "vanilla"},
         "ann_training": {"prefix_enabled": mode != "vanilla"},
         "post_finetuning": {"prefix_enabled": not aware},
+        "replacement": {"common_clip_enabled": common_clip_enabled},
     }
 
 
@@ -60,6 +61,26 @@ def test_mode_aware_conversion_roots():
     unaware = ArtifactLayout(_cfg("unaware"))
     assert unaware.conversion_prefix_dir == unaware.post_finetuning_prefix_dir
     assert unaware.conversion_site_dir == unaware.post_finetuning_site_dir
+
+
+@pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_aware_run_root_records_common_clip_variant(mode, enabled):
+    layout = ArtifactLayout(_cfg(mode, common_clip_enabled=enabled))
+    expected = (
+        "prefix_enabled_ture_common_clip_enabled_true"
+        if enabled
+        else "prefix_enabled_ture_common_clip_enabled_false"
+    )
+    assert layout.root.parent.name == expected
+
+
+def test_common_clip_variants_share_prefix_and_calibration_but_not_run_root():
+    enabled = ArtifactLayout(_cfg("phase_aware", common_clip_enabled=True))
+    disabled = ArtifactLayout(_cfg("phase_aware", common_clip_enabled=False))
+    assert enabled.ann_training_prefix_dir == disabled.ann_training_prefix_dir
+    assert enabled.ann_training_calibration_dir == disabled.ann_training_calibration_dir
+    assert enabled.root != disabled.root
 
 
 @pytest.mark.parametrize(

@@ -11,3 +11,7 @@
 5. 普通 Phase main experiment 固定 `surrogate_slope=1.0`，Phase `tau` EMA accumulator 固定 FP32。
 
 6. Phase calibration statistics 与 generic site statistics 必须解耦。Site 2/3/4/5/6 的 Phase EMA 必须使用 SpikingLLM-aligned statistical view；不得为了 Phase τ 对齐而改变 GIF/MTN/Clip statistics 或 runtime neuron layout。
+
+7. ANN-training calibration 对 `phase_aware` / `gif_aware` 始终生成 `clip_state.pt`；`replacement.common_clip_enabled` 只控制 ANN training forward 是否应用 Clip，不得改变 shared calibration 内容。
+
+8. aware run root 必须包含 `common_clip_enabled_true` 或 `common_clip_enabled_false`；shared Pre-finetuning Prefix 和 ANN-training calibration 不得因为该开关拆成两套。

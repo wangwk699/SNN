@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
-from .config import is_aware_ann_mode, training_prefix_enabled
+from .config import (
+    is_aware_ann_mode,
+    training_common_clip_enabled,
+    training_prefix_enabled,
+)
 from .controller import SiteController
 from .data import CausalLMCollator, load_selected_raw, tokenize_dataset
 from .model_integration import install_model_integration
@@ -23,6 +27,15 @@ def format_runtime_hms(runtime_seconds: float) -> str:
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{fractional_units:04d}"
+
+
+def ann_training_common_clip_metadata(cfg: dict[str, Any]) -> dict[str, bool]:
+    enabled = training_common_clip_enabled(cfg)
+    return {
+        "ann_training_common_clip_enabled": enabled,
+        "ann_training_common_clip_applied": enabled,
+        "ann_training_common_clip_state_required": is_aware_ann_mode(cfg),
+    }
 
 
 def capture_training_artifact_provenance(
@@ -106,12 +119,18 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
     tokenizer = load_tokenizer(cfg, source if Path(source).exists() else None)
     model = load_model(cfg, source, training=True)
     mode = cfg["replacement"]["train_mode"]
-    controller = SiteController(mode=mode, site_root=layout.ann_training_site_dir)
+    common_clip_enabled = training_common_clip_enabled(cfg)
+    controller = SiteController(
+        mode=mode,
+        site_root=layout.ann_training_site_dir,
+        common_clip_enabled=common_clip_enabled,
+    )
     if is_aware_ann_mode(cfg):
         validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)
     if cfg["rotation"]["enabled"] or mode != "none":
         install_model_integration(model, controller, rotation_state(cfg, layout))
     model.config.snn2_ann_mode = cfg["experiment"]["ann_mode"]
+    model.config.snn2_ann_common_clip_enabled = common_clip_enabled
     model.config.snn2_fused_weights_are_trainable = bool(cfg["rotation"]["enabled"])
     for parameter in model.parameters():
         parameter.requires_grad_(True)
@@ -230,6 +249,7 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
             "fused_rotation_weights_trained": bool(cfg["rotation"]["enabled"]),
             "prefix_enabled": training_prefix_enabled(cfg),
+            **ann_training_common_clip_metadata(cfg),
             "train_samples": len(train_dataset),
             "validation_samples": len(validation_dataset),
             "world_size": int(os.environ.get("WORLD_SIZE", "1")),

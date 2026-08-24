@@ -553,6 +553,8 @@ def main():
                 "post_finetuning_recalibration": False,
                 "state_profile": "ann_training_with_common_clip",
                 "common_clip_required": True,
+                "common_clip_generated": True,
+                "common_clip_application_control": "replacement.common_clip_enabled",
             }
             if reused
             else {
@@ -563,6 +565,8 @@ def main():
                 "post_finetuning_recalibration": True,
                 "state_profile": "snn_conversion_without_clip",
                 "common_clip_required": False,
+                "common_clip_generated": False,
+                "common_clip_application_control": "replacement.common_clip_enabled",
             }
         )
         _require_manifest_flags(source_manifest, expected_flags, "Conversion source")

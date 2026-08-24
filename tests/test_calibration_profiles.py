@@ -109,3 +109,44 @@ def test_ann_training_materialization_keeps_common_clip(tmp_path):
     )
     assert summary["clip_state_present"] is True
     assert summary["clip_valid"] is True
+
+
+def test_ann_training_calibration_is_identical_for_common_clip_switch(tmp_path):
+    roots = [tmp_path / "enabled", tmp_path / "disabled"]
+    states_by_variant = []
+    for root, enabled in zip(roots, (True, False)):
+        directories = _write_statistics(root)
+        cfg = _cfg()
+        cfg["replacement"] = {"common_clip_enabled": enabled}
+        manifest = materialize_calibration_states(
+            root,
+            cfg,
+            {
+                "common_clip_required": True,
+                "common_clip_generated": True,
+                "common_clip_application_control": "replacement.common_clip_enabled",
+            },
+            include_clip=True,
+            expected_num_hidden_layers=1,
+        )
+        assert manifest["common_clip_generated"] is True
+        assert all((directory / "clip_state.pt").exists() for directory in directories)
+        states_by_variant.append(
+            {
+                name: torch.load(
+                    directories[0] / f"{name}_state.pt", weights_only=False
+                )
+                for name in ("phase", "gif", "mtn", "clip")
+            }
+        )
+    for name in states_by_variant[0]:
+        left, right = states_by_variant[0][name], states_by_variant[1][name]
+        assert left.keys() == right.keys()
+        for key in left:
+            if isinstance(left[key], torch.Tensor):
+                torch.testing.assert_close(left[key], right[key])
+            elif isinstance(left[key], tuple):
+                for left_value, right_value in zip(left[key], right[key]):
+                    torch.testing.assert_close(left_value, right_value)
+            else:
+                assert left[key] == right[key]

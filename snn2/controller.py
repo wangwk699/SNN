@@ -13,8 +13,19 @@ from .temporal_ops import from_temporal, to_temporal
 
 
 class SiteController:
-    def __init__(self, mode: str = "identity", site_root: str | Path | None = None):
+    def __init__(
+        self,
+        mode: str = "identity",
+        site_root: str | Path | None = None,
+        *,
+        common_clip_enabled: bool = False,
+    ):
         self.mode = mode
+        self.common_clip_enabled = bool(common_clip_enabled)
+        if self.mode not in {"phase", "gif"} and self.common_clip_enabled:
+            raise ValueError(
+                "common_clip_enabled only applies to phase/gif ANN replacement modes"
+            )
         self.site_root = Path(site_root) if site_root is not None else None
         self.statistics = StatisticsStore()
         self._modules: dict[str, dict[str, torch.nn.Module]] = {}
@@ -27,9 +38,9 @@ class SiteController:
             raise RuntimeError("A calibration site_root is required for replacement/deployment")
 
         if self.mode == "phase":
-            required = ("phase", "clip")
+            required = ("phase", "clip") if self.common_clip_enabled else ("phase",)
         elif self.mode == "gif":
-            required = ("gif", "clip")
+            required = ("gif", "clip") if self.common_clip_enabled else ("gif",)
         elif self.mode.startswith("deploy_"):
             neuron = self.mode.removeprefix("deploy_")
             if neuron not in {"phase", "gif", "mtn"}:
@@ -57,6 +68,8 @@ class SiteController:
     def set_deployment(self, neuron: str) -> int:
         if neuron not in {"phase", "gif", "mtn"}:
             raise ValueError(neuron)
+        if self.common_clip_enabled:
+            raise ValueError("SNN deployment cannot enable common Clip")
         if self.site_root is None:
             raise RuntimeError("Deployment requires site_root")
         validation = validate_site_state_bundle(
@@ -124,9 +137,11 @@ class SiteController:
             if first_buffer is not None and first_buffer.device != x.device:
                 module.to(x.device)
         if self.mode == "phase":
-            return modules["clip"](modules["phase"](x))
+            output = modules["phase"](x)
+            return modules["clip"](output) if self.common_clip_enabled else output
         if self.mode == "gif":
-            return modules["clip"](modules["gif"](x))
+            output = modules["gif"](x)
+            return modules["clip"](output) if self.common_clip_enabled else output
         if self.mode.startswith("deploy_"):
             if self.temporal_steps is None:
                 raise RuntimeError("Call set_deployment before a temporal forward")

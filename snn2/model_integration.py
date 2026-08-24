@@ -78,44 +78,28 @@ def snn2_eager_attention_forward(
         ),
     )
 
-    if controller.mode == "collect" and past_length:
-        current_key = key[..., past_length:, :]
-        current_value = value[..., past_length:, :]
+    groups = int(getattr(module, "num_key_value_groups", 1))
+    if controller.mode == "collect":
+        statistics_key = key[..., past_length:, :] if past_length else key
+        statistics_value = value[..., past_length:, :] if past_length else value
+        phase_key = repeat_kv(statistics_key, groups)
+        phase_value = repeat_kv(statistics_value, groups)
         controller.record_activation(
             layer_index,
             3,
-            current_key,
-            phase_activation=phase_statistical_view(3, current_key),
+            statistics_key,
+            phase_activation=phase_statistical_view(3, phase_key),
         )
         controller.record_activation(
             layer_index,
             4,
-            current_value,
-            phase_activation=phase_statistical_view(4, current_value),
+            statistics_value,
+            phase_activation=phase_statistical_view(4, phase_value),
         )
     else:
-        key = controller.apply(
-            layer_index,
-            3,
-            key,
-            phase_activation=(
-                phase_statistical_view(3, key)
-                if controller.mode == "collect"
-                else None
-            ),
-        )
-        value = controller.apply(
-            layer_index,
-            4,
-            value,
-            phase_activation=(
-                phase_statistical_view(4, value)
-                if controller.mode == "collect"
-                else None
-            ),
-        )
+        key = controller.apply(layer_index, 3, key)
+        value = controller.apply(layer_index, 4, value)
 
-    groups = int(getattr(module, "num_key_value_groups", 1))
     key = repeat_kv(key, groups)
     value = repeat_kv(value, groups)
     qk = torch.matmul(query, key.transpose(2, 3))

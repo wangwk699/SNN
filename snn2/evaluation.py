@@ -9,6 +9,7 @@ from .artifacts import prefix_enabled_dirname
 from .config import (
     conversion_calibration_stage,
     conversion_reuses_ann_training_artifacts,
+    training_common_clip_enabled,
 )
 from .controller import SiteController
 from .model_integration import temporal_forward
@@ -68,6 +69,15 @@ def evaluation_calibration_metadata(
             None if inactive else str(layout.conversion_site_dir)
         ),
     }
+
+
+def evaluation_ann_common_clip_enabled(
+    cfg: dict[str, object],
+    *,
+    base: bool = False,
+    rotated_pre_finetuning: bool = False,
+) -> bool:
+    return False if base or rotated_pre_finetuning else training_common_clip_enabled(cfg)
 
 
 

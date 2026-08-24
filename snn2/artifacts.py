@@ -6,12 +6,30 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .config import conversion_prefix_enabled, is_aware_ann_mode, save_yaml
+from .config import (
+    conversion_prefix_enabled,
+    is_aware_ann_mode,
+    save_yaml,
+    training_common_clip_enabled,
+)
 
 
 def prefix_enabled_dirname(enabled: bool) -> str:
     """Stable artifact suffix (the historical ``ture`` spelling is intentional)."""
     return "prefix_enabled_ture" if enabled else "prefix_enabled_false"
+
+
+def ann_run_variant_dirname(
+    *, prefix_enabled: bool, common_clip_enabled: bool, aware_mode: bool
+) -> str:
+    result = prefix_enabled_dirname(prefix_enabled)
+    if aware_mode:
+        result += (
+            "_common_clip_enabled_true"
+            if common_clip_enabled
+            else "_common_clip_enabled_false"
+        )
+    return result
 
 
 def safe_name(value: str) -> str:
@@ -48,11 +66,16 @@ class ArtifactLayout:
                 "prefix_enabled", cfg.get("prefix", {}).get("enabled", False)
             )
         )
+        run_variant = ann_run_variant_dirname(
+            prefix_enabled=ann_prefix,
+            common_clip_enabled=training_common_clip_enabled(cfg),
+            aware_mode=is_aware_ann_mode(cfg),
+        )
         self.root = (
             model_root
             / exp["ann_mode"]
             / learning_rate
-            / prefix_enabled_dirname(ann_prefix)
+            / run_variant
             / seed
         )
         # 原始 Base 模型独立目录：

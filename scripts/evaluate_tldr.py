@@ -27,6 +27,7 @@ from snn2.evaluation import (
     greedy_generate,
     deployment_policy_metadata,
     evaluation_calibration_metadata,
+    evaluation_ann_common_clip_enabled,
     resolve_tldr_evaluation_layout,
 )
 from snn2.logging_utils import StageRun
@@ -513,6 +514,11 @@ def main():
                     "site_topology_version": SITE_TOPOLOGY_VERSION,
                     "per_temporal_forward_activation_neuron_operators": per_forward_operators,
                     "global_final_norm_phase_neuron_present": args.neuron == "phase",
+                    "ann_training_common_clip_enabled": (
+                        False
+                        if args.base or args.rotated_pre_finetuning
+                        else evaluation_ann_common_clip_enabled(cfg)
+                    ),
                     **deployment_policy_metadata(controller),
                     "decode": "greedy",
                     "input_length": input_length,

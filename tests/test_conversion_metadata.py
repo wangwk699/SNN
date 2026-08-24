@@ -82,6 +82,8 @@ def _prepare(tmp_path, *, rotation_enabled=False):
             "post_finetuning_recalibration": True,
             "state_profile": "snn_conversion_without_clip",
             "common_clip_required": False,
+            "common_clip_generated": False,
+            "common_clip_application_control": "replacement.common_clip_enabled",
             "prefix_enabled": False,
         },
         include_clip=False,
@@ -119,6 +121,7 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         "prefix_source_stage": "post_finetuning",
         "reused_ann_training_artifacts": False,
         "snn_clip_applied": False,
+        "source_ann_common_clip_enabled": False,
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         **temporal_policy_metadata(),
     }
@@ -131,6 +134,17 @@ def test_conversion_metadata_v7_is_accepted(tmp_path):
     layout, _ = _prepare(tmp_path)
     metadata = validate_conversion_metadata(_cfg(), layout, "gif")
     assert metadata["gif_high_qmax"] == 30
+    assert metadata["source_ann_common_clip_enabled"] is False
+    assert metadata["snn_clip_applied"] is False
+
+
+def test_conversion_rejects_source_ann_common_clip_mismatch(monkeypatch, tmp_path):
+    layout, _ = _prepare(tmp_path)
+    monkeypatch.setattr(
+        "snn2.conversion.training_common_clip_enabled", lambda cfg: True
+    )
+    with pytest.raises(ValueError, match="source_ann_common_clip_enabled"):
+        validate_conversion_metadata(_cfg(), layout, "gif")
 
 
 @pytest.mark.parametrize(

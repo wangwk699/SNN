@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+import copy
 
 from scripts.materialize_configs import materialize_configs
 from snn2.config import validate_config
@@ -54,6 +55,8 @@ def test_all_twelve_generated_configs_carry_temporal_v2_and_qmax30(generated_con
             "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
         }
         assert cfg["phase"]["surrogate_slope"] == 1.0
+        expected_clip = cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}
+        assert cfg["replacement"]["common_clip_enabled"] is expected_clip
         assert cfg["gif"]["high_qmax"] == GIF_HIGH_QMAX
         assert cfg["gif"]["temporal_steps"] == GIF_LOCAL_STEPS
         assert cfg["gif"]["per_step_qmax"] == GIF_STEP_QMAX
@@ -64,6 +67,25 @@ def test_qwen17_quick_tldr_evaluation_remains_128_samples(generated_configs):
         if "qwen3_1_7b_tldr" in path.name:
             cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
             assert cfg["evaluation"]["tldr_test_samples"] == 128
+
+
+@pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_aware_common_clip_boolean_variants_are_valid(generated_configs, mode, enabled):
+    path = next(
+        path for path in generated_configs if path.stem.endswith(f"__{mode}")
+    )
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    cfg["replacement"]["common_clip_enabled"] = enabled
+    validate_config(cfg)
+
+
+def test_common_clip_rejects_non_boolean(generated_configs):
+    cfg = yaml.safe_load(generated_configs[0].read_text(encoding="utf-8"))
+    cfg = copy.deepcopy(cfg)
+    cfg["replacement"]["common_clip_enabled"] = "false"
+    with pytest.raises(ValueError, match="must be true or false"):
+        validate_config(cfg)
 
 
 @pytest.mark.parametrize(

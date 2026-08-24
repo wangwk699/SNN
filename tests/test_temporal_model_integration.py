@@ -135,10 +135,10 @@ def test_collect_attention_excludes_prefix_from_site_3_and_4_statistics():
         _snn2_controller=controller,
         _snn2_layer_index=0,
         training=False,
-        num_key_value_groups=1,
+        num_key_value_groups=2,
         scaling=0.5,
     )
-    query = torch.randn(1, 2, 2, 4)
+    query = torch.randn(1, 4, 2, 4)
     key = torch.randn(1, 2, 5, 4)
     value = torch.randn_like(key)
     snn2_eager_attention_forward(
@@ -150,12 +150,37 @@ def test_collect_attention_excludes_prefix_from_site_3_and_4_statistics():
     assert value_stats.row_count.item() == 4
     assert key_stats.channels == 4
     assert value_stats.channels == 4
-    assert key_stats.phase_channels == 8
-    assert value_stats.phase_channels == 8
-    expected_key = phase_statistical_view(3, key[..., 3:, :]).abs().amax(dim=(0, 1))
-    expected_value = phase_statistical_view(4, value[..., 3:, :]).abs().amax(dim=(0, 1))
+    assert key_stats.phase_channels == 16
+    assert value_stats.phase_channels == 16
+    expected_key = phase_statistical_view(
+        3, repeat_kv(key[..., 3:, :], 2)
+    ).abs().amax(dim=(0, 1))
+    expected_value = phase_statistical_view(
+        4, repeat_kv(value[..., 3:, :], 2)
+    ).abs().amax(dim=(0, 1))
     torch.testing.assert_close(key_stats.phase_ema_abs_max, expected_key)
     torch.testing.assert_close(value_stats.phase_ema_abs_max, expected_value)
+
+
+def test_collect_attention_without_prefix_uses_repeat_kv_phase_view():
+    from snn2.controller import SiteController
+
+    controller = SiteController(mode="collect")
+    module = SimpleNamespace(
+        _snn2_controller=controller,
+        _snn2_layer_index=0,
+        training=False,
+        num_key_value_groups=2,
+        scaling=0.5,
+    )
+    query = torch.randn(1, 4, 2, 4)
+    key = torch.randn(1, 2, 2, 4)
+    value = torch.randn_like(key)
+    snn2_eager_attention_forward(module, query, key, value, None, dropout=0.0)
+    for site in (3, 4):
+        stats = controller.statistics.items[site_key(0, site)]
+        assert stats.channels == 4
+        assert stats.phase_channels == 16
 
 
 class _RMSNorm(torch.nn.Module):

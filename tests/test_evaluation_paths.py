@@ -8,6 +8,7 @@ from snn2.artifacts import prefix_enabled_dirname
 from snn2.evaluation import (
     activation_neuron_operators_per_temporal_forward,
     evaluation_calibration_metadata,
+    evaluation_ann_common_clip_enabled,
     resolve_tldr_evaluation_layout,
 )
 
@@ -39,6 +40,20 @@ def test_final_ann_evaluation_has_no_calibration_metadata(mode):
         "post_finetuning_recalibration": False,
         "calibration_root": None,
     }
+
+
+@pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_evaluation_records_ann_training_common_clip(mode, enabled):
+    cfg = {
+        "experiment": {"ann_mode": mode},
+        "replacement": {"common_clip_enabled": enabled},
+    }
+    assert evaluation_ann_common_clip_enabled(cfg) is enabled
+    assert evaluation_ann_common_clip_enabled(cfg, base=True) is False
+    assert evaluation_ann_common_clip_enabled(
+        cfg, rotated_pre_finetuning=True
+    ) is False
 
 
 @pytest.mark.parametrize(

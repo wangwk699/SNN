@@ -53,6 +53,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     cfg = copy.deepcopy(raw)
+    cfg["replacement"].setdefault("common_clip_enabled", True)
     cfg.setdefault("ann_training", {})
     cfg.setdefault("rotated_pre_finetuning", {})
     cfg["rotated_pre_finetuning"].setdefault("prefix_enabled", True)
@@ -70,10 +71,12 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
         cfg["ann_training"]["prefix_enabled"] = False
         cfg["prefix"]["enabled"] = False
         cfg["replacement"]["train_mode"] = "none"
+        cfg["replacement"]["common_clip_enabled"] = False
     elif mode == "unaware":
         cfg["rotation"]["enabled"] = True
         cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
         cfg["replacement"]["train_mode"] = "none"
+        cfg["replacement"]["common_clip_enabled"] = False
     elif mode == "phase_aware":
         cfg["rotation"]["enabled"] = True
         cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
@@ -228,6 +231,11 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("vanilla must not use a Pre-finetuning Prefix")
     if mode != "vanilla" and not training_prefix_enabled(cfg):
         raise ValueError(f"{mode} requires the shared Pre-finetuning Prefix")
+    common_clip_enabled = cfg["replacement"].get("common_clip_enabled")
+    if not isinstance(common_clip_enabled, bool):
+        raise ValueError("replacement.common_clip_enabled must be true or false")
+    if not is_aware_ann_mode(cfg) and common_clip_enabled:
+        raise ValueError(f"{mode} requires replacement.common_clip_enabled=false")
     for section in ("ann_training", "rotated_pre_finetuning", "post_finetuning", "evaluation"):
         value = cfg[section].get("prefix_enabled")
         if not isinstance(value, bool):
@@ -244,6 +252,12 @@ def training_prefix_enabled(cfg: dict[str, Any]) -> bool:
 
 def is_aware_ann_mode(cfg: dict[str, Any]) -> bool:
     return cfg["experiment"]["ann_mode"] in AWARE_ANN_MODES
+
+
+def training_common_clip_enabled(cfg: dict[str, Any]) -> bool:
+    return is_aware_ann_mode(cfg) and bool(
+        cfg.get("replacement", {}).get("common_clip_enabled", True)
+    )
 
 
 def requires_pre_finetuning_prefix(cfg: dict[str, Any]) -> bool:

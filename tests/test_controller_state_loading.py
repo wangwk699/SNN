@@ -160,7 +160,9 @@ def test_deployment_loads_only_selected_neuron_state(
 def test_ann_replacement_requires_common_clip(tmp_path, mode, state_name, state):
     directory = _site_directory(tmp_path)
     torch.save(state, directory / state_name)
-    controller = SiteController(mode=mode, site_root=tmp_path)
+    controller = SiteController(
+        mode=mode, site_root=tmp_path, common_clip_enabled=True
+    )
 
     with pytest.raises(FileNotFoundError, match="clip_state.pt"):
         controller.apply(0, 1, torch.zeros(1, 3))
@@ -170,7 +172,9 @@ def test_ann_phase_still_applies_common_clip(tmp_path):
     directory = _site_directory(tmp_path)
     torch.save(_phase_state(), directory / "phase_state.pt")
     torch.save(_clip_state(), directory / "clip_state.pt")
-    controller = SiteController(mode="phase", site_root=tmp_path)
+    controller = SiteController(
+        mode="phase", site_root=tmp_path, common_clip_enabled=True
+    )
 
     output = controller.apply(0, 1, torch.tensor([[100.0, 0.0, -100.0]]))
 
@@ -183,13 +187,50 @@ def test_ann_gif_still_applies_common_clip(tmp_path):
     directory = _site_directory(tmp_path)
     torch.save(_gif_state(), directory / "gif_state.pt")
     torch.save(_clip_state(), directory / "clip_state.pt")
-    controller = SiteController(mode="gif", site_root=tmp_path)
+    controller = SiteController(
+        mode="gif", site_root=tmp_path, common_clip_enabled=True
+    )
 
     output = controller.apply(0, 1, torch.tensor([[100.0, 0.0, -100.0]]))
 
     assert torch.all(output <= 1.0)
     assert torch.all(output >= -1.0)
     assert set(controller._modules[site_key(0, 1)]) == {"gif", "clip"}
+
+
+@pytest.mark.parametrize(
+    ("mode", "state_name", "state", "neuron_name"),
+    [
+        ("phase", "phase_state.pt", _phase_state(), "phase"),
+        ("gif", "gif_state.pt", _gif_state(), "gif"),
+    ],
+)
+def test_ann_replacement_can_disable_common_clip(
+    tmp_path, mode, state_name, state, neuron_name
+):
+    directory = _site_directory(tmp_path)
+    torch.save(state, directory / state_name)
+    controller = SiteController(
+        mode=mode, site_root=tmp_path, common_clip_enabled=False
+    )
+    output = controller.apply(0, 1, torch.tensor([[2.0, 0.0, -2.0]]))
+    direct = controller._modules[site_key(0, 1)][neuron_name](
+        torch.tensor([[2.0, 0.0, -2.0]])
+    )
+    torch.testing.assert_close(output, direct)
+    assert set(controller._modules[site_key(0, 1)]) == {neuron_name}
+
+
+def test_deployment_rejects_common_clip_switch(tmp_path):
+    with pytest.raises(ValueError, match="only applies"):
+        SiteController(
+            mode="deploy_phase", site_root=tmp_path, common_clip_enabled=True
+        )
+    controller = SiteController(
+        mode="phase", site_root=tmp_path, common_clip_enabled=True
+    )
+    with pytest.raises(ValueError, match="cannot enable"):
+        controller.set_deployment("phase")
 
 def test_deployment_rejects_cross_site_temporal_step_mismatch(tmp_path):
     _write_bundle(tmp_path)

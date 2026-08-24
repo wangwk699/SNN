@@ -91,6 +91,8 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "post_finetuning_recalibration": post,
         "state_profile": state_profile,
         "common_clip_required": stage == "ann_training",
+        "common_clip_generated": stage == "ann_training",
+        "common_clip_application_control": "replacement.common_clip_enabled",
         "source_model_stage": "original_pretrained_base" if stage == "vanilla_analysis" else ("rotated_fused_base" if stage == "ann_training" else "final_ann_checkpoint"),
         "source_ann_mode": cfg["experiment"]["ann_mode"] if post else None,
         "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()) if post else None,
@@ -507,6 +509,8 @@ def collect_site_statistics(
         "post_finetuning_recalibration": purpose == "post_finetuning_conversion_calibration",
         "state_profile": state_profile,
         "common_clip_required": eligible_ann,
+        "common_clip_generated": eligible_ann,
+        "common_clip_application_control": "replacement.common_clip_enabled",
         "source_model_stage": None,
         "source_ann_mode": None,
         "source_ann_checkpoint": None,
@@ -537,6 +541,8 @@ def collect_site_statistics(
         "post_finetuning_recalibration": purpose == "post_finetuning_conversion_calibration",
         "state_profile": state_profile,
         "common_clip_required": eligible_ann,
+        "common_clip_generated": eligible_ann,
+        "common_clip_application_control": "replacement.common_clip_enabled",
         "expected_num_hidden_layers": expected_num_hidden_layers,
         "expected_layer_names": [
             f"layer_{index:03d}" for index in range(expected_num_hidden_layers)

@@ -5,6 +5,7 @@ import pytest
 
 from snn2.training import (
     capture_training_artifact_provenance,
+    ann_training_common_clip_metadata,
     format_runtime_hms,
     verify_training_artifact_provenance_unchanged,
 )
@@ -20,6 +21,20 @@ def test_format_runtime_hms_does_not_wrap_after_24_hours() -> None:
 
 def test_format_runtime_hms_carries_fractional_second_rounding() -> None:
     assert format_runtime_hms(3599.99996) == "01:00:00.0000"
+
+
+@pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_ann_training_common_clip_metadata(mode, enabled):
+    cfg = {
+        "experiment": {"ann_mode": mode},
+        "replacement": {"common_clip_enabled": enabled},
+    }
+    assert ann_training_common_clip_metadata(cfg) == {
+        "ann_training_common_clip_enabled": enabled,
+        "ann_training_common_clip_applied": enabled,
+        "ann_training_common_clip_state_required": True,
+    }
 
 
 def _provenance_fixture(tmp_path):
