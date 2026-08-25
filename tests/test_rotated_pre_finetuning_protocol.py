@@ -31,6 +31,7 @@ def _cfg(mode="unaware", learning_rate=5e-6):
         "training": {"learning_rate": learning_rate},
         "rotation": {"enabled": mode != "vanilla"},
         "prefix": {"enabled": mode != "vanilla"},
+        "phase": {"surrogate_slope": 1.0},
         "post_finetuning": {"prefix_enabled": True},
     }
 
