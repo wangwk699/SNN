@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 import random
@@ -44,6 +45,19 @@ from snn2.modeling import (
 )
 from snn2.prefix_cache import install_prefix_kv_forward
 from snn2.training import validate_recorded_training_artifact_provenance
+
+
+@contextmanager
+def _managed_accelerator(accelerator_factory=None):
+    if accelerator_factory is None:
+        from accelerate import Accelerator
+
+        accelerator_factory = Accelerator
+    accelerator = accelerator_factory()
+    try:
+        yield accelerator
+    finally:
+        accelerator.end_training()
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -202,12 +216,12 @@ def main():
         )
     )
 
-    with StageRun(stage, logs_dir, cfg["experiment"]) as run:
-        from accelerate import Accelerator
+    with (
+        StageRun(stage, logs_dir, cfg["experiment"]) as run,
+        _managed_accelerator() as accelerator,
+    ):
         from accelerate.utils import gather_object
         import evaluate
-
-        accelerator = Accelerator()
 
         if args.base:
             checkpoint_stage = "base_evaluation"

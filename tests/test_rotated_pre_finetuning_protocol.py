@@ -57,6 +57,25 @@ def test_rotated_pre_finetuning_paths_are_model_shared(mode, learning_rate):
     )
 
 
+def test_evaluate_tldr_managed_accelerator_always_ends_training():
+    scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    from evaluate_tldr import _managed_accelerator
+
+    calls = []
+
+    class FakeAccelerator:
+        def end_training(self):
+            calls.append("end_training")
+
+    with pytest.raises(RuntimeError, match="evaluation failed"):
+        with _managed_accelerator(FakeAccelerator):
+            raise RuntimeError("evaluation failed")
+
+    assert calls == ["end_training"]
+
+
 def test_rotated_pre_finetuning_stage_uses_shared_pre_finetuning_prefix(tmp_path):
     cfg = _cfg()
     cfg["experiment"]["output_root"] = str(tmp_path)
