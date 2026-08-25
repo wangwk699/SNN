@@ -94,7 +94,23 @@ def test_phase_aware_run_root_records_surrogate_slope():
     assert second.root.parent.name == "surrogate_slope_0.5"
     assert first.root != second.root
     assert first.ann_training_prefix_dir == second.ann_training_prefix_dir
-    assert first.ann_training_calibration_dir == second.ann_training_calibration_dir
+    assert first.ann_training_calibration_dir != second.ann_training_calibration_dir
+    assert first.ann_training_calibration_dir.name == "surrogate_slope_1.0"
+    assert second.ann_training_calibration_dir.name == "surrogate_slope_0.5"
+
+
+def test_aware_modes_share_calibration_only_for_the_same_surrogate_slope():
+    phase = ArtifactLayout(_cfg("phase_aware"))
+    gif_cfg = _cfg("gif_aware")
+    gif = ArtifactLayout(gif_cfg)
+    assert phase.ann_training_calibration_dir == gif.ann_training_calibration_dir
+
+    gif_cfg["phase"]["surrogate_slope"] = 2.0
+    gif_other_slope = ArtifactLayout(gif_cfg)
+    assert (
+        phase.ann_training_calibration_dir
+        != gif_other_slope.ann_training_calibration_dir
+    )
 
 
 def test_common_clip_variants_share_prefix_and_calibration_but_not_run_root():

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -134,9 +135,15 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("Calibration sampling must be done without replacement")
     if int(cfg["data"]["max_seq_length"]) != 2048:
         raise ValueError("Main experiments require max_seq_length=2048")
-    if float(cfg["phase"]["surrogate_slope"]) != 1.0:
+    try:
+        surrogate_slope = float(cfg["phase"]["surrogate_slope"])
+    except (TypeError, ValueError) as exc:
         raise ValueError(
-            "Main experiments require SpikingLLM Phase surrogate_slope=1.0"
+            "phase.surrogate_slope must be a positive finite number"
+        ) from exc
+    if not math.isfinite(surrogate_slope) or surrogate_slope <= 0.0:
+        raise ValueError(
+            "phase.surrogate_slope must be a positive finite number"
         )
     if bool(cfg["data"].get("packing", True)):
         raise ValueError("Packing must be disabled")

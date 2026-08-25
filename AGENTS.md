@@ -8,7 +8,7 @@
 
 4. Prefix K/V 在实际 ANN-aware replacement 与 SNN deployment 中必须经过 Site 3/4 neuron；calibration statistic 可排除 Prefix positions，但不得因此让 Prefix runtime bypass neuron。
 
-5. 普通 Phase main experiment 固定 `surrogate_slope=1.0`，Phase `tau` EMA accumulator 固定 FP32。
+5. Phase `surrogate_slope` 允许使用任意正有限值进行对比实验；`phase_aware` run root 与所有 aware ANN-training calibration root 必须包含 `surrogate_slope_<value>`，同一 slope 的 phase-aware/gif-aware 继续共享 calibration，不同 slope 必须隔离，防止复用错误的 `phase_state.pt`。Phase `tau` EMA accumulator 固定 FP32。
 
 6. Phase calibration statistics 与 generic site statistics 必须解耦。Site 2/3/4/5/6 的 Phase EMA 必须使用 SpikingLLM-aligned statistical view；不得为了 Phase τ 对齐而改变 GIF/MTN/Clip statistics 或 runtime neuron layout。
 

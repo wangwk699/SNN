@@ -89,6 +89,25 @@ def test_common_clip_rejects_non_boolean(generated_configs):
         validate_config(cfg)
 
 
+@pytest.mark.parametrize("slope", [0.5, 1.0, 2.0, 4.0])
+def test_surrogate_slope_accepts_positive_finite_values(generated_configs, slope):
+    cfg = yaml.safe_load(generated_configs[0].read_text(encoding="utf-8"))
+    cfg["phase"]["surrogate_slope"] = slope
+    validate_config(cfg)
+
+
+@pytest.mark.parametrize(
+    "slope", [0.0, -1.0, float("inf"), float("nan"), "invalid"]
+)
+def test_surrogate_slope_rejects_non_positive_or_non_finite_values(
+    generated_configs, slope
+):
+    cfg = yaml.safe_load(generated_configs[0].read_text(encoding="utf-8"))
+    cfg["phase"]["surrogate_slope"] = slope
+    with pytest.raises(ValueError, match="positive finite number"):
+        validate_config(cfg)
+
+
 @pytest.mark.parametrize(
     ("section", "key", "value"),
     [
