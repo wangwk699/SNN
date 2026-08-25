@@ -19,9 +19,19 @@ class SiteController:
         site_root: str | Path | None = None,
         *,
         common_clip_enabled: bool = False,
+        phase_surrogate_slope: float | None = None,
     ):
         self.mode = mode
         self.common_clip_enabled = bool(common_clip_enabled)
+        self.phase_surrogate_slope = (
+            None
+            if phase_surrogate_slope is None
+            else float(phase_surrogate_slope)
+        )
+        if self.mode == "phase" and self.phase_surrogate_slope is None:
+            raise ValueError(
+                "Phase ANN replacement requires an explicit phase_surrogate_slope"
+            )
         if self.mode not in {"phase", "gif"} and self.common_clip_enabled:
             raise ValueError(
                 "common_clip_enabled only applies to phase/gif ANN replacement modes"
@@ -72,7 +82,13 @@ class SiteController:
                 state = torch.load(
                     directory / f"{name}_state.pt", map_location="cpu", weights_only=False
                 )
-                modules[name] = factories[name](state)
+                if name == "phase" and self.mode == "phase":
+                    modules[name] = PhaseSurrogate(
+                        state,
+                        surrogate_slope=self.phase_surrogate_slope,
+                    )
+                else:
+                    modules[name] = factories[name](state)
         return modules
 
     def set_deployment(self, neuron: str) -> int:

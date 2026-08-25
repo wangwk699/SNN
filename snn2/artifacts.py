@@ -169,17 +169,12 @@ class ArtifactLayout:
                 "prefix_enabled", self._cfg.get("prefix", {}).get("enabled", False)
             )
         )
-        calibration_root = (
+        return (
             self.shared_model_root
             / "rotated_prefix"
             / "ann_training_calibration"
             / prefix_enabled_dirname(enabled)
         )
-        if is_aware_ann_mode(self._cfg):
-            calibration_root = calibration_root / surrogate_slope_dirname(
-                self._cfg["phase"]["surrogate_slope"]
-            )
-        return calibration_root
 
     @property
     def ann_training_site_dir(self) -> Path:

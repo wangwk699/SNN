@@ -82,9 +82,18 @@ def hard_clip(x: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor) -> torc
 
 
 class PhaseSurrogate(nn.Module):
-    def __init__(self, state: dict[str, Any]):
+    def __init__(
+        self,
+        state: dict[str, Any],
+        *,
+        surrogate_slope: float | None = None,
+    ):
         super().__init__()
         _validate_state_header(state, "phase")
+        if "surrogate_slope" in state:
+            raise ValueError(
+                "Legacy Phase state contains surrogate_slope; re-run calibration"
+            )
         if (
             state.get("tau_calibration") != "spikingllm_ema_channel_abs_max"
             or float(state.get("tau_ema_factor", -1.0)) != 0.99
@@ -103,7 +112,13 @@ class PhaseSurrogate(nn.Module):
         self.group_size = int(state["group_size"])
         if self.group_size != -1 or state["tau"].numel() != 1:
             raise ValueError("SpikingLLM-aligned Phase requires scalar tau and group_size=-1")
-        self.slope = float(state["surrogate_slope"])
+        self.slope = (
+            None if surrogate_slope is None else float(surrogate_slope)
+        )
+        if self.slope is not None and (
+            not math.isfinite(self.slope) or self.slope <= 0.0
+        ):
+            raise ValueError("Phase surrogate_slope must be a positive finite number")
         self.max_spikes = int(state.get("max_spikes", 2))
         self.register_buffer("tau", state["tau"].float())
         self.register_buffer("v0", state["v0"].float())
@@ -117,7 +132,12 @@ class PhaseSurrogate(nn.Module):
         outputs = []
         for timestep in range(self.T):
             amplitude = tau * (self.base ** (-(timestep + 1)))
-            spike = HeavisideSigmoid.apply(membrane - amplitude, self.slope)
+            distance = membrane - amplitude
+            spike = (
+                (distance > 0).to(distance.dtype)
+                if self.slope is None
+                else HeavisideSigmoid.apply(distance, self.slope)
+            )
             if self.max_spikes > 0:
                 spike = spike * (spike_count < self.max_spikes).to(spike.dtype)
             spike_count = spike_count + spike.detach()

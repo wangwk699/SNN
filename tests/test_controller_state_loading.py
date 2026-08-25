@@ -68,7 +68,6 @@ def _phase_state():
         "T": 2,
         "base": 2.0,
         "group_size": -1,
-        "surrogate_slope": 1.0,
         "max_spikes": 2,
         "tau": torch.tensor([1.0]),
         "v0": torch.tensor([0.125]),
@@ -161,7 +160,10 @@ def test_ann_replacement_requires_common_clip(tmp_path, mode, state_name, state)
     directory = _site_directory(tmp_path)
     torch.save(state, directory / state_name)
     controller = SiteController(
-        mode=mode, site_root=tmp_path, common_clip_enabled=True
+        mode=mode,
+        site_root=tmp_path,
+        common_clip_enabled=True,
+        phase_surrogate_slope=1.0 if mode == "phase" else None,
     )
 
     with pytest.raises(FileNotFoundError, match="clip_state.pt"):
@@ -173,7 +175,10 @@ def test_ann_phase_still_applies_common_clip(tmp_path):
     torch.save(_phase_state(), directory / "phase_state.pt")
     torch.save(_clip_state(), directory / "clip_state.pt")
     controller = SiteController(
-        mode="phase", site_root=tmp_path, common_clip_enabled=True
+        mode="phase",
+        site_root=tmp_path,
+        common_clip_enabled=True,
+        phase_surrogate_slope=1.0,
     )
 
     output = controller.apply(0, 1, torch.tensor([[100.0, 0.0, -100.0]]))
@@ -181,6 +186,39 @@ def test_ann_phase_still_applies_common_clip(tmp_path):
     assert torch.all(output <= 1.0)
     assert torch.all(output >= -1.0)
     assert set(controller._modules[site_key(0, 1)]) == {"phase", "clip"}
+
+
+def test_ann_phase_uses_runtime_surrogate_slope_override(tmp_path):
+    directory = _site_directory(tmp_path)
+    torch.save(_phase_state(), directory / "phase_state.pt")
+    controller = SiteController(
+        mode="phase",
+        site_root=tmp_path,
+        common_clip_enabled=False,
+        phase_surrogate_slope=2.0,
+    )
+
+    controller.apply(0, 1, torch.tensor([[0.5]]))
+
+    module = controller._modules[site_key(0, 1)]["phase"]
+    assert module.slope == 2.0
+    assert "surrogate_slope" not in torch.load(
+        directory / "phase_state.pt", weights_only=False
+    )
+
+
+def test_phase_rejects_legacy_state_with_surrogate_slope():
+    state = _phase_state()
+    state["surrogate_slope"] = 1.0
+    with pytest.raises(ValueError, match="Legacy Phase state"):
+        from snn2.neurons import PhaseSurrogate
+
+        PhaseSurrogate(state, surrogate_slope=2.0)
+
+
+def test_ann_phase_controller_requires_explicit_surrogate_slope(tmp_path):
+    with pytest.raises(ValueError, match="requires an explicit"):
+        SiteController(mode="phase", site_root=tmp_path)
 
 
 def test_ann_gif_still_applies_common_clip(tmp_path):
@@ -211,7 +249,10 @@ def test_ann_replacement_can_disable_common_clip(
     directory = _site_directory(tmp_path)
     torch.save(state, directory / state_name)
     controller = SiteController(
-        mode=mode, site_root=tmp_path, common_clip_enabled=False
+        mode=mode,
+        site_root=tmp_path,
+        common_clip_enabled=False,
+        phase_surrogate_slope=1.0 if mode == "phase" else None,
     )
     output = controller.apply(0, 1, torch.tensor([[2.0, 0.0, -2.0]]))
     direct = controller._modules[site_key(0, 1)][neuron_name](
@@ -227,7 +268,10 @@ def test_deployment_rejects_common_clip_switch(tmp_path):
             mode="deploy_phase", site_root=tmp_path, common_clip_enabled=True
         )
     controller = SiteController(
-        mode="phase", site_root=tmp_path, common_clip_enabled=True
+        mode="phase",
+        site_root=tmp_path,
+        common_clip_enabled=True,
+        phase_surrogate_slope=1.0,
     )
     with pytest.raises(ValueError, match="cannot enable"):
         controller.set_deployment("phase")

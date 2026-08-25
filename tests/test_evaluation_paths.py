@@ -243,6 +243,7 @@ def test_final_ann_replacement_mode_mapping(ann_mode, expected):
 def _evaluation_cfg(ann_mode, clip=False):
     return {
         "experiment": {"ann_mode": ann_mode},
+        "phase": {"surrogate_slope": 2.0},
         "replacement": {"common_clip_enabled": clip},
     }
 
@@ -262,6 +263,9 @@ def test_build_final_ann_controller(monkeypatch, ann_mode, clip, expected_mode):
     assert controller.mode == expected_mode
     assert steps == 1
     assert controller.common_clip_enabled is (clip if ann_mode.endswith("aware") and ann_mode != "unaware" else False)
+    assert controller.phase_surrogate_slope == (
+        2.0 if ann_mode == "phase_aware" else None
+    )
     if ann_mode in {"phase_aware", "gif_aware"}:
         assert str(controller.site_root) == "training"
     else:

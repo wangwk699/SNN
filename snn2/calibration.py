@@ -176,7 +176,6 @@ def build_phase_state(
         "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
         "T": steps,
         "base": float(phase_cfg["base"]),
-        "surrogate_slope": float(phase_cfg["surrogate_slope"]),
         "max_spikes": int(phase_cfg.get("max_spikes", steps)),
         "group_size": -1,
         "tau": tau,

@@ -161,6 +161,11 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         mode=mode,
         site_root=layout.ann_training_site_dir,
         common_clip_enabled=common_clip_enabled,
+        phase_surrogate_slope=(
+            float(cfg["phase"]["surrogate_slope"])
+            if mode == "phase"
+            else None
+        ),
     )
     if is_aware_ann_mode(cfg):
         validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)

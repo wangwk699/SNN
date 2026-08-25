@@ -34,7 +34,6 @@ def _phase_state():
         "T": 4,
         "base": 2.0,
         "group_size": -1,
-        "surrogate_slope": 1.0,
         "max_spikes": 2,
         "tau": torch.tensor([2.0]),
         "v0": torch.tensor([0.0625]),
@@ -185,10 +184,12 @@ def test_official_phase_ann_controller_matches_graph_p(monkeypatch):
     layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
     cfg = {
         "experiment": {"ann_mode": "phase_aware"},
+        "phase": {"surrogate_slope": 2.0},
         "replacement": {"common_clip_enabled": False},
     }
     controller, steps = build_evaluation_controller(cfg, layout, neuron="ann")
     assert controller.mode == "phase"
+    assert controller.phase_surrogate_slope == 2.0
     assert str(controller.site_root) == "training"
     assert controller.common_clip_enabled is False
     assert steps == 1

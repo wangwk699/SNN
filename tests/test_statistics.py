@@ -75,10 +75,11 @@ def test_phase_tau_is_global_max_after_per_channel_ema():
         statistics,
         {
             "calibration": {"group_size": 1},
-            "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
+            "phase": {"T": 4, "base": 2.0, "surrogate_slope": 2.0},
         },
     )
     torch.testing.assert_close(state["tau"], torch.tensor([99.0]))
     assert state["tau"].numel() == 1
     assert state["group_size"] == -1
+    assert "surrogate_slope" not in state
     assert state["tau_reduction_policy"] == "per_channel_ema_then_global_max"

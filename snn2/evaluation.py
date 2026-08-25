@@ -95,6 +95,11 @@ def build_evaluation_controller(
             common_clip_enabled=(
                 training_common_clip_enabled(cfg) if aware else False
             ),
+            phase_surrogate_slope=(
+                float(cfg["phase"]["surrogate_slope"])
+                if mode == "phase"
+                else None
+            ),
         )
         return controller, 1
 

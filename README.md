@@ -43,7 +43,7 @@ Aware ANN-training bundle 为局部静态 replacement 保留 `clip_state.pt`，�
 
 其中 GIF 内部量化使用的整数范围 clamp 属于 GIF 自身算法，不属于 ANN-aware training 中的 common Clip。
 
-Prefix K/V 在 ANN-aware replacement 与 SNN deployment runtime 中都经过 Site 3/4 neuron；calibration statistics 仍排除 Prefix positions。Phase `surrogate_slope` 接受正有限值，phase-aware run 按 slope 隔离，aware ANN-training calibration 则由同一 slope 的 phase-aware/gif-aware 共享、在不同 slope 间隔离；Phase `tau` 按 SpikingLLM 的逐 forward、逐 channel absolute-max EMA（factor `0.99`）校准且 accumulator 固定为 FP32。Aware ANN-training calibration manifest 明确允许 `aware_modes_only` conversion reuse。Temporal deployment 对全部 Softmax（含 Prefix columns）执行 Site 5，embedding 均匀分配为 `x/T`，且仅 Phase deployment 在最终 RMSNorm 后执行独立的 global Phase neuron。
+Prefix K/V 在 ANN-aware replacement 与 SNN deployment runtime 中都经过 Site 3/4 neuron；calibration statistics 仍排除 Prefix positions。Phase `surrogate_slope` 接受正有限值，phase-aware run 按 slope 隔离，但 shared ANN-training calibration 与 `phase_state.pt` 不按 slope 分叉；训练和 final ANN 评估由 controller 从当前配置注入实际 slope。Phase `tau` 按 SpikingLLM 的逐 forward、逐 channel absolute-max EMA（factor `0.99`）校准且 accumulator 固定为 FP32。Aware ANN-training calibration manifest 明确允许 `aware_modes_only` conversion reuse。Temporal deployment 对全部 Softmax（含 Prefix columns）执行 Site 5，embedding 均匀分配为 `x/T`，且仅 Phase deployment 在最终 RMSNorm 后执行独立的 global Phase neuron。
 
 Phase τ 使用 SpikingLLM-aligned channel view：attention heads 只在 Phase statistics 中按参考实现 reshape，每个 channel 完成 FP32 EMA 后再取 global max 得到 scalar τ；该 statistical view 不改变 generic GIF/MTN/Clip statistics 或 runtime neuron tensor layout。
 

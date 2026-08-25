@@ -58,7 +58,6 @@ def test_phase_training_output_is_static():
             "T": 4,
             "base": 2.0,
             "group_size": -1,
-            "surrogate_slope": 1.0,
             "max_spikes": 2,
             "tau": torch.tensor([2.0]),
             "v0": torch.tensor([0.0625]),
@@ -69,7 +68,8 @@ def test_phase_training_output_is_static():
             "tau_reduction_policy": "per_channel_ema_then_global_max",
             "phase_statistical_view": "spikingllm_identity_input_layout",
             "phase_statistical_view_version": 1,
-        }
+        },
+        surrogate_slope=1.0,
     )
     x = torch.randn(2, 5, 16, requires_grad=True)
     output = module(x)
@@ -177,7 +177,7 @@ def test_non_gif_neurons_reject_format_v1(kind):
     if kind == "phase":
         state = {
             **_header("phase"), "T": 2, "base": 2.0, "group_size": -1,
-            "surrogate_slope": 1.0, "tau": torch.tensor([1.0]),
+            "tau": torch.tensor([1.0]),
             "v0": torch.tensor([0.125]),
             "tau_calibration": PHASE_TAU_CALIBRATION,
             "tau_ema_factor": PHASE_TAU_EMA_FACTOR,

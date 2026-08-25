@@ -51,6 +51,7 @@ def _controller(cfg, layout, graph: str, *, bypass_final_norm_phase: bool):
             mode="phase",
             site_root=layout.ann_training_site_dir,
             common_clip_enabled=False,
+            phase_surrogate_slope=float(cfg["phase"]["surrogate_slope"]),
         )
     elif graph == "phase_temporal":
         controller = SiteController(mode="identity", site_root=layout.ann_training_site_dir)
