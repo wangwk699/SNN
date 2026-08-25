@@ -69,7 +69,7 @@ experiments:
       surrogate_slope: 1.0
       max_spikes: 4
       timestep_indexing: t_0_to_T_minus_1
-      threshold_rule: tau_times_2_pow_minus_t_plus_1
+      threshold_rule: "tau * base ** (-(t + 1))"
     mtn:
       T: 4
       K: 6
@@ -230,7 +230,7 @@ experiments:
       surrogate_slope: 1.0
       max_spikes: 4
       timestep_indexing: t_0_to_T_minus_1
-      threshold_rule: tau_times_2_pow_minus_t_plus_1
+      threshold_rule: "tau * base ** (-(t + 1))"
     mtn:
       T: 4
       K: 6
@@ -393,7 +393,7 @@ experiments:
       surrogate_slope: 1.0
       max_spikes: 4
       timestep_indexing: t_0_to_T_minus_1
-      threshold_rule: tau_times_2_pow_minus_t_plus_1
+      threshold_rule: "tau * base ** (-(t + 1))"
     mtn:
       T: 4
       K: 6
