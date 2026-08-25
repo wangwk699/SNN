@@ -32,9 +32,12 @@ def ann_run_variant_dirname(
     return result
 
 
-def surrogate_slope_dirname(value: Any) -> str:
-    """Return the Phase-aware run directory for a fixed surrogate slope."""
-    return f"surrogate_slope_{float(value)}"
+def phase_training_dirname(*, surrogate_slope: Any, warmup_ratio: Any) -> str:
+    """Return the Phase-aware run directory for its training hyperparameters."""
+    return (
+        f"surrogate_slope_{float(surrogate_slope)}"
+        f"_warmup_ratio_{float(warmup_ratio)}"
+    )
 
 
 def safe_name(value: str) -> str:
@@ -83,8 +86,9 @@ class ArtifactLayout:
             / run_variant
         )
         if exp["ann_mode"] == "phase_aware":
-            run_root = run_root / surrogate_slope_dirname(
-                cfg["phase"]["surrogate_slope"]
+            run_root = run_root / phase_training_dirname(
+                surrogate_slope=cfg["phase"]["surrogate_slope"],
+                warmup_ratio=cfg["training"]["warmup_ratio"],
             )
         self.root = run_root / seed
         # 原始 Base 模型独立目录：

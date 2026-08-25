@@ -465,11 +465,13 @@ def main():
         #   <model>/base/seed42/evaluation/lm_harness/
         #
         # Fine-tuned ANN:
-        #   <model>/<ann_mode>/<lr>/<run_variant>/[surrogate_slope_<value>/]seed42/
+        #   <model>/<ann_mode>/<lr>/<run_variant>/
+        #       [surrogate_slope_<value>_warmup_ratio_<value>/]seed42/
         #       ann/evaluation/lm_harness/
         #
         # SNN:
-        #   <model>/<ann_mode>/<lr>/<run_variant>/[surrogate_slope_<value>/]seed42/
+        #   <model>/<ann_mode>/<lr>/<run_variant>/
+        #       [surrogate_slope_<value>_warmup_ratio_<value>/]seed42/
         #       snn/<neuron>/evaluation/lm_harness/
         # --------------------------------------------------
         if args.base:

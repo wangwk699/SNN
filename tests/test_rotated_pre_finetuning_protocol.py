@@ -28,7 +28,7 @@ def _cfg(mode="unaware", learning_rate=5e-6):
             "output_root": "artifacts",
             "ann_mode": mode,
         },
-        "training": {"learning_rate": learning_rate},
+        "training": {"learning_rate": learning_rate, "warmup_ratio": 0.03},
         "rotation": {"enabled": mode != "vanilla"},
         "prefix": {"enabled": mode != "vanilla"},
         "phase": {"surrogate_slope": 1.0},

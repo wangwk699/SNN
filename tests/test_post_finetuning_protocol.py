@@ -23,7 +23,7 @@ def _cfg(mode, root="artifacts", common_clip_enabled=True):
             "id": "e", "task": "t", "model_name": "m", "seed": 42,
             "output_root": str(root), "ann_mode": mode,
         },
-        "training": {"learning_rate": 1e-6},
+        "training": {"learning_rate": 1e-6, "warmup_ratio": 0.03},
         "rotation": {"enabled": mode != "vanilla"},
         "prefix": {"enabled": mode != "vanilla"},
         "phase": {"surrogate_slope": 1.0},
@@ -80,18 +80,19 @@ def test_aware_run_root_records_common_clip_variant(mode, enabled):
     )
     assert variant_dir.name == expected
     if mode == "phase_aware":
-        assert layout.root.parent.name == "surrogate_slope_1.0"
+        assert layout.root.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
 
 
-def test_phase_aware_run_root_records_surrogate_slope():
+def test_phase_aware_run_root_records_slope_and_warmup_ratio():
     first_cfg = _cfg("phase_aware")
     second_cfg = _cfg("phase_aware")
     second_cfg["phase"]["surrogate_slope"] = 0.5
+    second_cfg["training"]["warmup_ratio"] = 0.1
     first = ArtifactLayout(first_cfg)
     second = ArtifactLayout(second_cfg)
 
-    assert first.root.parent.name == "surrogate_slope_1.0"
-    assert second.root.parent.name == "surrogate_slope_0.5"
+    assert first.root.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
+    assert second.root.parent.name == "surrogate_slope_0.5_warmup_ratio_0.1"
     assert first.root != second.root
     assert first.ann_training_prefix_dir == second.ann_training_prefix_dir
     assert first.ann_training_calibration_dir == second.ann_training_calibration_dir
