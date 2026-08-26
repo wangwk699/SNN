@@ -35,25 +35,29 @@ def test_activation_neuron_operator_count_rejects_unknown_neuron():
 
 @pytest.mark.parametrize("mode", ["vanilla", "unaware"])
 def test_identity_final_ann_evaluation_has_no_calibration_metadata(mode):
-    cfg = {"experiment": {"ann_mode": mode}}
+    cfg = {"experiment": {"ann_mode": mode}, "calibration": {"group_size": -1}}
     layout = SimpleNamespace(conversion_site_dir="conversion", ann_training_site_dir="training")
     assert evaluation_calibration_metadata(cfg, layout, neuron="ann") == {
         "calibration_source_stage": None,
         "reused_ann_training_artifacts": False,
         "post_finetuning_recalibration": False,
         "calibration_root": None,
+        "calibration_group_size": -1,
+        "calibration_grouping_policy": "per_head_within_head_groups_v1",
     }
 
 
 @pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
 def test_aware_final_ann_evaluation_uses_training_calibration_metadata(mode):
-    cfg = {"experiment": {"ann_mode": mode}}
+    cfg = {"experiment": {"ann_mode": mode}, "calibration": {"group_size": -1}}
     layout = SimpleNamespace(conversion_site_dir="conversion", ann_training_site_dir="training")
     assert evaluation_calibration_metadata(cfg, layout, neuron="ann") == {
         "calibration_source_stage": "ann_training",
         "reused_ann_training_artifacts": True,
         "post_finetuning_recalibration": False,
         "calibration_root": "training",
+        "calibration_group_size": -1,
+        "calibration_grouping_policy": "per_head_within_head_groups_v1",
     }
 
 
@@ -245,6 +249,7 @@ def _evaluation_cfg(ann_mode, clip=False):
         "experiment": {"ann_mode": ann_mode},
         "phase": {"surrogate_slope": 2.0},
         "replacement": {"common_clip_enabled": clip},
+        "calibration": {"group_size": -1},
     }
 
 
@@ -255,7 +260,7 @@ def _evaluation_cfg(ann_mode, clip=False):
      ("gif_aware", False, "gif"), ("gif_aware", True, "gif")],
 )
 def test_build_final_ann_controller(monkeypatch, ann_mode, clip, expected_mode):
-    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {})
+    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "per_head_within_head_groups_v1"}})
     layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
     controller, steps = build_evaluation_controller(
         _evaluation_cfg(ann_mode, clip), layout, neuron="ann"
@@ -305,7 +310,7 @@ def test_all_ann_modes_use_temporal_snn_controller(monkeypatch, ann_mode, neuron
      ("phase_aware", "mtn", "temporal_mtn_snn")],
 )
 def test_evaluation_forward_metadata(monkeypatch, ann_mode, neuron, kind):
-    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {})
+    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "per_head_within_head_groups_v1"}})
     monkeypatch.setattr("snn2.controller.validate_site_state_bundle", lambda *_a, **_k: {"temporal_steps": {"phase": 4, "gif": 2, "mtn": 4}})
     cfg = _evaluation_cfg(ann_mode, True)
     layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
@@ -318,3 +323,6 @@ def test_evaluation_forward_metadata(monkeypatch, ann_mode, neuron, kind):
     assert metadata["evaluation_common_clip_applied"] is (
         neuron == "ann" and ann_mode in {"phase_aware", "gif_aware"}
     )
+    assert metadata["calibration_group_size"] == -1
+    assert metadata["calibration_grouping_policy"] == "per_head_within_head_groups_v1"
+    assert metadata["softmax_site5_clip_applied"] is False

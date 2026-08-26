@@ -9,7 +9,6 @@ import torch.nn.functional as F
 
 from .controller import SiteController
 from .hadamard import HadamardSpec, random_hadamard
-from .phase_statistics import phase_statistical_view
 from .rotation import get_model_parts, load_specs
 from .temporal_model import deployment_attention_forward
 from .temporal_ops import (
@@ -83,33 +82,14 @@ def snn2_eager_attention_forward(
             softcap=kwargs.get("softcap"),
         )
 
-    query = controller.apply(
-        layer_index,
-        2,
-        query,
-        phase_activation=(
-            phase_statistical_view(2, query) if controller.mode == "collect" else None
-        ),
-    )
+    query = controller.apply(layer_index, 2, query)
 
     groups = int(getattr(module, "num_key_value_groups", 1))
     if controller.mode == "collect":
         statistics_key = key[..., past_length:, :] if past_length else key
         statistics_value = value[..., past_length:, :] if past_length else value
-        phase_key = repeat_kv(statistics_key, groups)
-        phase_value = repeat_kv(statistics_value, groups)
-        controller.record_activation(
-            layer_index,
-            3,
-            statistics_key,
-            phase_activation=phase_statistical_view(3, phase_key),
-        )
-        controller.record_activation(
-            layer_index,
-            4,
-            statistics_value,
-            phase_activation=phase_statistical_view(4, phase_value),
-        )
+        controller.record_activation(layer_index, 3, statistics_key)
+        controller.record_activation(layer_index, 4, statistics_value)
     else:
         key = controller.apply(layer_index, 3, key)
         value = controller.apply(layer_index, 4, value)
@@ -122,6 +102,14 @@ def snn2_eager_attention_forward(
         key_score = key * torch.matmul(qk.transpose(2, 3), query)
         if past_length:
             key_score = key_score[..., past_length:, :]
+        if groups > 1:
+            key_score = key_score.reshape(
+                key_score.shape[0],
+                key_score.shape[1] // groups,
+                groups,
+                key_score.shape[2],
+                key_score.shape[3],
+            ).sum(dim=2)
         controller.record_saliency(layer_index, 3, key_score)
     scale = float(scaling if scaling is not None else getattr(module, "scaling", 1.0 / math.sqrt(query.shape[-1])))
     weights = qk * scale
@@ -137,16 +125,11 @@ def snn2_eager_attention_forward(
         f"layer_{layer_index:03d}/attn/softmax_before_site5",
         weights,
     )
-    weights = controller.apply(
-        layer_index,
-        5,
-        weights,
-        phase_activation=(
-            phase_statistical_view(5, weights)
-            if controller.mode == "collect"
-            else None
-        ),
-    )
+    if controller.mode == "collect":
+        statistics_weights = weights[..., past_length:] if past_length else weights
+        controller.record_activation(layer_index, 5, statistics_weights)
+    else:
+        weights = controller.apply(layer_index, 5, weights)
     weights = F.dropout(weights, p=dropout, training=module.training)
     output = torch.matmul(weights, value)
     _record_regression(
@@ -156,33 +139,16 @@ def snn2_eager_attention_forward(
         value_score = value * torch.matmul(weights.transpose(2, 3), output)
         if past_length:
             value_score = value_score[..., past_length:, :]
+        if groups > 1:
+            value_score = value_score.reshape(
+                value_score.shape[0],
+                value_score.shape[1] // groups,
+                groups,
+                value_score.shape[2],
+                value_score.shape[3],
+            ).sum(dim=2)
         controller.record_saliency(layer_index, 4, value_score)
-        position_score = torch.zeros(
-            weights.shape[-1], device=weights.device, dtype=torch.float32
-        )
-        chunk_size = 64
-        for start in range(0, weights.shape[-2], chunk_size):
-            stop = min(start + chunk_size, weights.shape[-2])
-            back = torch.matmul(output[:, :, start:stop], value.transpose(2, 3))
-            position_score.add_(
-                (weights[:, :, start:stop].float() * back.float()).sum(dim=(0, 1, 2))
-            )
-        controller.record_saliency_reduced(
-            layer_index,
-            5,
-            position_score,
-            weights.shape[0] * weights.shape[1] * weights.shape[2],
-        )
-    output = controller.apply(
-        layer_index,
-        6,
-        output,
-        phase_activation=(
-            phase_statistical_view(6, output)
-            if controller.mode == "collect"
-            else None
-        ),
-    )
+    output = controller.apply(layer_index, 6, output)
     return output.transpose(1, 2).contiguous(), weights
 
 

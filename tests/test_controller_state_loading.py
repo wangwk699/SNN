@@ -11,6 +11,11 @@ from snn2.temporal_ops import (
     SITE_STATE_FORMAT_VERSION,
     TEMPORAL_IMPLEMENTATION_VERSION,
     temporal_policy_metadata,
+    STATISTICS_FORMAT_VERSION,
+)
+from snn2.phase_statistics import (
+    PHASE_TAU_ACCUMULATOR_DTYPE, PHASE_TAU_CHANNEL_POLICY,
+    PHASE_TAU_REDUCTION_POLICY,
 )
 
 
@@ -22,37 +27,56 @@ def _header(kind):
     }
 
 
-def _statistics():
+def _statistics(site_index=1):
+    if site_index in {2, 3, 4, 6}:
+        shape, layout, heads, width, channels = (1, 3), "attention_head", 1, 3, 3
+    elif site_index == 5:
+        shape, layout, heads, width, channels = (1,), "attention_softmax", 1, None, 1
+    else:
+        shape, layout, heads, width, channels = (3,), "last_dim", None, None, 3
+    saliency_shape = (0,) if site_index == 5 else shape
     return {
-        "channels": 3,
-        "value_min": torch.full((3,), -1.0),
-        "value_max": torch.full((3,), 1.0),
-        "saliency_row_count": torch.ones(3, dtype=torch.long),
-        "saliency_sum": torch.arange(3, dtype=torch.float64),
-        "phase_ema_abs_max": torch.ones(3),
-        "phase_ema_updates": torch.ones(3, dtype=torch.long),
-        "phase_tau_statistic": PHASE_TAU_CALIBRATION,
+        "format_version": STATISTICS_FORMAT_VERSION, "site_index": site_index,
+        "layout_kind": layout, "num_heads": heads, "channels_per_head": width,
+        "channels": channels, "value_min": torch.full(shape, -1.0),
+        "value_max": torch.full(shape, 1.0),
+        "saliency_row_count": torch.ones(saliency_shape, dtype=torch.long),
+        "saliency_sum": torch.zeros(saliency_shape, dtype=torch.float64),
+        "phase_ema_abs_max": torch.ones(shape), "phase_ema_updates": torch.ones(shape, dtype=torch.long),
+        "phase_tau_calibration": PHASE_TAU_CALIBRATION,
         "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
-        "phase_statistical_view": "spikingllm_identity_input_layout",
-        "phase_statistical_view_version": 1,
+        "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
+        "phase_tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
+        "phase_tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
     }
 
 
-def _write_bundle(root):
+def _write_bundle(root, *, include_clip=False):
     for index in SITE_IDS:
         directory = root / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
         directory.mkdir(parents=True)
-        torch.save(_statistics(), directory / "statistics.pt")
+        torch.save(_statistics(index), directory / "statistics.pt")
     global_directory = root / "_global" / "final_rmsnorm"
     global_directory.mkdir(parents=True)
-    torch.save(_statistics(), global_directory / "statistics.pt")
+    torch.save(_statistics(None), global_directory / "statistics.pt")
     cfg = {
         "calibration": {"group_size": -1, "expected_sites_per_layer": 10},
         "phase": {"T": 2, "base": 2.0, "surrogate_slope": 1.0, "max_spikes": 2},
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
         "mtn": {"T": 2, "K": 2, "threshold_factor": 0.75},
     }
-    materialize_calibration_states(root, cfg, include_clip=False, expected_num_hidden_layers=1)
+    materialize_calibration_states(root, cfg, include_clip=include_clip, expected_num_hidden_layers=1)
+
+
+def test_site5_common_clip_uses_q16_gif_without_loading_clipper(tmp_path):
+    _write_bundle(tmp_path, include_clip=True)
+    site5 = tmp_path / "layer_000" / f"site_05_{SITE_NAMES[5]}"
+    assert not (site5 / "clip_state.pt").exists()
+    controller = SiteController(mode="gif", site_root=tmp_path, common_clip_enabled=True)
+    x = torch.rand(1, 1, 2, 3)
+    output = controller.apply(0, 5, x)
+    torch.testing.assert_close(output, torch.round(x * 65535) / 65535)
+    assert set(controller._modules[site_key(0, 5)]) == {"gif"}
 
 
 
@@ -67,17 +91,17 @@ def _phase_state():
         **_header("phase"),
         "T": 2,
         "base": 2.0,
-        "group_size": -1,
+        "parameter_layout": "last_dim_grouped", "configured_group_size": -1,
+        "group_size": 3, "num_heads": None, "channels_per_head": 3,
+        "groups_per_head": 1,
         "max_spikes": 2,
         "tau": torch.tensor([1.0]),
         "v0": torch.tensor([0.125]),
         "tau_calibration": PHASE_TAU_CALIBRATION,
         "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
         "tau_accumulator_dtype": "float32",
-        "tau_channel_policy": "spikingllm_flatten_attention_heads_before_channel_ema",
-        "tau_reduction_policy": "per_channel_ema_then_global_max",
-        "phase_statistical_view": "spikingllm_identity_input_layout",
-        "phase_statistical_view_version": 1,
+        "tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
+        "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
     }
 
 
@@ -94,7 +118,10 @@ def _gif_state():
         "per_step_qmin": 0,
         "per_step_qmax": 15,
         "integer_decomposition": GIF_INTEGER_DECOMPOSITION,
-        "group_size": -1,
+        "gif_policy": "ordinary_grouped_qmax30",
+        "parameter_layout": "last_dim_grouped", "configured_group_size": -1,
+        "group_size": 3, "num_heads": None, "channels_per_head": 3,
+        "groups_per_head": 1,
         "low_scale": torch.tensor([0.1]),
         "low_zero": torch.tensor([7.0]),
         "high_scale": torch.tensor([0.05]),
@@ -108,7 +135,9 @@ def _mtn_state():
         **_header("mtn"),
         "T": 2,
         "K": 2,
-        "group_size": -1,
+        "parameter_layout": "last_dim_grouped", "configured_group_size": -1,
+        "group_size": 3, "num_heads": None, "channels_per_head": 3,
+        "groups_per_head": 1,
         "threshold_factor": 0.75,
         "base_scale": torch.tensor([1.0]),
     }
@@ -120,7 +149,9 @@ def _clip_state():
         "gif_high_qmax": 30,
         "gif_per_step_qmax": 15,
         "gif_integer_decomposition": GIF_INTEGER_DECOMPOSITION,
-        "group_size": -1,
+        "parameter_layout": "last_dim_grouped", "configured_group_size": -1,
+        "group_size": 3, "num_heads": None, "channels_per_head": 3,
+        "groups_per_head": 1,
         "lower": torch.tensor([-1.0]),
         "upper": torch.tensor([1.0]),
         "gif_low_range": (torch.tensor([-1.0]), torch.tensor([1.0])),
@@ -198,7 +229,7 @@ def test_ann_phase_uses_runtime_surrogate_slope_override(tmp_path):
         phase_surrogate_slope=2.0,
     )
 
-    controller.apply(0, 1, torch.tensor([[0.5]]))
+    controller.apply(0, 1, torch.tensor([[0.5, 0.5, 0.5]]))
 
     module = controller._modules[site_key(0, 1)]["phase"]
     assert module.slope == 2.0

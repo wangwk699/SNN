@@ -1,27 +1,27 @@
 # AGENTS.md
 
-1. Clip 只用于 ANN 的 `phase_aware` / `gif_aware` 微调：ANN-training calibration 可以生成并使用 `clip_state.pt`；Post-finetuning conversion calibration、SNN conversion、Phase/GIF/MTN SNN deployment 与 SNN evaluation 均不得生成、加载或执行任何 Clip。 `phase_aware`/`gif_aware` 的 SNN conversion 可以复用含 `clip_state.pt` 的 ANN-training calibration bundle，但该文件只因 ANN-aware training 而存在，SNN controller 仍只能读取选定 neuron state。
+1. `calibration.group_size` 必须为 `-1` 或正整数，并同时控制普通 Site 与 final RMSNorm 的 Phase/GIF/MTN/Clip grouping；改变 G 后必须重新 calibration，禁止复用另一 G 的 statistics/state/manifest/conversion/SNN 工件。
 
-2. `代码结构总结.md` 只允许保留 `2. 目录结构`，用于记录当前仓库目录结构；每个文件后只用一句话描述该文件实现的功能，任何代码修改导致目录或文件功能变化时都必须同步更新该文件。
+2. Site 2/3/4/6 必须保留原生 `[B,H,L,D]` layout，只允许在每个 head 的 `D` 内 grouping，禁止 flatten heads 或重新引入跨 head global τ；其中 Site 2/6 使用 query heads，GQA/MQA Site 3/4 使用 `repeat_kv()` 前的原生 KV heads，repeat 后 saliency 必须按 query groups 求和回 KV heads。
 
-3. ANN 与 SNN 必须根据模型前向传播是否按真实 SNN 时间动态运行来区分：只有时间维度 `T` 在层间持续传播、模型以真实脉冲动态执行前向并据此微调时，才属于 SNN 微调。`phase_aware` 与 `gif_aware` 微调只在各 activation replacement site 内进行局部 SNN 动态模拟并立即聚合为静态 tensor，用于模拟转换误差；时间维度 `T` 不得在层间传播，因此二者仍属于 ANN 微调，不得称为完整 SNN 微调，也不得在其训练路径中引入跨层 temporal deployment。
+3. Site 5 忽略全局 G：Phase `tau` 与 MTN `base_scale` 固定为 `[H,1]`，GIF 固定执行 `[0,1]` Q16 fake quantization，temporal GIF 使用 quantized cumulative difference；Site 5 永远不得生成、加载或执行 Clip。
 
-4. Prefix K/V 在实际 ANN-aware replacement 与 SNN deployment 中必须经过 Site 3/4 neuron；calibration statistic 可排除 Prefix positions，但不得因此让 Prefix runtime bypass neuron。
+4. ANN-training calibration 对 Site 1/2/3/4/6/7/8/9/10 全部生成 `clip_state.pt`，Site 5 是永久例外；`replacement.common_clip_enabled` 只控制 phase-aware/gif-aware ANN forward 是否在 clip-eligible site 执行 Clip，不得改变 shared calibration 内容。Post-finetuning conversion calibration 与所有 SNN deployment 必须完全无 Clip。
 
-5. Phase `surrogate_slope` 允许使用任意正有限值进行对比实验，且仅作为 phase-aware ANN 训练/final ANN 评估的运行时反向传播参数；`phase_aware` run root 必须包含 `surrogate_slope_<value>_warmup_ratio_<value>`，使训练和评估工件同时按 slope 与 `training.warmup_ratio` 隔离。共享 ANN-training calibration 路径和 `phase_state.pt` 均不得包含这两个训练参数。任何含 `surrogate_slope` 的旧 Phase state 必须拒绝加载；Phase ANN controller 必须从当前配置显式接收 slope，不得使用默认值。无代理梯度的 SNN deployment 直接执行硬阈值前向。Phase `tau` EMA accumulator 固定 FP32。
+5. Prefix K/V 在实际 ANN-aware replacement 与 SNN deployment 中必须经过 Site 3/4 neuron，完整 Softmax（含 Prefix key columns）必须经过 Site 5；calibration statistics 可以排除 Prefix positions/columns，但不得让 Prefix runtime bypass Site 3/4/5。
 
-6. Phase calibration statistics 与 generic site statistics 必须解耦。Site 2/3/4/5/6 的 Phase EMA 必须使用 SpikingLLM-aligned statistical view；不得为了 Phase τ 对齐而改变 GIF/MTN/Clip statistics 或 runtime neuron layout。
+6. Phase calibration 必须在原生 site layout 上逐 channel/head-channel 执行 FP32、factor `0.99` 的有序 EMA，再只在 group 内取 max；calibration 固定 `batch_size=1` 且单进程。final RMSNorm Phase 同样受 G 控制。
 
-7. ANN-training calibration 对 `phase_aware` / `gif_aware` 始终生成 `clip_state.pt`；`replacement.common_clip_enabled` 只控制 ANN training forward 是否应用 Clip，不得改变 shared calibration 内容。
+7. Phase `surrogate_slope` 允许任意正有限值，且仅作为 phase-aware ANN training/final ANN evaluation 的运行时反向传播参数；Phase state 不得保存 slope，ANN controller 必须从当前 YAML 显式接收，SNN deployment 使用硬阈值。phase-aware run root 必须包含 `surrogate_slope_<value>_warmup_ratio_<value>`。
 
-8. aware run root 必须包含 `common_clip_enabled_true` 或 `common_clip_enabled_false`；shared Pre-finetuning Prefix 和 ANN-training calibration 不得因为该开关拆成两套。
+8. G-dependent calibration、aware ANN run、SNN conversion/evaluation 路径必须包含 `calibration_group_size_<G>`，metadata 还必须显式保存 G 与 grouping policy；vanilla/unaware identity ANN checkpoint 不因 G 分叉，但其 post-finetuning calibration 和 SNN 工件必须分叉。Rotation、数据与 Prefix 等 G-independent shared 工件不得复制。
 
-9. Final ANN evaluation (`--neuron ann`) 必须复现对应 ANN training 的 static activation semantics：`vanilla`/`unaware` 为 `identity(x)`，`phase_aware` 为 `PhaseSurrogate.forward()`，`gif_aware` 为当前 `StaticGIF.forward()`。
+9. `phase_aware` 与 `gif_aware` 仍是 site-local static replacement 的 ANN fine-tuning，时间维度不跨层传播；只有 `deploy_phase/gif/mtn` 属于 full-temporal SNN。`--neuron ann` 按 ann_mode 恢复 identity/Phase/GIF static semantics，`--neuron phase|gif|mtn` 始终使用 temporal deployment。
 
-10. `--neuron ann` 只表示 non-temporal ANN execution，不等价于 identity；`--neuron phase|gif|mtn` 在正式 evaluation 中始终表示 full-temporal `deploy_*` SNN deployment。
+10. Final aware ANN evaluation 必须读取训练时同一 G 的 ANN-training states、镜像 common Clip 开关并验证 frozen provenance；aware conversion 可以复用含 9-site Clip 的 bundle，但 SNN controller 只能加载选定 neuron state。
 
-11. `phase_aware`/`gif_aware` final ANN evaluation 必须读取对应 ANN training 的同一 calibration states、验证训练 provenance，并镜像 `replacement.common_clip_enabled`；不得改用 Post-finetuning conversion calibration。
+11. statistics/state/manifest/conversion/temporal schema 必须严格拒绝旧版本，不得保留旧 statistical-view、scalar τ、mask padding/truncation或其他兼容 fallback。
 
-12. 任何 `ann_mode` 进入 SNN evaluation 后都必须使用选定 neuron 的 `deploy_*` temporal path；不得用 static surrogate 代替 Temporal SNN neuron。
+12. Base baseline 与 rotated-pre-finetuning ANN diagnostic 始终保持 identity activation semantics。
 
-13. Base baseline 与 rotated-pre-finetuning ANN diagnostic 保持 identity activation semantics；mode-aware static surrogate 只作用于 final ANN checkpoint evaluation。
+13. `代码结构总结.md` 只允许保留 `2. 目录结构`；每个文件后只用一句话描述功能，任何职责变化都必须同步更新。

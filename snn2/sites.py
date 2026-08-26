@@ -16,6 +16,21 @@ SITE_COORDINATES = {
 }
 SITE_IDS = tuple(sorted(SITE_NAMES))
 SITE_COUNT = len(SITE_IDS)
+ATTENTION_HEAD_GROUPED_SITE_IDS = frozenset({2, 3, 4, 6})
+SOFTMAX_SITE_ID = 5
+CLIP_ELIGIBLE_SITE_IDS = frozenset({1, 2, 3, 4, 6, 7, 8, 9, 10})
+
+
+def is_attention_head_grouped_site(site_index: int) -> bool:
+    return int(site_index) in ATTENTION_HEAD_GROUPED_SITE_IDS
+
+
+def is_softmax_site(site_index: int) -> bool:
+    return int(site_index) == SOFTMAX_SITE_ID
+
+
+def site_supports_clip(site_index: int) -> bool:
+    return int(site_index) in CLIP_ELIGIBLE_SITE_IDS
 
 
 def site_key(layer_index: int, site_index: int) -> str:

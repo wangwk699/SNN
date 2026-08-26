@@ -133,6 +133,13 @@ def validate_config(cfg: dict[str, Any]) -> None:
         )
     if bool(cfg["calibration"].get("with_replacement", False)):
         raise ValueError("Calibration sampling must be done without replacement")
+    group_size = cfg["calibration"].get("group_size")
+    if (
+        not isinstance(group_size, int)
+        or isinstance(group_size, bool)
+        or (group_size != -1 and group_size <= 0)
+    ):
+        raise ValueError("calibration.group_size must be -1 or a positive integer")
     if int(cfg["data"]["max_seq_length"]) != 2048:
         raise ValueError("Main experiments require max_seq_length=2048")
     try:

@@ -157,10 +157,10 @@ def test_temporal_linear_bias_is_kept_only_at_timestep_zero():
 
 
 def test_artifact_schema_versions_do_not_change_temporal_arithmetic():
-    assert CALIBRATION_MANIFEST_FORMAT_VERSION == 6
-    assert CONVERSION_METADATA_FORMAT_VERSION == 7
-    assert SITE_STATE_FORMAT_VERSION == 5
-    assert TEMPORAL_IMPLEMENTATION_VERSION == 3
+    assert CALIBRATION_MANIFEST_FORMAT_VERSION == 7
+    assert CONVERSION_METADATA_FORMAT_VERSION == 8
+    assert SITE_STATE_FORMAT_VERSION == 6
+    assert TEMPORAL_IMPLEMENTATION_VERSION == 4
 
 
 def test_temporal_rmsnorm_matches_qwen_bf16_cast_order_at_first_frame():

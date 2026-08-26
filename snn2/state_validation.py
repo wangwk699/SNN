@@ -7,20 +7,25 @@ from typing import Any
 import torch
 
 from .artifacts import sha256_file
-from .neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, StaticGIF
-from .sites import SITE_IDS, validate_site_topology
+from .neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, gif_module_from_state
+from .sites import SITE_IDS, is_softmax_site, site_supports_clip, validate_site_topology
 from .temporal_ops import (
     CALIBRATION_MANIFEST_FORMAT_VERSION,
     GIF_HIGH_QMAX,
     GIF_LOCAL_STEPS,
     GIF_STEP_QMAX,
+    CALIBRATION_GROUPING_POLICY,
+    SOFTMAX_SITE5_CLIP_POLICY,
+    SOFTMAX_SITE5_GIF_POLICY,
+    STATISTICS_FORMAT_VERSION,
+    TEMPORAL_IMPLEMENTATION_VERSION,
     validate_temporal_policy,
 )
 
 
 _FACTORIES = {
     "phase": PhaseSurrogate,
-    "gif": StaticGIF,
+    "gif": gif_module_from_state,
     "mtn": MultiThresholdNeuron,
     "clip": Clipper,
 }
@@ -34,11 +39,22 @@ def load_calibration_manifest(site_root: str | Path) -> dict[str, Any]:
     if manifest.get("format_version") != CALIBRATION_MANIFEST_FORMAT_VERSION:
         raise ValueError(
             "Incompatible legacy calibration manifest schema; calibration manifest "
-            f"v{CALIBRATION_MANIFEST_FORMAT_VERSION} with temporal implementation v3 is required. "
+            f"v{CALIBRATION_MANIFEST_FORMAT_VERSION} with temporal implementation "
+            f"v{TEMPORAL_IMPLEMENTATION_VERSION} is required. "
             "Re-materialize calibration states and conversion descriptors before "
             "SNN evaluation"
         )
     validate_temporal_policy(manifest, context=str(path))
+    expected = {
+        "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
+        "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
+    }
+    mismatched = {key: (value, manifest.get(key)) for key, value in expected.items() if manifest.get(key) != value}
+    group_size = manifest.get("calibration_group_size")
+    if mismatched or not isinstance(group_size, int) or group_size == 0 or group_size < -1:
+        raise ValueError(f"Calibration manifest has invalid grouping provenance: {mismatched}")
     return manifest
 
 
@@ -54,7 +70,7 @@ def validate_site_state_bundle(
     if manifest.get("format_version") != CALIBRATION_MANIFEST_FORMAT_VERSION:
         raise ValueError(
             "Incompatible legacy calibration manifest schema; re-materialize "
-            "calibration states for temporal implementation v3"
+            f"calibration states for temporal implementation v{TEMPORAL_IMPLEMENTATION_VERSION}"
         )
     manifest_layers = manifest.get("expected_num_hidden_layers")
     if (
@@ -88,11 +104,6 @@ def validate_site_state_bundle(
 
     steps_by_neuron: dict[str, set[int]] = {"phase": set(), "gif": set(), "mtn": set()}
     site_count = 0
-    required = ("phase", "gif", "mtn", "clip") if require_clip else (
-        "phase",
-        "gif",
-        "mtn",
-    )
     for layer_name in sorted(site_sets):
         if len(site_sets[layer_name]) != len(SITE_IDS):
             raise RuntimeError(f"{layer_name} does not contain exactly {len(SITE_IDS)} sites")
@@ -109,6 +120,16 @@ def validate_site_state_bundle(
                 state_path = directory / f"{kind}_state.pt"
                 if not state_path.exists() or sha256_file(state_path) != expected_hash:
                     raise ValueError(f"Calibration state hash mismatch: {state_path}")
+            site_index = int(site_manifest.get("site_index", -1))
+            if site_index not in SITE_IDS:
+                raise ValueError(f"Calibration manifest has invalid site_index: {site_key}")
+            clip_path = directory / "clip_state.pt"
+            clip_required = require_clip and site_supports_clip(site_index)
+            if is_softmax_site(site_index) and clip_path.exists():
+                raise ValueError(f"Site 5 permanently forbids Clip state: {clip_path}")
+            if not require_clip and clip_path.exists():
+                raise ValueError(f"clip-free conversion bundle contains stale Clip state: {clip_path}")
+            required = ("phase", "gif", "mtn", "clip") if clip_required else ("phase", "gif", "mtn")
             for kind in required:
                 state_path = directory / f"{kind}_state.pt"
                 if not state_path.exists():
@@ -122,12 +143,15 @@ def validate_site_state_bundle(
                     steps_by_neuron[kind].add(int(module.T))
                 elif kind == "gif":
                     steps_by_neuron[kind].add(int(module.temporal_steps))
-                    if (
-                        state["high_qmax"] != GIF_HIGH_QMAX
-                        or state["temporal_steps"] != GIF_LOCAL_STEPS
-                        or state["per_step_qmax"] != GIF_STEP_QMAX
+                    if is_softmax_site(site_index):
+                        if state.get("gif_policy") != "softmax_fixed_range_u16":
+                            raise ValueError(f"Invalid Site 5 GIF policy at {state_path}")
+                    elif (
+                        state.get("high_qmax") != GIF_HIGH_QMAX
+                        or state.get("temporal_steps") != GIF_LOCAL_STEPS
+                        or state.get("per_step_qmax") != GIF_STEP_QMAX
                     ):
-                        raise ValueError(f"Invalid GIF qmax/chunk policy at {state_path}")
+                        raise ValueError(f"Invalid ordinary GIF qmax/chunk policy at {state_path}")
 
     global_entry = manifest.get("global_states", {}).get("final_rmsnorm")
     if not isinstance(global_entry, dict):

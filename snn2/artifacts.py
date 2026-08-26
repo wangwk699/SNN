@@ -40,6 +40,13 @@ def phase_training_dirname(*, surrogate_slope: Any, warmup_ratio: Any) -> str:
     )
 
 
+def calibration_group_dirname(group_size: Any) -> str:
+    value = int(group_size)
+    if value != -1 and value <= 0:
+        raise ValueError("calibration.group_size must be -1 or a positive integer")
+    return f"calibration_group_size_{value}"
+
+
 def safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
 
@@ -89,6 +96,10 @@ class ArtifactLayout:
             run_root = run_root / phase_training_dirname(
                 surrogate_slope=cfg["phase"]["surrogate_slope"],
                 warmup_ratio=cfg["training"]["warmup_ratio"],
+            )
+        if is_aware_ann_mode(cfg):
+            run_root = run_root / calibration_group_dirname(
+                cfg["calibration"]["group_size"]
             )
         self.root = run_root / seed
         # 原始 Base 模型独立目录：
@@ -178,6 +189,7 @@ class ArtifactLayout:
             / "rotated_prefix"
             / "ann_training_calibration"
             / prefix_enabled_dirname(enabled)
+            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
         )
 
     @property
@@ -186,7 +198,12 @@ class ArtifactLayout:
 
     @property
     def vanilla_analysis_calibration_dir(self) -> Path:
-        return self.shared_model_root / "vanilla_original" / "vanilla_analysis_calibration"
+        return (
+            self.shared_model_root
+            / "vanilla_original"
+            / "vanilla_analysis_calibration"
+            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
+        )
 
     @property
     def vanilla_analysis_site_dir(self) -> Path:
@@ -232,6 +249,7 @@ class ArtifactLayout:
             self.post_finetuning_dir
             / "conversion_calibration"
             / prefix_enabled_dirname(enabled)
+            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
         )
 
     @property
@@ -263,7 +281,12 @@ class ArtifactLayout:
         return self.root / "logs"
 
     def snn_dir(self, neuron: str) -> Path:
-        return self.root / "snn" / neuron
+        return (
+            self.root
+            / "snn"
+            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
+            / neuron
+        )
 
     def snn_conversion_dir(self, neuron: str) -> Path:
         enabled = conversion_prefix_enabled(self._cfg)

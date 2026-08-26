@@ -33,6 +33,7 @@ def _cfg(mode="unaware", learning_rate=5e-6):
         "prefix": {"enabled": mode != "vanilla"},
         "phase": {"surrogate_slope": 1.0},
         "post_finetuning": {"prefix_enabled": True},
+        "calibration": {"group_size": -1},
     }
 
 

@@ -10,9 +10,18 @@ from snn2.calibration import materialize_calibration_states
 from snn2.conversion import validate_conversion_metadata
 from snn2.sites import SITE_IDS, SITE_NAMES
 from snn2.temporal_ops import (
+    CALIBRATION_GROUPING_POLICY,
     CONVERSION_METADATA_FORMAT_VERSION,
     GIF_LOCAL_STEPS,
+    SOFTMAX_SITE5_CLIP_POLICY,
+    SOFTMAX_SITE5_GIF_POLICY,
+    SOFTMAX_SITE5_GROUPING_POLICY,
+    STATISTICS_FORMAT_VERSION,
     temporal_policy_metadata,
+)
+from snn2.phase_statistics import (
+    PHASE_TAU_ACCUMULATOR_DTYPE, PHASE_TAU_CALIBRATION,
+    PHASE_TAU_CHANNEL_POLICY, PHASE_TAU_EMA_FACTOR, PHASE_TAU_REDUCTION_POLICY,
 )
 
 
@@ -33,19 +42,27 @@ class _Layout:
         return self.root / "snn" / neuron / "conversion"
 
 
-def _statistics():
+def _statistics(site_index=1):
+    if site_index in {2, 3, 4, 6}:
+        shape, layout, heads, width, channels = (1, 4), "attention_head", 1, 4, 4
+    elif site_index == 5:
+        shape, layout, heads, width, channels = (1,), "attention_softmax", 1, None, 1
+    else:
+        shape, layout, heads, width, channels = (4,), "last_dim", None, None, 4
+    saliency_shape = (0,) if site_index == 5 else shape
     return {
-        "channels": 4,
-        "value_min": torch.full((4,), -1.0),
-        "value_max": torch.full((4,), 1.0),
-        "saliency_row_count": torch.ones(4, dtype=torch.long),
-        "saliency_sum": torch.arange(4, dtype=torch.float64),
-        "phase_ema_abs_max": torch.ones(4),
-        "phase_ema_updates": torch.ones(4, dtype=torch.long),
-        "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
-        "phase_tau_ema_factor": 0.99,
-        "phase_statistical_view": "spikingllm_identity_input_layout",
-        "phase_statistical_view_version": 1,
+        "format_version": STATISTICS_FORMAT_VERSION, "site_index": site_index,
+        "layout_kind": layout, "num_heads": heads, "channels_per_head": width,
+        "channels": channels, "value_min": torch.full(shape, -1.0),
+        "value_max": torch.full(shape, 1.0),
+        "saliency_row_count": torch.ones(saliency_shape, dtype=torch.long),
+        "saliency_sum": torch.zeros(saliency_shape, dtype=torch.float64),
+        "phase_ema_abs_max": torch.ones(shape), "phase_ema_updates": torch.ones(shape, dtype=torch.long),
+        "phase_tau_calibration": PHASE_TAU_CALIBRATION,
+        "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
+        "phase_tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
+        "phase_tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
     }
 
 
@@ -67,10 +84,10 @@ def _prepare(tmp_path, *, rotation_enabled=False):
     for index in SITE_IDS:
         site = layout.post_finetuning_site_dir / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
         site.mkdir(parents=True)
-        torch.save(_statistics(), site / "statistics.pt")
+        torch.save(_statistics(index), site / "statistics.pt")
     global_directory = layout.post_finetuning_site_dir / "_global" / "final_rmsnorm"
     global_directory.mkdir(parents=True)
-    torch.save(_statistics(), global_directory / "statistics.pt")
+    torch.save(_statistics(None), global_directory / "statistics.pt")
     materialize_calibration_states(
         layout.post_finetuning_site_dir,
         _cfg(rotation_enabled),
@@ -123,6 +140,12 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         "snn_clip_applied": False,
         "source_ann_common_clip_enabled": False,
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
+        "calibration_group_size": -1,
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
+        "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
+        "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
         **temporal_policy_metadata(),
     }
     path = output / "conversion_metadata.json"
@@ -130,7 +153,7 @@ def _prepare(tmp_path, *, rotation_enabled=False):
     return layout, path
 
 
-def test_conversion_metadata_v7_is_accepted(tmp_path):
+def test_conversion_metadata_v8_is_accepted(tmp_path):
     layout, _ = _prepare(tmp_path)
     metadata = validate_conversion_metadata(_cfg(), layout, "gif")
     assert metadata["gif_high_qmax"] == 30

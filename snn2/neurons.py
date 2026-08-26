@@ -7,9 +7,10 @@ import torch
 from torch import nn
 
 from .phase_statistics import (
-    PHASE_STATISTICAL_VIEW,
-    PHASE_STATISTICAL_VIEW_VERSION,
+    PHASE_TAU_ACCUMULATOR_DTYPE,
+    PHASE_TAU_CALIBRATION,
     PHASE_TAU_CHANNEL_POLICY,
+    PHASE_TAU_EMA_FACTOR,
     PHASE_TAU_REDUCTION_POLICY,
 )
 
@@ -50,16 +51,98 @@ def _validate_state_header(state: dict[str, Any], state_kind: str) -> None:
         )
 
 
-def _channel_values(x: torch.Tensor, values: torch.Tensor, group_size: int) -> torch.Tensor:
-    if group_size <= 0 and values.numel() == 1:
-        return values.to(device=x.device, dtype=x.dtype).view(*([1] * x.ndim))
-    if x.shape[-1] % group_size != 0:
-        raise ValueError(f"Last dimension {x.shape[-1]} is not divisible by group_size={group_size}")
-    groups = x.shape[-1] // group_size
-    if values.numel() != groups:
-        raise ValueError(f"Expected {groups} group values, got {values.numel()}")
-    expanded = values.to(device=x.device, dtype=x.dtype).repeat_interleave(group_size)
-    return expanded.view(*([1] * (x.ndim - 1)), x.shape[-1])
+def _state_layout(state: dict[str, Any]) -> dict[str, Any]:
+    required = {
+        "parameter_layout", "configured_group_size", "group_size",
+        "num_heads", "channels_per_head", "groups_per_head",
+    }
+    missing = sorted(required - state.keys())
+    if missing:
+        raise ValueError(f"Grouped state is missing layout metadata: {missing}")
+    configured = int(state["configured_group_size"])
+    if configured != -1 and configured <= 0:
+        raise ValueError("configured_group_size must be -1 or positive")
+    layout = {key: state[key] for key in required}
+    kind = layout["parameter_layout"]
+    group = int(layout["group_size"])
+    groups = int(layout["groups_per_head"])
+    heads = layout["num_heads"]
+    width = layout["channels_per_head"]
+    if kind == "last_dim_grouped":
+        if heads is not None or not isinstance(width, int) or group <= 0 or groups != width // group or width % group:
+            raise ValueError("Invalid last_dim_grouped metadata")
+    elif kind == "attention_head_grouped":
+        if not isinstance(heads, int) or heads <= 0 or not isinstance(width, int) or width <= 0 or group <= 0 or width % group or groups != width // group:
+            raise ValueError("Invalid attention_head_grouped metadata")
+    elif kind == "attention_head_scalar":
+        if not isinstance(heads, int) or heads <= 0 or width is not None or group != -1 or groups != 1:
+            raise ValueError("Invalid attention_head_scalar metadata")
+    else:
+        raise ValueError(f"Unsupported parameter_layout={kind!r}")
+    return layout
+
+
+def _expected_parameter_shape(layout: dict[str, Any]) -> tuple[int, ...]:
+    if layout["parameter_layout"] == "last_dim_grouped":
+        return (int(layout["groups_per_head"]),)
+    return (int(layout["num_heads"]), int(layout["groups_per_head"]))
+
+
+def _require_parameter_shape(name: str, value: torch.Tensor, layout: dict[str, Any]) -> None:
+    expected = _expected_parameter_shape(layout)
+    if not isinstance(value, torch.Tensor) or tuple(value.shape) != expected:
+        actual = None if not isinstance(value, torch.Tensor) else tuple(value.shape)
+        raise ValueError(f"{name} shape must be {expected}, got {actual}")
+
+
+def _parameter_values(x: torch.Tensor, values: torch.Tensor, layout: dict[str, Any]) -> torch.Tensor:
+    kind = layout["parameter_layout"]
+    group_size = int(layout["group_size"])
+    groups = int(layout["groups_per_head"])
+    if kind == "last_dim_grouped":
+        width = int(layout["channels_per_head"])
+        if x.shape[-1] != width or values.shape != (groups,):
+            raise ValueError(
+                f"last_dim_grouped shape mismatch: runtime={tuple(x.shape)}, "
+                f"parameter={tuple(values.shape)}, expected width/groups={(width, groups)}"
+            )
+        expanded = values.repeat_interleave(group_size)
+        return expanded.to(x).view(*([1] * (x.ndim - 1)), width)
+    if kind == "attention_head_grouped":
+        heads = int(layout["num_heads"])
+        width = int(layout["channels_per_head"])
+        if x.ndim != 4 or x.shape[1] != heads or x.shape[-1] != width:
+            raise ValueError(
+                f"attention_head_grouped runtime shape mismatch: got {tuple(x.shape)}, "
+                f"expected [B,{heads},L,{width}]"
+            )
+        if values.shape != (heads, groups):
+            raise ValueError(f"Expected grouped parameter shape {(heads, groups)}, got {tuple(values.shape)}")
+        return values.repeat_interleave(group_size, dim=-1).to(x).view(1, heads, 1, width)
+    if kind == "attention_head_scalar":
+        heads = int(layout["num_heads"])
+        if x.ndim != 4 or x.shape[1] != heads or values.shape != (heads, 1):
+            raise ValueError(
+                f"attention_head_scalar mismatch: runtime={tuple(x.shape)}, "
+                f"parameter={tuple(values.shape)}, expected heads={heads}"
+            )
+        return values.to(x).view(1, heads, 1, 1)
+    raise ValueError(f"Unsupported parameter_layout={kind!r}")
+
+
+def _mask_values(x: torch.Tensor, mask: torch.Tensor, layout: dict[str, Any]) -> torch.Tensor:
+    kind = layout["parameter_layout"]
+    if kind == "last_dim_grouped":
+        expected = (int(layout["channels_per_head"]),)
+        if mask.shape != expected or x.shape[-1] != expected[0]:
+            raise ValueError(f"GIF mask shape mismatch: expected {expected}, got {tuple(mask.shape)}")
+        return mask.to(device=x.device).view(*([1] * (x.ndim - 1)), expected[0])
+    if kind == "attention_head_grouped":
+        expected = (int(layout["num_heads"]), int(layout["channels_per_head"]))
+        if x.ndim != 4 or mask.shape != expected or (x.shape[1], x.shape[-1]) != expected:
+            raise ValueError(f"GIF attention mask shape mismatch: expected {expected}, got {tuple(mask.shape)}")
+        return mask.to(device=x.device).view(1, expected[0], 1, expected[1])
+    raise ValueError(f"GIF mask does not support parameter_layout={kind!r}")
 
 
 class HeavisideSigmoid(torch.autograd.Function):
@@ -95,23 +178,18 @@ class PhaseSurrogate(nn.Module):
                 "Legacy Phase state contains surrogate_slope; re-run calibration"
             )
         if (
-            state.get("tau_calibration") != "spikingllm_ema_channel_abs_max"
-            or float(state.get("tau_ema_factor", -1.0)) != 0.99
-            or state.get("tau_accumulator_dtype") != "float32"
+            state.get("tau_calibration") != PHASE_TAU_CALIBRATION
+            or float(state.get("tau_ema_factor", -1.0)) != PHASE_TAU_EMA_FACTOR
+            or state.get("tau_accumulator_dtype") != PHASE_TAU_ACCUMULATOR_DTYPE
             or state.get("tau_channel_policy") != PHASE_TAU_CHANNEL_POLICY
             or state.get("tau_reduction_policy") != PHASE_TAU_REDUCTION_POLICY
-            or state.get("phase_statistical_view") != PHASE_STATISTICAL_VIEW
-            or state.get("phase_statistical_view_version")
-            != PHASE_STATISTICAL_VIEW_VERSION
         ):
             raise ValueError(
-                "Incompatible Phase tau calibration; SpikingLLM EMA factor 0.99 is required"
+                "Incompatible grouped Phase tau calibration; re-run calibration"
             )
         self.T = int(state["T"])
         self.base = float(state["base"])
-        self.group_size = int(state["group_size"])
-        if self.group_size != -1 or state["tau"].numel() != 1:
-            raise ValueError("SpikingLLM-aligned Phase requires scalar tau and group_size=-1")
+        self.layout = _state_layout(state)
         self.slope = (
             None if surrogate_slope is None else float(surrogate_slope)
         )
@@ -122,11 +200,14 @@ class PhaseSurrogate(nn.Module):
         self.max_spikes = int(state.get("max_spikes", 2))
         self.register_buffer("tau", state["tau"].float())
         self.register_buffer("v0", state["v0"].float())
+        _require_parameter_shape("Phase tau", self.tau, self.layout)
+        if self.tau.shape != self.v0.shape:
+            raise ValueError("Phase tau and v0 shapes must match")
 
     def encode(self, x: torch.Tensor, return_temporal: bool) -> torch.Tensor:
         sign = x.sign().detach()
-        tau = _channel_values(x, self.tau, self.group_size)
-        v0 = _channel_values(x, self.v0, self.group_size)
+        tau = _parameter_values(x, self.tau, self.layout)
+        v0 = _parameter_values(x, self.v0, self.layout)
         membrane = x.abs() + v0
         spike_count = torch.zeros_like(x)
         outputs = []
@@ -162,7 +243,9 @@ class StaticGIF(nn.Module):
         _validate_state_header(state, "gif")
         self.base_bits = int(state["base_bits"])
         self.add_bits = int(state["add_bits"])
-        self.group_size = int(state["group_size"])
+        if state.get("gif_policy") != "ordinary_grouped_qmax30":
+            raise ValueError("StaticGIF only accepts ordinary grouped GIF states")
+        self.layout = _state_layout(state)
         self.high_qmax = gif_high_qmax(self.base_bits, self.add_bits)
         expected_policy = {
             "low_qmin": 0,
@@ -189,6 +272,15 @@ class StaticGIF(nn.Module):
         self.register_buffer("high_scale", state["high_scale"].float())
         self.register_buffer("high_zero", state["high_zero"].float())
         self.register_buffer("mask_low", state["mask_low"].bool())
+        for name in ("low_scale", "low_zero", "high_scale", "high_zero"):
+            _require_parameter_shape(f"GIF {name}", getattr(self, name), self.layout)
+        expected_mask = (
+            (int(self.layout["channels_per_head"]),)
+            if self.layout["parameter_layout"] == "last_dim_grouped"
+            else (int(self.layout["num_heads"]), int(self.layout["channels_per_head"]))
+        )
+        if tuple(self.mask_low.shape) != expected_mask:
+            raise ValueError(f"GIF mask_low shape must be {expected_mask}, got {tuple(self.mask_low.shape)}")
 
     @staticmethod
     def round_ste(x: torch.Tensor) -> torch.Tensor:
@@ -203,8 +295,8 @@ class StaticGIF(nn.Module):
         qmin: int,
         qmax: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        scale = _channel_values(x, scale_values, self.group_size).clamp_min(1e-8)
-        zero = _channel_values(x, zero_values, self.group_size)
+        scale = _parameter_values(x, scale_values, self.layout).clamp_min(1e-8)
+        zero = _parameter_values(x, zero_values, self.layout)
         qmin, qmax = int(qmin), int(qmax)
         if qmin != 0 or qmax <= qmin:
             raise ValueError(f"Invalid unsigned GIF range [{qmin}, {qmax}]")
@@ -225,16 +317,7 @@ class StaticGIF(nn.Module):
             qmin=0,
             qmax=self.high_qmax,
         )
-        mask = self.mask_low.to(device=x.device)
-        if mask.numel() != x.shape[-1]:
-            if not bool(self.mask_low.numel() >= x.shape[-1]):
-                padding = torch.ones(
-                    x.shape[-1] - mask.numel(), device=x.device, dtype=torch.bool
-                )
-                mask = torch.cat((mask, padding))
-            else:
-                mask = mask[: x.shape[-1]]
-        mask = mask.view(*([1] * (x.ndim - 1)), x.shape[-1])
+        mask = _mask_values(x, self.mask_low, self.layout)
         return torch.where(mask, low, high)
 
     @property
@@ -273,22 +356,9 @@ class StaticGIF(nn.Module):
             qmin=0,
             qmax=self.high_qmax,
         )
-        mask = self.mask_low.to(device=x.device)
-        if mask.numel() != x.shape[-1]:
-            if mask.numel() < x.shape[-1]:
-                mask = torch.cat(
-                    (
-                        mask,
-                        torch.ones(
-                            x.shape[-1] - mask.numel(), device=x.device, dtype=torch.bool
-                        ),
-                    )
-                )
-            else:
-                mask = mask[: x.shape[-1]]
-        mask = mask.view(*([1] * (x.ndim - 1)), x.shape[-1])
-        scale_low = _channel_values(x, self.low_scale, self.group_size)
-        scale_high = _channel_values(x, self.high_scale, self.group_size)
+        mask = _mask_values(x, self.mask_low, self.layout)
+        scale_low = _parameter_values(x, self.low_scale, self.layout)
+        scale_high = _parameter_values(x, self.high_scale, self.layout)
         high_chunks = self.integer_chunks(high_q)
         outputs = []
         for timestep, chunk in enumerate(high_chunks):
@@ -308,15 +378,16 @@ class MultiThresholdNeuron(nn.Module):
         _validate_state_header(state, "mtn")
         self.T = int(state["T"])
         self.K = int(state["K"])
-        self.group_size = int(state["group_size"])
+        self.layout = _state_layout(state)
         self.threshold_factor = float(state.get("threshold_factor", 0.75))
         self.register_buffer("base_scale", state["base_scale"].float())
+        _require_parameter_shape("MTN base_scale", self.base_scale, self.layout)
 
 
     def temporal(self, incoming: torch.Tensor) -> torch.Tensor:
         if incoming.shape[0] != self.T:
             raise ValueError(f"MTN expects T={self.T}, got {incoming.shape[0]}")
-        scale = _channel_values(incoming[0], self.base_scale, self.group_size)
+        scale = _parameter_values(incoming[0], self.base_scale, self.layout)
         levels = torch.arange(self.K, device=incoming.device, dtype=incoming.dtype)
         shape = (self.K,) + (1,) * incoming[0].ndim
         thresholds = scale.unsqueeze(0) / torch.pow(2.0, levels).view(shape)
@@ -355,9 +426,11 @@ class Clipper(nn.Module):
                 "Incompatible legacy Clip/GIF range metadata; re-materialize "
                 f"calibration states (mismatched={mismatched})"
             )
-        self.group_size = int(state["group_size"])
+        self.layout = _state_layout(state)
         self.register_buffer("lower", state["lower"].float())
         self.register_buffer("upper", state["upper"].float())
+        _require_parameter_shape("Clip lower", self.lower, self.layout)
+        _require_parameter_shape("Clip upper", self.upper, self.layout)
         gif_ranges = {}
         for range_name in ("gif_low_range", "gif_high_range"):
             raw_range = state.get(range_name)
@@ -387,6 +460,68 @@ class Clipper(nn.Module):
             raise ValueError("Every clipping interval must satisfy lower < upper")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        lower = _channel_values(x, self.lower, self.group_size)
-        upper = _channel_values(x, self.upper, self.group_size)
+        lower = _parameter_values(x, self.lower, self.layout)
+        upper = _parameter_values(x, self.upper, self.layout)
         return hard_clip(x, lower, upper)
+
+
+class SoftmaxFixedGIF(nn.Module):
+    def __init__(self, state: dict[str, Any]):
+        super().__init__()
+        _validate_state_header(state, "gif")
+        expected = {
+            "parameter_layout": "softmax_fixed_range",
+            "gif_policy": "softmax_fixed_range_u16",
+            "group_size": -1,
+            "group_size_source": "site5_fixed_override",
+            "range_min": 0.0,
+            "range_max": 1.0,
+            "quantization_bits": 16,
+            "qmin": 0,
+            "qmax": 65535,
+            "zero_point": 0,
+            "temporal_steps": GIF_LOCAL_STEPS,
+            "temporal_policy": "quantized_cumulative_difference",
+        }
+        mismatched = {k: (v, state.get(k)) for k, v in expected.items() if state.get(k) != v}
+        if mismatched or not math.isclose(float(state.get("scale", -1.0)), 1.0 / 65535.0):
+            raise ValueError(f"Invalid Site 5 fixed Q16 GIF state: {mismatched}")
+        self.num_heads = int(state["num_heads"])
+        if self.num_heads <= 0 or int(state.get("configured_group_size", 0)) == 0:
+            raise ValueError("Site 5 GIF requires valid head/group metadata")
+
+    @property
+    def temporal_steps(self) -> int:
+        return GIF_LOCAL_STEPS
+
+    @staticmethod
+    def _hard_q16(x: torch.Tensor) -> torch.Tensor:
+        return torch.round(x.float().clamp(0.0, 1.0) * 65535.0) / 65535.0
+
+    def _validate_input(self, x: torch.Tensor) -> None:
+        if x.ndim != 4 or x.shape[1] != self.num_heads:
+            raise ValueError(
+                f"SoftmaxFixedGIF expects [B,{self.num_heads},Q,K], got {tuple(x.shape)}"
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._validate_input(x)
+        hard = self._hard_q16(x)
+        return ((hard - x.float()).detach() + x.float()).to(x.dtype)
+
+    def temporal(self, incoming: torch.Tensor) -> torch.Tensor:
+        if incoming.ndim != 5 or incoming.shape[0] != self.temporal_steps:
+            raise ValueError(
+                f"SoftmaxFixedGIF expects [T,B,H,Q,K] with T={self.temporal_steps}, "
+                f"got {tuple(incoming.shape)}"
+            )
+        self._validate_input(incoming[0])
+        quantized = self._hard_q16(incoming.float().cumsum(dim=0))
+        previous = torch.cat((torch.zeros_like(quantized[:1]), quantized[:-1]), dim=0)
+        return (quantized - previous).to(incoming.dtype)
+
+
+def gif_module_from_state(state: dict[str, Any]) -> nn.Module:
+    if state.get("gif_policy") == "softmax_fixed_range_u16":
+        return SoftmaxFixedGIF(state)
+    return StaticGIF(state)

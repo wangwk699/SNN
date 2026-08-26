@@ -30,6 +30,7 @@ def _cfg(mode, root="artifacts", common_clip_enabled=True):
         "ann_training": {"prefix_enabled": mode != "vanilla"},
         "post_finetuning": {"prefix_enabled": not aware},
         "replacement": {"common_clip_enabled": common_clip_enabled},
+        "calibration": {"group_size": -1},
     }
 
 
@@ -74,13 +75,14 @@ def test_aware_run_root_records_common_clip_variant(mode, enabled):
         else "prefix_enabled_ture_common_clip_enabled_false"
     )
     variant_dir = (
-        layout.root.parent.parent
+        layout.root.parent.parent.parent
         if mode == "phase_aware"
-        else layout.root.parent
+        else layout.root.parent.parent
     )
     assert variant_dir.name == expected
     if mode == "phase_aware":
-        assert layout.root.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
+        assert layout.root.parent.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
+    assert layout.root.parent.name == "calibration_group_size_-1"
 
 
 def test_phase_aware_run_root_records_slope_and_warmup_ratio():
@@ -91,8 +93,8 @@ def test_phase_aware_run_root_records_slope_and_warmup_ratio():
     first = ArtifactLayout(first_cfg)
     second = ArtifactLayout(second_cfg)
 
-    assert first.root.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
-    assert second.root.parent.name == "surrogate_slope_0.5_warmup_ratio_0.1"
+    assert first.root.parent.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
+    assert second.root.parent.parent.name == "surrogate_slope_0.5_warmup_ratio_0.1"
     assert first.root != second.root
     assert first.ann_training_prefix_dir == second.ann_training_prefix_dir
     assert first.ann_training_calibration_dir == second.ann_training_calibration_dir
@@ -112,6 +114,21 @@ def test_common_clip_variants_share_prefix_and_calibration_but_not_run_root():
     assert enabled.ann_training_prefix_dir == disabled.ann_training_prefix_dir
     assert enabled.ann_training_calibration_dir == disabled.ann_training_calibration_dir
     assert enabled.root != disabled.root
+
+
+def test_group_size_isolates_calibration_aware_runs_and_snn_but_not_identity_ann():
+    aware_a = _cfg("phase_aware")
+    aware_b = _cfg("phase_aware")
+    aware_b["calibration"]["group_size"] = 2
+    assert ArtifactLayout(aware_a).ann_training_calibration_dir != ArtifactLayout(aware_b).ann_training_calibration_dir
+    assert ArtifactLayout(aware_a).root != ArtifactLayout(aware_b).root
+    vanilla_a = _cfg("vanilla")
+    vanilla_b = _cfg("vanilla")
+    vanilla_b["calibration"]["group_size"] = 2
+    layout_a, layout_b = ArtifactLayout(vanilla_a), ArtifactLayout(vanilla_b)
+    assert layout_a.ann_checkpoint_dir == layout_b.ann_checkpoint_dir
+    assert layout_a.post_finetuning_site_dir != layout_b.post_finetuning_site_dir
+    assert layout_a.snn_dir("phase") != layout_b.snn_dir("phase")
 
 
 @pytest.mark.parametrize(

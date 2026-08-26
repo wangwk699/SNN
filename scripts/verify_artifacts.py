@@ -1,6 +1,7 @@
 from __future__ import annotations
 import math
 from pathlib import Path
+import torch
 from _common import parser, setup
 
 from snn2.artifacts import prefix_enabled_dirname, read_json, sha256_file, write_json
@@ -18,11 +19,17 @@ from snn2.conversion import (
     validate_conversion_metadata,
     validate_conversion_prefix,
 )
-from snn2.sites import topology_metadata
+from snn2.sites import CLIP_ELIGIBLE_SITE_IDS, SOFTMAX_SITE_ID, topology_metadata
 from snn2.evaluation import final_ann_replacement_mode, resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
 from snn2.state_validation import validate_site_state_bundle
-from snn2.temporal_ops import validate_temporal_policy
+from snn2.temporal_ops import (
+    CALIBRATION_GROUPING_POLICY,
+    SOFTMAX_SITE5_CLIP_POLICY,
+    SOFTMAX_SITE5_GIF_POLICY,
+    STATISTICS_FORMAT_VERSION,
+    validate_temporal_policy,
+)
 
 
 def _evaluation_metadata(path):
@@ -36,7 +43,7 @@ def _verify_final_ann_forward_metadata(cfg, layout, path):
     expected = {
         "identity": ("identity_ann", False, None),
         "phase": ("phase_surrogate_ann", True, "PhaseSurrogate.forward"),
-        "gif": ("gif_surrogate_ann", True, "StaticGIF.forward"),
+        "gif": ("gif_surrogate_ann", True, "StaticGIF/SoftmaxFixedGIF.forward"),
     }[mode]
     required = {
         "evaluation_forward_kind": expected[0],
@@ -47,6 +54,9 @@ def _verify_final_ann_forward_metadata(cfg, layout, path):
         "evaluation_common_clip_applied": (
             training_common_clip_enabled(cfg) if expected[1] else False
         ),
+        "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "softmax_site5_clip_applied": False,
     }
     for key, value in required.items():
         if metadata.get(key) != value:
@@ -70,6 +80,42 @@ def _require_manifest_flags(manifest, expected, label):
     for key, value in expected.items():
         if manifest.get(key) != value:
             raise ValueError(f"{label} manifest has invalid {key}: {manifest.get(key)!r}")
+
+
+def _verify_grouped_calibration(cfg, layout, manifest, calibration):
+    expected = {
+        "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
+        "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
+        "clip_eligible_site_ids": sorted(CLIP_ELIGIBLE_SITE_IDS),
+        "clip_excluded_site_ids": [SOFTMAX_SITE_ID],
+    }
+    _require_manifest_flags(manifest, expected, "Grouped calibration")
+    ann_config = read_json(layout.ann_checkpoint_dir / "config.json")
+    query_heads = int(ann_config["num_attention_heads"])
+    kv_heads = int(ann_config.get("num_key_value_heads", query_heads))
+    clip_count = 0
+    for statistics_path in sorted(layout.conversion_site_dir.glob("layer_*/site_*/statistics.pt")):
+        statistics = torch.load(statistics_path, map_location="cpu", weights_only=False)
+        if statistics.get("format_version") != STATISTICS_FORMAT_VERSION:
+            raise ValueError(f"Legacy statistics state: {statistics_path}")
+        site = int(statistics["site_index"])
+        if site in {2, 6} and int(statistics["num_heads"]) != query_heads:
+            raise ValueError(f"Site {site} must use query heads: {statistics_path}")
+        if site in {3, 4} and int(statistics["num_heads"]) != kv_heads:
+            raise ValueError(f"Site {site} must use native KV heads: {statistics_path}")
+        directory = statistics_path.parent
+        clip_present = (directory / "clip_state.pt").exists()
+        clip_count += int(clip_present)
+        if site == SOFTMAX_SITE_ID:
+            gif = torch.load(directory / "gif_state.pt", map_location="cpu", weights_only=False)
+            if gif.get("gif_policy") != "softmax_fixed_range_u16" or clip_present:
+                raise ValueError(f"Site 5 must use Q16 and no Clip: {directory}")
+    expected_clips = calibration["layers"] * len(CLIP_ELIGIBLE_SITE_IDS) if conversion_reuses_ann_training_artifacts(cfg) else 0
+    if clip_count != expected_clips:
+        raise ValueError(f"Calibration Clip count mismatch: {clip_count} != {expected_clips}")
 
 
 def _verify_hashes(manifest, label):
@@ -614,6 +660,7 @@ def main():
         _require_manifest_flags(source_manifest, expected_flags, "Conversion source")
         _verify_hashes(source_manifest, "Conversion source calibration")
         validate_temporal_policy(source_manifest, context="Conversion source manifest")
+        _verify_grouped_calibration(cfg, layout, source_manifest, calibration)
         validate_conversion_prefix(cfg, layout)
 
         conversions = {}

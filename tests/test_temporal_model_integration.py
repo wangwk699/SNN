@@ -15,7 +15,6 @@ from snn2.model_integration import (
     temporal_forward,
 )
 from snn2.prefix_cache import build_prefix_key_values, install_prefix_kv_forward
-from snn2.phase_statistics import phase_statistical_view
 from snn2.sites import site_key
 from snn2.temporal_model import deployment_attention_forward
 from snn2.temporal_ops import from_temporal, to_temporal
@@ -37,9 +36,6 @@ class _BypassController:
         return value
 
     def record_saliency(self, *args):
-        pass
-
-    def record_saliency_reduced(self, *args):
         pass
 
 
@@ -146,23 +142,19 @@ def test_collect_attention_excludes_prefix_from_site_3_and_4_statistics():
     )
     key_stats = controller.statistics.items[site_key(0, 3)]
     value_stats = controller.statistics.items[site_key(0, 4)]
-    assert key_stats.row_count.item() == 4
-    assert value_stats.row_count.item() == 4
-    assert key_stats.channels == 4
-    assert value_stats.channels == 4
-    assert key_stats.phase_channels == 16
-    assert value_stats.phase_channels == 16
-    expected_key = phase_statistical_view(
-        3, repeat_kv(key[..., 3:, :], 2)
-    ).abs().amax(dim=(0, 1))
-    expected_value = phase_statistical_view(
-        4, repeat_kv(value[..., 3:, :], 2)
-    ).abs().amax(dim=(0, 1))
+    assert key_stats.row_count.item() == 2
+    assert value_stats.row_count.item() == 2
+    assert key_stats.channels == 8
+    assert value_stats.channels == 8
+    assert key_stats.num_heads == 2
+    assert key_stats.channels_per_head == 4
+    expected_key = key[..., 3:, :].abs().amax(dim=(0, 2))
+    expected_value = value[..., 3:, :].abs().amax(dim=(0, 2))
     torch.testing.assert_close(key_stats.phase_ema_abs_max, expected_key)
     torch.testing.assert_close(value_stats.phase_ema_abs_max, expected_value)
 
 
-def test_collect_attention_without_prefix_uses_repeat_kv_phase_view():
+def test_collect_attention_without_prefix_preserves_native_kv_heads():
     from snn2.controller import SiteController
 
     controller = SiteController(mode="collect")
@@ -179,8 +171,22 @@ def test_collect_attention_without_prefix_uses_repeat_kv_phase_view():
     snn2_eager_attention_forward(module, query, key, value, None, dropout=0.0)
     for site in (3, 4):
         stats = controller.statistics.items[site_key(0, site)]
-        assert stats.channels == 4
-        assert stats.phase_channels == 16
+        assert stats.channels == 8
+        assert stats.num_heads == 2
+        assert stats.channels_per_head == 4
+        assert stats.phase_ema_abs_max.shape == (2, 4)
+        assert stats.saliency_sum.shape == (2, 4)
+    repeated_key = repeat_kv(key, 2)
+    repeated_value = repeat_kv(value, 2)
+    qk = torch.matmul(query, repeated_key.transpose(2, 3))
+    key_score = repeated_key * torch.matmul(qk.transpose(2, 3), query)
+    expected_key = key_score.reshape(1, 2, 2, 2, 4).sum(dim=2).sum(dim=(0, 2))
+    weights = torch.softmax(qk * 0.5, dim=-1)
+    output = torch.matmul(weights, repeated_value)
+    value_score = repeated_value * torch.matmul(weights.transpose(2, 3), output)
+    expected_value = value_score.reshape(1, 2, 2, 2, 4).sum(dim=2).sum(dim=(0, 2))
+    torch.testing.assert_close(controller.statistics.items[site_key(0, 3)].saliency_sum, expected_key.double())
+    torch.testing.assert_close(controller.statistics.items[site_key(0, 4)].saliency_sum, expected_value.double())
 
 
 class _RMSNorm(torch.nn.Module):

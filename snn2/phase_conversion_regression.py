@@ -257,7 +257,25 @@ def run_phase_neuron_micro_regression(
     for path in _selected_phase_state_paths(Path(site_root), num_layers):
         state = torch.load(path, map_location="cpu", weights_only=False)
         module = PhaseSurrogate(state).eval()
-        x = torch.randn(1, 3, 32, generator=generator)
+        layout = state["parameter_layout"]
+        if layout == "last_dim_grouped":
+            x = torch.randn(
+                1, 3, int(state["channels_per_head"]), generator=generator
+            )
+        elif layout == "attention_head_grouped":
+            x = torch.randn(
+                1,
+                int(state["num_heads"]),
+                3,
+                int(state["channels_per_head"]),
+                generator=generator,
+            )
+        elif layout == "attention_head_scalar":
+            x = torch.randn(
+                1, int(state["num_heads"]), 3, 5, generator=generator
+            )
+        else:
+            raise ValueError(f"Unsupported Phase regression layout: {layout}")
         static = module(x)
         steps = int(module.T)
         decompositions = {

@@ -108,6 +108,21 @@ def test_surrogate_slope_rejects_non_positive_or_non_finite_values(
         validate_config(cfg)
 
 
+@pytest.mark.parametrize("group_size", [-1, 1, 32])
+def test_calibration_group_size_accepts_minus_one_or_positive(generated_configs, group_size):
+    cfg = yaml.safe_load(generated_configs[0].read_text(encoding="utf-8"))
+    cfg["calibration"]["group_size"] = group_size
+    validate_config(cfg)
+
+
+@pytest.mark.parametrize("group_size", [0, -2, 1.5, True])
+def test_calibration_group_size_rejects_other_values(generated_configs, group_size):
+    cfg = yaml.safe_load(generated_configs[0].read_text(encoding="utf-8"))
+    cfg["calibration"]["group_size"] = group_size
+    with pytest.raises(ValueError, match="group_size"):
+        validate_config(cfg)
+
+
 @pytest.mark.parametrize(
     ("section", "key", "value"),
     [

@@ -15,7 +15,12 @@ from .sites import topology_metadata
 from .state_validation import validate_site_state_bundle
 from .temporal_ops import (
     CONVERSION_METADATA_FORMAT_VERSION,
+    CALIBRATION_GROUPING_POLICY,
     GIF_LOCAL_STEPS,
+    SOFTMAX_SITE5_CLIP_POLICY,
+    SOFTMAX_SITE5_GIF_POLICY,
+    SOFTMAX_SITE5_GROUPING_POLICY,
+    STATISTICS_FORMAT_VERSION,
     temporal_policy_metadata,
     validate_temporal_policy,
 )
@@ -43,8 +48,6 @@ def validate_calibration(
         expected_num_hidden_layers=expected_num_hidden_layers,
     )
     required = ["statistics.pt", "phase_state.pt", "gif_state.pt", "mtn_state.pt"]
-    if allow_clip_bundle:
-        required.append("clip_state.pt")
     for directory in sorted(path for path in root.glob("layer_*/site_*") if path.is_dir()):
         for name in required:
             if not (directory / name).exists():
@@ -139,6 +142,7 @@ def validate_conversion_prefix(
 
 
 def _validate_aware_training_provenance(
+    cfg: dict[str, Any],
     layout: ArtifactLayout,
     prefix: dict[str, Any],
     calibration_manifest: Path,
@@ -156,6 +160,9 @@ def _validate_aware_training_provenance(
         "ann_training_prefix_token_ids": prefix["prefix_token_ids"],
         "ann_training_calibration_root": str(layout.ann_training_site_dir.resolve()),
         "ann_training_calibration_manifest_sha256": sha256_file(calibration_manifest),
+        "ann_training_calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "ann_training_calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "statistics_format_version": STATISTICS_FORMAT_VERSION,
     }
     mismatched = {
         key: {"expected": value, "actual": result.get(key)}
@@ -185,10 +192,21 @@ def _source_bundle(
     manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
     manifest = read_json(manifest_path)
     _validate_source_manifest(manifest, reused=reused)
+    expected_grouping = {
+        "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
+        "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
+        "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
+    }
+    mismatch = {key: (value, manifest.get(key)) for key, value in expected_grouping.items() if manifest.get(key) != value}
+    if mismatch:
+        raise ValueError(f"Conversion calibration grouping provenance mismatch: {mismatch}")
     if manifest.get("prefix_enabled") != conversion_prefix_enabled(cfg):
         raise ValueError("Conversion calibration Prefix policy disagrees with config")
     provenance = (
-        _validate_aware_training_provenance(layout, prefix, manifest_path)
+        _validate_aware_training_provenance(cfg, layout, prefix, manifest_path)
         if reused
         else {}
     )
@@ -236,6 +254,12 @@ def validate_conversion_metadata(
         "snn_clip_applied": False,
         "source_ann_common_clip_enabled": training_common_clip_enabled(cfg),
         "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
+        "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
+        "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
+        "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
     }
     mismatched = {
         key: {"expected": value, "actual": metadata.get(key)}
@@ -286,6 +310,12 @@ def create_conversion(
         "post_finetuning_recalibration": not reused,
         "snn_clip_applied": False,
         "source_ann_common_clip_enabled": training_common_clip_enabled(cfg),
+        "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
+        "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
+        "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
         "prefix_root": prefix["prefix_root"],
         "calibration_validation": validation,
         "training_artifact_provenance": training_provenance,

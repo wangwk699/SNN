@@ -1,21 +1,29 @@
 import torch
 
 from snn2.calibration import build_site_states
+from snn2.phase_statistics import (
+    PHASE_TAU_ACCUMULATOR_DTYPE, PHASE_TAU_CALIBRATION,
+    PHASE_TAU_CHANNEL_POLICY, PHASE_TAU_EMA_FACTOR, PHASE_TAU_REDUCTION_POLICY,
+)
+from snn2.temporal_ops import STATISTICS_FORMAT_VERSION
 
 
 def test_gif_high_qparams_use_two_chunk_capacity():
     statistics = {
-        "channels": 4,
+        "format_version": STATISTICS_FORMAT_VERSION, "site_index": 1,
+        "layout_kind": "last_dim", "num_heads": None,
+        "channels_per_head": None, "channels": 4,
         "value_min": torch.full((4,), -1.0),
         "value_max": torch.full((4,), 1.0),
         "saliency_row_count": torch.ones(4, dtype=torch.long),
         "saliency_sum": torch.arange(4, dtype=torch.float64),
         "phase_ema_abs_max": torch.ones(4),
         "phase_ema_updates": torch.ones(4, dtype=torch.long),
-        "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
-        "phase_tau_ema_factor": 0.99,
-        "phase_statistical_view": "spikingllm_identity_input_layout",
-        "phase_statistical_view_version": 1,
+        "phase_tau_calibration": PHASE_TAU_CALIBRATION,
+        "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
+        "phase_tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
+        "phase_tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
     }
     cfg = {
         "calibration": {"group_size": -1},

@@ -11,6 +11,7 @@ from snn2.artifacts import sha256_file
 from snn2.controller import SiteController
 from snn2.evaluation import build_evaluation_controller
 from snn2.neurons import PhaseSurrogate
+from snn2.phase_statistics import PHASE_TAU_CHANNEL_POLICY, PHASE_TAU_REDUCTION_POLICY
 from snn2.phase_conversion_regression import (
     PhaseConversionRegressionRecorder,
     summarize_first_divergence,
@@ -33,17 +34,20 @@ def _phase_state():
         "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
         "T": 4,
         "base": 2.0,
-        "group_size": -1,
+        "parameter_layout": "last_dim_grouped",
+        "configured_group_size": -1,
+        "group_size": 9,
+        "num_heads": None,
+        "channels_per_head": 9,
+        "groups_per_head": 1,
         "max_spikes": 2,
         "tau": torch.tensor([2.0]),
         "v0": torch.tensor([0.0625]),
         "tau_calibration": PHASE_TAU_CALIBRATION,
         "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
         "tau_accumulator_dtype": "float32",
-        "tau_channel_policy": "spikingllm_flatten_attention_heads_before_channel_ema",
-        "tau_reduction_policy": "per_channel_ema_then_global_max",
-        "phase_statistical_view": "spikingllm_identity_input_layout",
-        "phase_statistical_view_version": 1,
+        "tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
+        "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
     }
 
 
@@ -180,12 +184,13 @@ def test_regression_rejects_training_provenance_mismatch(tmp_path, monkeypatch):
 
 
 def test_official_phase_ann_controller_matches_graph_p(monkeypatch):
-    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {})
+    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "per_head_within_head_groups_v1"}})
     layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
     cfg = {
         "experiment": {"ann_mode": "phase_aware"},
         "phase": {"surrogate_slope": 2.0},
         "replacement": {"common_clip_enabled": False},
+        "calibration": {"group_size": -1},
     }
     controller, steps = build_evaluation_controller(cfg, layout, neuron="ann")
     assert controller.mode == "phase"

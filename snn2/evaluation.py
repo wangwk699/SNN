@@ -17,7 +17,12 @@ from .model_integration import temporal_forward
 from .prefix_cache import install_prefix_kv_forward
 from .sites import SITE_COUNT
 from .state_validation import validate_site_state_bundle
-from .temporal_ops import temporal_policy_metadata
+from .temporal_ops import (
+    CALIBRATION_GROUPING_POLICY,
+    SOFTMAX_SITE5_CLIP_POLICY,
+    SOFTMAX_SITE5_GIF_POLICY,
+    temporal_policy_metadata,
+)
 
 
 def position_ids_from_attention_mask(
@@ -88,7 +93,13 @@ def build_evaluation_controller(
         mode = final_ann_replacement_mode(cfg)
         aware = is_aware_ann_mode(cfg)
         if aware:
-            validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)
+            validation = validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)
+            manifest = validation["manifest"]
+            if (
+                manifest.get("calibration_group_size") != int(cfg["calibration"]["group_size"])
+                or manifest.get("calibration_grouping_policy") != CALIBRATION_GROUPING_POLICY
+            ):
+                raise ValueError("Final ANN calibration grouping provenance differs from config")
         controller = SiteController(
             mode=mode,
             site_root=layout.ann_training_site_dir if aware else None,
@@ -133,7 +144,7 @@ def evaluation_forward_metadata(
             implementation, root = "PhaseSurrogate.forward", str(layout.ann_training_site_dir)
         elif controller.mode == "gif":
             kind, enabled = "gif_surrogate_ann", True
-            implementation, root = "StaticGIF.forward", str(layout.ann_training_site_dir)
+            implementation, root = "StaticGIF/SoftmaxFixedGIF.forward", str(layout.ann_training_site_dir)
         else:
             raise ValueError(f"Invalid final ANN controller mode: {controller.mode}")
         temporal = False
@@ -152,6 +163,11 @@ def evaluation_forward_metadata(
         "static_replacement_impl": implementation,
         "evaluation_common_clip_applied": clip_applied,
         "replacement_state_root": root,
+        "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
+        "softmax_site5_clip_applied": False,
+        "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
     }
 
 
@@ -185,6 +201,8 @@ def evaluation_calibration_metadata(
             if aware_ann
             else (None if inactive else str(layout.conversion_site_dir))
         ),
+        "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
     }
 
 

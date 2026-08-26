@@ -1,24 +1,38 @@
 import json
 
 import torch
+import pytest
 
 from snn2.calibration import build_site_states, materialize_calibration_states
 from snn2.sites import SITE_IDS, SITE_NAMES
+from snn2.phase_statistics import (
+    PHASE_TAU_ACCUMULATOR_DTYPE, PHASE_TAU_CALIBRATION,
+    PHASE_TAU_CHANNEL_POLICY, PHASE_TAU_EMA_FACTOR, PHASE_TAU_REDUCTION_POLICY,
+)
+from snn2.temporal_ops import STATISTICS_FORMAT_VERSION
 
 
-def _statistics():
+def _statistics(site_index=1):
+    if site_index in {2, 3, 4, 6}:
+        shape, layout, heads, width, channels = (1, 4), "attention_head", 1, 4, 4
+    elif site_index == 5:
+        shape, layout, heads, width, channels = (1,), "attention_softmax", 1, None, 1
+    else:
+        shape, layout, heads, width, channels = (4,), "last_dim", None, None, 4
+    saliency_shape = (0,) if site_index == 5 else shape
     return {
-        "channels": 4,
-        "value_min": torch.full((4,), -1.0),
-        "value_max": torch.full((4,), 1.0),
-        "saliency_row_count": torch.ones(4, dtype=torch.long),
-        "saliency_sum": torch.arange(4, dtype=torch.float64),
-        "phase_ema_abs_max": torch.ones(4),
-        "phase_ema_updates": torch.ones(4, dtype=torch.long),
-        "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
-        "phase_tau_ema_factor": 0.99,
-        "phase_statistical_view": "spikingllm_identity_input_layout",
-        "phase_statistical_view_version": 1,
+        "format_version": STATISTICS_FORMAT_VERSION, "site_index": site_index,
+        "layout_kind": layout, "num_heads": heads, "channels_per_head": width,
+        "channels": channels, "value_min": torch.full(shape, -1.0),
+        "value_max": torch.full(shape, 1.0),
+        "saliency_row_count": torch.ones(saliency_shape, dtype=torch.long),
+        "saliency_sum": torch.arange(torch.tensor(saliency_shape).prod().item(), dtype=torch.float64).reshape(saliency_shape),
+        "phase_ema_abs_max": torch.ones(shape), "phase_ema_updates": torch.ones(shape, dtype=torch.long),
+        "phase_tau_calibration": PHASE_TAU_CALIBRATION,
+        "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
+        "phase_tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
+        "phase_tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
     }
 
 
@@ -36,11 +50,11 @@ def _write_statistics(root):
     for index in SITE_IDS:
         directory = root / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
         directory.mkdir(parents=True)
-        torch.save(_statistics(), directory / "statistics.pt")
+        torch.save(_statistics(index), directory / "statistics.pt")
         directories.append(directory)
     global_directory = root / "_global" / "final_rmsnorm"
     global_directory.mkdir(parents=True)
-    torch.save(_statistics(), global_directory / "statistics.pt")
+    torch.save(_statistics(None), global_directory / "statistics.pt")
     return directories
 
 
@@ -56,9 +70,22 @@ def test_build_site_states_without_common_clip():
     assert set(states) == {"phase", "gif", "mtn"}
     assert states["phase"]["tau"].dtype == torch.float32
     assert states["phase"]["tau"].numel() == 1
-    assert states["phase"]["group_size"] == -1
+    assert states["phase"]["group_size"] == 4
     assert states["phase"]["tau_accumulator_dtype"] == "float32"
-    assert states["phase"]["tau_reduction_policy"] == "per_channel_ema_then_global_max"
+    assert states["phase"]["tau_reduction_policy"] == "within_group_max_after_channel_ema"
+
+
+def test_non_divisible_ordinary_group_fails_but_site5_ignores_global_group():
+    cfg = _cfg()
+    cfg["calibration"]["group_size"] = 3
+    with pytest.raises(ValueError, match="not divisible|divisible"):
+        build_site_states(_statistics(1), cfg, include_clip=False)
+    states = build_site_states(_statistics(5), cfg, include_clip=True)
+    assert set(states) == {"phase", "gif", "mtn"}
+    assert states["phase"]["tau"].shape == (1, 1)
+    assert states["mtn"]["base_scale"].shape == (1, 1)
+    assert states["gif"]["gif_policy"] == "softmax_fixed_range_u16"
+    assert states["gif"]["qmax"] == 65535
 
 
 def test_conversion_materialization_removes_common_clip(tmp_path):
@@ -103,7 +130,7 @@ def test_ann_training_materialization_keeps_common_clip(tmp_path):
     assert manifest["state_profile"] == "ann_training_with_common_clip"
     assert (tmp_path / "_global" / "final_rmsnorm" / "phase_state.pt").exists()
     assert manifest["global_states"]["final_rmsnorm"]["phase_state_sha256"]
-    assert all((directory / "clip_state.pt").exists() for directory in directories)
+    assert all((directory / "clip_state.pt").exists() == (index != 5) for index, directory in zip(SITE_IDS, directories))
     summary = json.loads(
         (directories[0] / "calibration_summary.json").read_text(encoding="utf-8")
     )
@@ -130,7 +157,10 @@ def test_ann_training_calibration_is_identical_for_common_clip_switch(tmp_path):
             expected_num_hidden_layers=1,
         )
         assert manifest["common_clip_generated"] is True
-        assert all((directory / "clip_state.pt").exists() for directory in directories)
+        assert all(
+            (directory / "clip_state.pt").exists() == (index != 5)
+            for index, directory in zip(SITE_IDS, directories)
+        )
         states_by_variant.append(
             {
                 name: torch.load(

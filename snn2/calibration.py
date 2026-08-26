@@ -12,7 +12,16 @@ from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
 from .config import post_finetuning_prefix_enabled, training_prefix_enabled
 from .data import CausalLMCollator, tokenize_dataset
 from .neurons import gif_high_qmax
-from .sites import SITE_COUNT, SITE_TOPOLOGY_VERSION, topology_metadata, validate_site_topology
+from .sites import (
+    CLIP_ELIGIBLE_SITE_IDS,
+    SOFTMAX_SITE_ID,
+    SITE_COUNT,
+    SITE_TOPOLOGY_VERSION,
+    is_softmax_site,
+    site_supports_clip,
+    topology_metadata,
+    validate_site_topology,
+)
 from .stats import StatisticsStore
 from .temporal_ops import (
     CALIBRATION_MANIFEST_FORMAT_VERSION,
@@ -24,15 +33,21 @@ from .temporal_ops import (
     GIF_LOW_QMAX,
     GIF_STEP_QMAX,
     SITE_STATE_FORMAT_VERSION,
+    STATISTICS_FORMAT_VERSION,
     TEMPORAL_IMPLEMENTATION_VERSION,
+    CALIBRATION_GROUPING_POLICY,
+    SOFTMAX_SITE5_CLIP_POLICY,
+    SOFTMAX_SITE5_GIF_POLICY,
+    SOFTMAX_SITE5_GROUPING_POLICY,
     temporal_policy_metadata,
 )
 from .prefix_cache import install_prefix_kv_forward
 from .prefix_cache import prefix_length
 from .phase_statistics import (
-    PHASE_STATISTICAL_VIEW,
-    PHASE_STATISTICAL_VIEW_VERSION,
+    PHASE_TAU_ACCUMULATOR_DTYPE,
+    PHASE_TAU_CALIBRATION,
     PHASE_TAU_CHANNEL_POLICY,
+    PHASE_TAU_EMA_FACTOR,
     PHASE_TAU_REDUCTION_POLICY,
 )
 from .rotation import get_model_parts
@@ -112,16 +127,25 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "rotation_state_sha256": sha256_file(rotation_path) if rotation_path else None,
         "learning_rate": cfg["training"]["learning_rate"] if post else None,
         "seed": int(cfg["experiment"]["seed"]),
+        "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
+        "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
+        "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
+        "clip_eligible_site_ids": sorted(CLIP_ELIGIBLE_SITE_IDS),
+        "clip_excluded_site_ids": [SOFTMAX_SITE_ID],
     }
 
 
-def _group_reduce(vector: torch.Tensor, group_size: int, reduction: str) -> torch.Tensor:
-    channels = vector.numel()
-    if group_size <= 0 or group_size >= channels:
-        group_size = channels
-    if channels % group_size != 0:
-        raise ValueError(f"channels={channels} must be divisible by group_size={group_size}")
-    grouped = vector.reshape(-1, group_size)
+def group_reduce_last_dim(values: torch.Tensor, group_size: int, reduction: str) -> torch.Tensor:
+    width = int(values.shape[-1])
+    effective = width if int(group_size) == -1 else int(group_size)
+    if effective <= 0 or width % effective != 0:
+        raise ValueError(
+            f"last dimension {width} must be divisible by configured group_size={group_size}"
+        )
+    grouped = values.reshape(*values.shape[:-1], width // effective, effective)
     if reduction == "min":
         return grouped.amin(dim=-1)
     if reduction == "max":
@@ -148,13 +172,59 @@ def _qparams(
     return scale, zero, representable_min, representable_max
 
 
-def build_phase_state(
-    statistics: dict[str, Any], cfg: dict[str, Any]
-) -> dict[str, Any]:
-    if statistics.get("phase_tau_statistic") != "spikingllm_ema_channel_abs_max":
-        raise ValueError("Phase statistics do not use the SpikingLLM EMA policy")
-    if float(statistics.get("phase_tau_ema_factor", -1.0)) != 0.99:
+def _validate_statistics(statistics: dict[str, Any]) -> None:
+    if statistics.get("format_version") != STATISTICS_FORMAT_VERSION:
+        raise ValueError(
+            f"Legacy statistics schema; format_version={STATISTICS_FORMAT_VERSION} is required"
+        )
+    if statistics.get("phase_tau_calibration") != PHASE_TAU_CALIBRATION:
+        raise ValueError("Phase statistics use an incompatible calibration policy")
+    if float(statistics.get("phase_tau_ema_factor", -1.0)) != PHASE_TAU_EMA_FACTOR:
         raise ValueError("Phase statistics must use EMA factor 0.99")
+    if statistics.get("phase_tau_accumulator_dtype") != PHASE_TAU_ACCUMULATOR_DTYPE:
+        raise ValueError("Phase statistics must use an FP32 accumulator")
+    if statistics.get("phase_tau_channel_policy") != PHASE_TAU_CHANNEL_POLICY:
+        raise ValueError("Phase statistics use an incompatible channel policy")
+    if statistics.get("phase_tau_reduction_policy") != PHASE_TAU_REDUCTION_POLICY:
+        raise ValueError("Phase statistics use an incompatible reduction policy")
+
+
+def _layout_metadata(statistics: dict[str, Any], configured_group: int) -> dict[str, Any]:
+    layout = statistics["layout_kind"]
+    heads = statistics.get("num_heads")
+    width = statistics.get("channels_per_head")
+    if layout == "last_dim":
+        width = int(statistics["channels"])
+        effective = width if configured_group == -1 else configured_group
+        parameter_layout = "last_dim_grouped"
+        heads = None
+    elif layout == "attention_head":
+        heads, width = int(heads), int(width)
+        effective = width if configured_group == -1 else configured_group
+        parameter_layout = "attention_head_grouped"
+    elif layout == "attention_softmax":
+        heads, width, effective = int(heads), None, -1
+        parameter_layout = "attention_head_scalar"
+    else:
+        raise ValueError(f"Unknown statistics layout_kind={layout!r}")
+    if layout != "attention_softmax" and (effective <= 0 or width % effective != 0):
+        raise ValueError(
+            f"site={statistics.get('site_index')} layout={layout} channel/head_dim={width} "
+            f"is not divisible by configured group_size={configured_group}"
+        )
+    groups = 1 if layout == "attention_softmax" else width // effective
+    return {
+        "parameter_layout": parameter_layout,
+        "configured_group_size": configured_group,
+        "group_size": effective,
+        "num_heads": heads,
+        "channels_per_head": width,
+        "groups_per_head": groups,
+    }
+
+
+def build_phase_state(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    _validate_statistics(statistics)
     phase_stat = statistics.get("phase_ema_abs_max")
     updates = statistics.get("phase_ema_updates")
     if not isinstance(phase_stat, torch.Tensor) or not isinstance(updates, torch.Tensor):
@@ -163,11 +233,12 @@ def build_phase_state(
         raise ValueError("Phase EMA statistics have invalid update metadata")
     if phase_stat.dtype != torch.float32:
         raise ValueError("Phase EMA accumulator must use float32")
-    if statistics.get("phase_statistical_view") != PHASE_STATISTICAL_VIEW:
-        raise ValueError("Phase statistics use an incompatible statistical view")
-    if statistics.get("phase_statistical_view_version") != PHASE_STATISTICAL_VIEW_VERSION:
-        raise ValueError("Phase statistics use an incompatible statistical-view version")
-    tau = phase_stat.float().amax().reshape(1)
+    configured_group = int(cfg["calibration"]["group_size"])
+    layout = _layout_metadata(statistics, configured_group)
+    if statistics["layout_kind"] == "attention_softmax":
+        tau = phase_stat.float().reshape(int(layout["num_heads"]), 1)
+    else:
+        tau = group_reduce_last_dim(phase_stat.float(), configured_group, "max")
     phase_cfg = cfg["phase"]
     steps = int(phase_cfg["T"])
     return {
@@ -177,16 +248,14 @@ def build_phase_state(
         "T": steps,
         "base": float(phase_cfg["base"]),
         "max_spikes": int(phase_cfg.get("max_spikes", steps)),
-        "group_size": -1,
+        **layout,
         "tau": tau,
         "v0": (0.5 * tau * 2 ** (-steps)).float(),
-        "tau_calibration": "spikingllm_ema_channel_abs_max",
-        "tau_ema_factor": 0.99,
-        "tau_accumulator_dtype": "float32",
+        "tau_calibration": PHASE_TAU_CALIBRATION,
+        "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
         "tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
         "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
-        "phase_statistical_view": PHASE_STATISTICAL_VIEW,
-        "phase_statistical_view_version": PHASE_STATISTICAL_VIEW_VERSION,
     }
 
 
@@ -196,51 +265,75 @@ def build_site_states(
     *,
     include_clip: bool,
 ) -> dict[str, dict[str, Any]]:
-    channels = int(statistics["channels"])
-    variable_channels = bool(statistics.get("variable_channels", False))
+    _validate_statistics(statistics)
+    site_index = statistics.get("site_index")
+    if not isinstance(site_index, int):
+        raise ValueError("Per-site statistics must contain an integer site_index")
     configured_group = int(cfg["calibration"].get("group_size", -1))
-    if variable_channels and configured_group > 0:
-        raise ValueError("Variable-length Softmax site 5 only supports the default single group")
-    reduction_group_size = channels if configured_group <= 0 else configured_group
-    runtime_group_size = -1 if configured_group <= 0 else configured_group
-    minimum = _group_reduce(statistics["value_min"].double(), reduction_group_size, "min")
-    maximum = _group_reduce(statistics["value_max"].double(), reduction_group_size, "max")
+    layout = _layout_metadata(statistics, configured_group)
+    is_site5 = is_softmax_site(site_index)
+    if is_site5:
+        minimum = statistics["value_min"].double().reshape(layout["num_heads"], 1)
+        maximum = statistics["value_max"].double().reshape(layout["num_heads"], 1)
+    else:
+        minimum = group_reduce_last_dim(statistics["value_min"].double(), configured_group, "min")
+        maximum = group_reduce_last_dim(statistics["value_max"].double(), configured_group, "max")
     absolute = torch.maximum(minimum.abs(), maximum.abs()).clamp_min(1e-8)
-    saliency_counts = statistics.get("saliency_row_count")
-    if saliency_counts is None or "saliency_sum" not in statistics:
-        raise ValueError("Operator-aware GIF saliency statistics are missing for this site")
-    saliency_counts = saliency_counts.long()
-    observed = saliency_counts > 0
-    if not torch.any(observed):
-        raise ValueError("No operator-aware GIF saliency positions were observed")
-    operator_saliency = torch.zeros(channels, dtype=torch.float64)
-    operator_saliency[observed] = (
-        statistics["saliency_sum"].double()[observed] / saliency_counts[observed]
-    )
 
     phase_cfg = cfg["phase"]
     phase_state = build_phase_state(statistics, cfg)
     phase_tau = phase_state["tau"]
 
     gif_cfg = cfg["gif"]
+    if is_site5:
+        gif_state = {
+            "state_kind": "gif",
+            "format_version": SITE_STATE_FORMAT_VERSION,
+            "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
+            "parameter_layout": "softmax_fixed_range",
+            "configured_group_size": configured_group,
+            "group_size": -1,
+            "group_size_source": "site5_fixed_override",
+            "num_heads": int(layout["num_heads"]),
+            "channels_per_head": None,
+            "groups_per_head": 1,
+            "gif_policy": "softmax_fixed_range_u16",
+            "range_min": 0.0,
+            "range_max": 1.0,
+            "quantization_bits": 16,
+            "qmin": 0,
+            "qmax": 65535,
+            "scale": 1.0 / 65535.0,
+            "zero_point": 0,
+            "temporal_steps": GIF_LOCAL_STEPS,
+            "temporal_policy": "quantized_cumulative_difference",
+        }
+    else:
+        saliency_counts = statistics.get("saliency_row_count")
+        if not isinstance(saliency_counts, torch.Tensor) or saliency_counts.shape != statistics["value_min"].shape:
+            raise ValueError("Operator-aware GIF saliency statistics are missing or have the wrong shape")
+        observed = saliency_counts.long() > 0
+        if not torch.all(observed):
+            raise ValueError("Every ordinary GIF channel must have operator-aware saliency")
+        operator_saliency = statistics["saliency_sum"].double() / saliency_counts.double()
     base_bits = int(gif_cfg["base_bits"])
     add_bits = int(gif_cfg["add_bits"])
     gif_high_qmax(base_bits, add_bits)
-    low_scale, low_zero, low_min, low_max = _qparams(minimum, maximum, qmin=0, qmax=GIF_LOW_QMAX)
-    high_scale, high_zero, high_min, high_max = _qparams(
-        minimum, maximum, qmin=0, qmax=GIF_HIGH_QMAX
-    )
-    low_ratio = float(gif_cfg["low_ratio"])
-    observed_indices = torch.nonzero(observed, as_tuple=False).flatten()
-    low_channels = int(math.floor(low_ratio * observed_indices.numel()))
-    ordering = observed_indices[
-        torch.argsort(operator_saliency[observed_indices], descending=False)
-    ]
-    mask_low = torch.ones(channels, dtype=torch.bool) if variable_channels else torch.zeros(channels, dtype=torch.bool)
-    if not variable_channels:
-        mask_low[observed_indices] = False
-    mask_low[ordering[:low_channels]] = True
-    gif_state = {
+    if not is_site5:
+        low_scale, low_zero, low_min, low_max = _qparams(minimum, maximum, qmin=0, qmax=GIF_LOW_QMAX)
+        high_scale, high_zero, high_min, high_max = _qparams(minimum, maximum, qmin=0, qmax=GIF_HIGH_QMAX)
+        low_ratio = float(gif_cfg["low_ratio"])
+        mask_low = torch.zeros_like(statistics["value_min"], dtype=torch.bool)
+        if statistics["layout_kind"] == "attention_head":
+            low_channels = int(math.floor(low_ratio * mask_low.shape[-1]))
+            for head in range(mask_low.shape[0]):
+                ordering = torch.argsort(operator_saliency[head], descending=False)
+                mask_low[head, ordering[:low_channels]] = True
+        else:
+            low_channels = int(math.floor(low_ratio * mask_low.shape[-1]))
+            ordering = torch.argsort(operator_saliency, descending=False)
+            mask_low[ordering[:low_channels]] = True
+        gif_state = {
         "state_kind": "gif",
         "format_version": SITE_STATE_FORMAT_VERSION,
         "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
@@ -254,7 +347,8 @@ def build_site_states(
         "per_step_qmin": 0,
         "per_step_qmax": GIF_STEP_QMAX,
         "low_ratio": low_ratio,
-        "group_size": runtime_group_size,
+        **layout,
+        "gif_policy": "ordinary_grouped_qmax30",
         "low_scale": low_scale.float(),
         "low_zero": low_zero.float(),
         "high_scale": high_scale.float(),
@@ -263,13 +357,11 @@ def build_site_states(
         "saliency_rule": "operator_aware_spikellm_extension",
         "saliency_score": operator_saliency.float(),
         "saliency_observed": observed,
-        "variable_key_position_mask": variable_channels,
-        "unobserved_position_policy": "low_bit" if variable_channels else "not_applicable",
         "integer_decomposition": GIF_INTEGER_DECOMPOSITION,
         "scale_initialization": "direct_min_max",
         "mse_refinement": False,
         "original_spikellm_dynamic_quantization": False,
-    }
+        }
 
     mtn_cfg = cfg["mtn"]
     mtn_state = {
@@ -278,15 +370,18 @@ def build_site_states(
         "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
         "T": int(mtn_cfg["T"]),
         "K": int(mtn_cfg["K"]),
-        "group_size": runtime_group_size,
+        **layout,
         "base_scale": (2.0 * absolute).float(),
         "threshold_factor": float(mtn_cfg.get("threshold_factor", 0.75)),
     }
     states = {"phase": phase_state, "gif": gif_state, "mtn": mtn_state}
-    if not include_clip:
+    if not include_clip or not site_supports_clip(site_index):
         return states
 
-    phase_bound = phase_tau.double() * (1.0 - 2.0 ** (-int(phase_cfg["T"])))
+    phase_bound = phase_tau.double() * sum(
+        float(phase_cfg["base"]) ** (-(step + 1))
+        for step in range(int(phase_cfg["T"]))
+    )
     mtn_bound = 2.0 * int(mtn_cfg["T"]) * absolute
     gif_lower = torch.maximum(low_min, high_min)
     gif_upper = torch.minimum(low_max, high_max)
@@ -302,7 +397,7 @@ def build_site_states(
         "gif_high_qmax": GIF_HIGH_QMAX,
         "gif_per_step_qmax": GIF_STEP_QMAX,
         "gif_integer_decomposition": GIF_INTEGER_DECOMPOSITION,
-        "group_size": runtime_group_size,
+        **layout,
         "lower": lower.float(),
         "upper": upper.float(),
         "gif_low_range": (low_min.float(), low_max.float()),
@@ -331,6 +426,14 @@ def materialize_calibration_states(
     manifest: dict[str, Any] = {
         **(metadata or {}),
         "format_version": CALIBRATION_MANIFEST_FORMAT_VERSION,
+        "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
+        "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
+        "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
+        "clip_eligible_site_ids": sorted(CLIP_ELIGIBLE_SITE_IDS),
+        "clip_excluded_site_ids": [SOFTMAX_SITE_ID],
         **topology_metadata(),
         **temporal_policy_metadata(),
         "expected_num_hidden_layers": expected_num_hidden_layers,
@@ -343,24 +446,36 @@ def materialize_calibration_states(
         directory = statistics_path.parent
         key = directory.relative_to(root).as_posix()
         statistics = torch.load(statistics_path, map_location="cpu", weights_only=False)
+        _validate_statistics(statistics)
         states = build_site_states(statistics, cfg, include_clip=include_clip)
         for name, state in states.items():
             torch.save(state, directory / f"{name}_state.pt")
-        if not include_clip:
+        if not include_clip or is_softmax_site(int(statistics["site_index"])):
             (directory / "clip_state.pt").unlink(missing_ok=True)
+        gif_state = states["gif"]
         summary = {
+            "site_index": int(statistics["site_index"]),
+            "layout_kind": statistics["layout_kind"],
+            "parameter_layout": states["phase"]["parameter_layout"],
+            "configured_group_size": states["phase"]["configured_group_size"],
+            "effective_group_size": states["phase"]["group_size"],
+            "num_heads": states["phase"]["num_heads"],
+            "channels_per_head": states["phase"]["channels_per_head"],
+            "groups_per_head": states["phase"]["groups_per_head"],
+            "phase_tau_shape": list(states["phase"]["tau"].shape),
             "phase_T": states["phase"]["T"],
             "phase_base": states["phase"]["base"],
             "mtn_T": states["mtn"]["T"],
             "mtn_K_positive_and_negative": states["mtn"]["K"],
-            "gif_base_bits": states["gif"]["base_bits"],
-            "gif_add_bits": states["gif"]["add_bits"],
-            "gif_high_qmax": states["gif"]["high_qmax"],
-            "gif_temporal_steps": states["gif"]["temporal_steps"],
-            "gif_per_step_qmax": states["gif"]["per_step_qmax"],
-            "gif_low_ratio": states["gif"]["low_ratio"],
-            "group_size": states["phase"]["group_size"],
-            "clip_state_present": include_clip,
+            "mtn_parameter_shape": list(states["mtn"]["base_scale"].shape),
+            "gif_policy": gif_state["gif_policy"],
+            "gif_parameter_shape": (
+                None if is_softmax_site(int(statistics["site_index"]))
+                else list(gif_state["low_scale"].shape)
+            ),
+            "gif_temporal_steps": gif_state["temporal_steps"],
+            "clip_policy": "eligible_common_intersection" if "clip" in states else "disabled",
+            "clip_state_present": "clip" in states,
             "phase_tau_calibration": states["phase"]["tau_calibration"],
             "phase_tau_ema_factor": states["phase"]["tau_ema_factor"],
             "phase_tau_accumulator_dtype": states["phase"]["tau_accumulator_dtype"],
@@ -369,7 +484,7 @@ def materialize_calibration_states(
                 for name in states
             },
         }
-        if include_clip:
+        if "clip" in states:
             summary["clip_valid"] = bool(
                 torch.all(states["clip"]["lower"] < states["clip"]["upper"])
             )
@@ -390,6 +505,10 @@ def materialize_calibration_states(
         "final_rmsnorm": {
             "phase_state_path": str(final_phase_path.relative_to(root)),
             "phase_state_sha256": sha256_file(final_phase_path),
+            "parameter_layout": final_phase_state["parameter_layout"],
+            "configured_group_size": final_phase_state["configured_group_size"],
+            "effective_group_size": final_phase_state["group_size"],
+            "tau_shape": list(final_phase_state["tau"].shape),
         }
     }
     expected = int(cfg["calibration"]["expected_sites_per_layer"])
@@ -441,6 +560,14 @@ def collect_site_statistics(
             if (
                 metadata.get("site_topology_version") != SITE_TOPOLOGY_VERSION
                 or metadata.get("site_count") != SITE_COUNT
+                or (
+                    manifest_name == "statistics_manifest.json"
+                    and metadata.get("format_version") != STATISTICS_FORMAT_VERSION
+                )
+                or (
+                    manifest_name == "calibration_state_manifest.json"
+                    and metadata.get("format_version") != CALIBRATION_MANIFEST_FORMAT_VERSION
+                )
             ):
                 raise RuntimeError(
                     "Existing calibration artifact uses a stale site topology; "
@@ -454,14 +581,10 @@ def collect_site_statistics(
         collate_fn=CausalLMCollator(tokenizer),
     )
     if int(cfg["calibration"].get("batch_size", 1)) != 1:
-        raise ValueError("SpikingLLM Phase EMA calibration requires batch_size=1")
+        raise ValueError("Phase EMA calibration requires batch_size=1")
     controller.mode = "collect"
     actual_prefix_length = prefix_length(prefix_key_values)
-    controller.statistics = StatisticsStore(
-        max_channels_by_site={
-            5: int(cfg["data"]["max_seq_length"]) + actual_prefix_length
-        }
-    )
+    controller.statistics = StatisticsStore()
     install_prefix_kv_forward(model, prefix_key_values, controller=controller)
     model.eval()
     final_norm = get_model_parts(model).final_norm
@@ -529,8 +652,15 @@ def collect_site_statistics(
         "rotation_state_sha256": None,
         "learning_rate": None,
         "seed": int(cfg["experiment"]["seed"]),
-        "site5_max_channels": int(cfg["data"]["max_seq_length"]) + actual_prefix_length,
         "actual_prefix_length": actual_prefix_length,
+        "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
+        "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
+        "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
+        "clip_eligible_site_ids": sorted(CLIP_ELIGIBLE_SITE_IDS),
+        "clip_excluded_site_ids": [SOFTMAX_SITE_ID],
         **(extra_metadata or {}),
         "purpose": purpose,
         "analysis_only": purpose == "vanilla_analysis_calibration",

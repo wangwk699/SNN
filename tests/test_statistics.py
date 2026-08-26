@@ -1,85 +1,82 @@
 import torch
-import pytest
 
 from snn2.calibration import build_phase_state
-from snn2.phase_statistics import phase_statistical_view
-from snn2.stats import StatisticsStore
-
-
-def test_softmax_site_uses_fixed_max_position_state():
-    store = StatisticsStore(max_channels_by_site={5: 16})
-    first = torch.rand(1, 2, 4, 4)
-    store.update(0, 5, first, phase_activation=phase_statistical_view(5, first))
-    store.update_saliency(0, 5, torch.rand(1, 2, 4, 4))
-    second = torch.rand(1, 2, 7, 7)
-    store.update(0, 5, second, phase_activation=phase_statistical_view(5, second))
-    store.update_saliency(0, 5, torch.rand(1, 2, 7, 7))
-    stats = next(iter(store.items.values()))
-    assert stats.channels == 16
-    assert stats.variable_channels
-    assert stats.phase_channels == 2
-    assert torch.all(stats.saliency_row_count[:7] > 0)
-    assert torch.all(stats.saliency_row_count[7:] == 0)
-
-def test_phase_tau_ema_matches_spikingllm_update_and_forgets_outlier():
-    store = StatisticsStore()
-    first = torch.tensor([[[100.0, 2.0]]])
-    second = torch.tensor([[[1.0, 4.0]]])
-    store.update(0, 1, first)
-    store.update(0, 1, second)
-    stats = next(iter(store.items.values()))
-    expected = torch.tensor([0.99 * 100.0 + 0.01 * 1.0, 0.99 * 2.0 + 0.01 * 4.0])
-    assert stats.phase_ema_abs_max.dtype == torch.float32
-    torch.testing.assert_close(stats.phase_ema_abs_max, expected.to(torch.float32))
-    assert stats.phase_ema_abs_max[0] < stats.value_max[0]
-    assert stats.phase_ema_updates.tolist() == [2, 2]
-
-
-@pytest.mark.parametrize(
-    ("site", "shape", "expected_shape"),
-    [
-        (2, (2, 4, 3, 5), (2, 3, 20)),
-        (3, (2, 2, 7, 5), (2, 7, 10)),
-        (4, (2, 2, 7, 5), (2, 7, 10)),
-        (5, (2, 4, 3, 7), (2, 21, 4)),
-        (6, (2, 4, 3, 5), (2, 3, 20)),
-    ],
+from snn2.phase_statistics import (
+    PHASE_TAU_ACCUMULATOR_DTYPE,
+    PHASE_TAU_CALIBRATION,
+    PHASE_TAU_CHANNEL_POLICY,
+    PHASE_TAU_EMA_FACTOR,
+    PHASE_TAU_REDUCTION_POLICY,
 )
-def test_phase_statistical_view_matches_spikingllm_layout(site, shape, expected_shape):
-    x = torch.arange(torch.tensor(shape).prod().item()).reshape(shape)
-    view = phase_statistical_view(site, x)
-    assert tuple(view.shape) == expected_shape
-    torch.testing.assert_close(view.flatten().sort().values, x.flatten().sort().values)
+from snn2.stats import StatisticsStore
+from snn2.temporal_ops import STATISTICS_FORMAT_VERSION
 
 
-def test_phase_channels_are_independent_from_generic_softmax_channels():
-    store = StatisticsStore(max_channels_by_site={5: 7})
-    activation = torch.rand(1, 4, 3, 7)
-    store.update(
-        0, 5, activation, phase_activation=phase_statistical_view(5, activation)
-    )
-    stats = next(iter(store.items.values()))
-    assert stats.channels == 7
-    assert stats.phase_channels == 4
-    assert stats.value_min.numel() == 7
-    assert stats.phase_ema_abs_max.numel() == 4
+def _cfg(group_size=-1):
+    return {
+        "calibration": {"group_size": group_size},
+        "phase": {"T": 4, "base": 2.0, "max_spikes": 4},
+    }
 
 
-def test_phase_tau_is_global_max_after_per_channel_ema():
+def test_last_dim_statistics_use_fp32_ordered_ema():
     store = StatisticsStore()
-    generic = torch.zeros(1, 1)
-    store.update(0, 1, generic, phase_activation=torch.tensor([[[100.0, 0.0]]]))
-    store.update(0, 1, generic, phase_activation=torch.tensor([[[0.0, 100.0]]]))
+    store.update(0, 1, torch.tensor([[[1.0, 2.0, 3.0, 4.0]]]))
+    store.update(0, 1, torch.tensor([[[2.0, 4.0, 6.0, 8.0]]]))
+    state = next(iter(store.items.values())).state_dict()
+    assert state["layout_kind"] == "last_dim"
+    assert state["phase_ema_abs_max"].dtype == torch.float32
+    assert torch.allclose(state["phase_ema_abs_max"], torch.tensor([1.01, 2.02, 3.03, 4.04]))
+
+
+def test_attention_statistics_preserve_heads_and_do_not_cross_contaminate():
+    store = StatisticsStore()
+    x = torch.tensor([[[[1.0, 2.0, 3.0, 4.0]], [[10.0, 20.0, 30.0, 40.0]]]])
+    store.update(0, 2, x)
+    state = next(iter(store.items.values())).state_dict()
+    assert state["layout_kind"] == "attention_head"
+    assert state["num_heads"] == 2
+    assert state["channels_per_head"] == 4
+    assert state["phase_ema_abs_max"].shape == (2, 4)
+    assert torch.equal(state["phase_ema_abs_max"], x[0, :, 0])
+
+
+def test_attention_grouped_phase_tau_is_head_local():
+    store = StatisticsStore()
+    x = torch.tensor([[[[1.0, 2.0, 3.0, 4.0]], [[10.0, 20.0, 30.0, 40.0]]]])
+    store.update(0, 2, x)
     statistics = next(iter(store.items.values())).state_dict()
-    state = build_phase_state(
-        statistics,
-        {
-            "calibration": {"group_size": 1},
-            "phase": {"T": 4, "base": 2.0, "surrogate_slope": 2.0},
-        },
-    )
-    torch.testing.assert_close(state["tau"], torch.tensor([99.0]))
-    assert state["tau"].numel() == 1
-    assert state["group_size"] == -1
-    assert "surrogate_slope" not in state
-    assert state["tau_reduction_policy"] == "per_channel_ema_then_global_max"
+    grouped = build_phase_state(statistics, _cfg(2))
+    assert torch.equal(grouped["tau"], torch.tensor([[2.0, 4.0], [20.0, 40.0]]))
+    assert grouped["parameter_layout"] == "attention_head_grouped"
+    per_head = build_phase_state(statistics, _cfg(-1))
+    assert torch.equal(per_head["tau"], torch.tensor([[4.0], [40.0]]))
+
+
+def test_site5_statistics_are_per_head_and_allow_variable_qk():
+    store = StatisticsStore()
+    store.update(0, 5, torch.rand(1, 2, 3, 4))
+    store.update(0, 5, torch.rand(1, 2, 1, 7))
+    state = next(iter(store.items.values())).state_dict()
+    assert state["layout_kind"] == "attention_softmax"
+    assert state["value_min"].shape == (2,)
+    assert state["phase_ema_abs_max"].shape == (2,)
+    assert state["saliency_sum"].numel() == 0
+    phase = build_phase_state(state, _cfg(3))
+    assert phase["tau"].shape == (2, 1)
+    assert phase["group_size"] == -1
+
+
+def test_statistics_schema_and_manifest_are_versioned(tmp_path):
+    store = StatisticsStore()
+    store.update(0, 1, torch.ones(1, 2, 4))
+    store.update_global("final_rmsnorm", torch.ones(1, 2, 4))
+    manifest = store.reduce_and_save(tmp_path)
+    state = torch.load(next(tmp_path.glob("layer_*/site_*/statistics.pt")), weights_only=False)
+    assert manifest["format_version"] == STATISTICS_FORMAT_VERSION
+    assert state["format_version"] == STATISTICS_FORMAT_VERSION
+    assert state["phase_tau_calibration"] == PHASE_TAU_CALIBRATION
+    assert state["phase_tau_ema_factor"] == PHASE_TAU_EMA_FACTOR
+    assert state["phase_tau_accumulator_dtype"] == PHASE_TAU_ACCUMULATOR_DTYPE
+    assert state["phase_tau_channel_policy"] == PHASE_TAU_CHANNEL_POLICY
+    assert state["phase_tau_reduction_policy"] == PHASE_TAU_REDUCTION_POLICY

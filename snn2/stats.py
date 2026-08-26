@@ -7,17 +7,56 @@ from typing import Any
 import torch
 
 from .artifacts import write_json
-from .phase_statistics import PHASE_STATISTICAL_VIEW, PHASE_STATISTICAL_VIEW_VERSION
-
-from .sites import (
-    SITE_COORDINATES, SITE_COUNT, SITE_IDS, SITE_NAMES, SITE_TOPOLOGY_VERSION,
-    site_key, topology_metadata,
+from .phase_statistics import (
+    PHASE_TAU_ACCUMULATOR_DTYPE,
+    PHASE_TAU_CALIBRATION,
+    PHASE_TAU_CHANNEL_POLICY,
+    PHASE_TAU_EMA_FACTOR,
+    PHASE_TAU_REDUCTION_POLICY,
 )
+from .sites import (
+    is_attention_head_grouped_site,
+    is_softmax_site,
+    site_key,
+    topology_metadata,
+)
+from .temporal_ops import STATISTICS_FORMAT_VERSION
+
+
+def statistics_layout(site_index: int | None) -> str:
+    if site_index is None:
+        return "last_dim"
+    if is_softmax_site(site_index):
+        return "attention_softmax"
+    if is_attention_head_grouped_site(site_index):
+        return "attention_head"
+    return "last_dim"
+
+
+def _shape_metadata(layout_kind: str, activation: torch.Tensor) -> tuple[int | None, int | None, int]:
+    if layout_kind == "last_dim":
+        if activation.ndim < 1:
+            raise ValueError("last_dim statistics require a non-scalar tensor")
+        channels = int(activation.shape[-1])
+        return None, None, channels
+    if activation.ndim != 4:
+        raise ValueError(
+            f"{layout_kind} statistics require [B,H,L,D/K], got {tuple(activation.shape)}"
+        )
+    heads = int(activation.shape[1])
+    if layout_kind == "attention_head":
+        width = int(activation.shape[-1])
+        return heads, width, heads * width
+    return heads, None, heads
+
 
 @dataclass
 class SiteStatistics:
+    site_index: int | None
+    layout_kind: str
+    num_heads: int | None
+    channels_per_head: int | None
     channels: int
-    variable_channels: bool
     value_min: torch.Tensor
     value_max: torch.Tensor
     abs_max: torch.Tensor
@@ -27,141 +66,106 @@ class SiteStatistics:
     saliency_row_count: torch.Tensor
     row_count: torch.Tensor
     tensor_count: torch.Tensor
-    phase_channels: int | None
     phase_ema_abs_max: torch.Tensor
     phase_ema_updates: torch.Tensor
 
     @classmethod
-    def create(cls, channels: int, variable_channels: bool = False) -> "SiteStatistics":
+    def create(cls, site_index: int | None, activation: torch.Tensor) -> "SiteStatistics":
+        layout = statistics_layout(site_index)
+        heads, width, channels = _shape_metadata(layout, activation)
+        shape = (
+            (channels,)
+            if layout == "last_dim"
+            else ((heads, width) if layout == "attention_head" else (heads,))
+        )
+        saliency_shape = shape if layout != "attention_softmax" else (0,)
         return cls(
+            site_index=site_index,
+            layout_kind=layout,
+            num_heads=heads,
+            channels_per_head=width,
             channels=channels,
-            variable_channels=variable_channels,
-            value_min=torch.full((channels,), torch.inf, dtype=torch.float64),
-            value_max=torch.full((channels,), -torch.inf, dtype=torch.float64),
-            abs_max=torch.zeros(channels, dtype=torch.float64),
-            sum_abs=torch.zeros(channels, dtype=torch.float64),
-            sum_sq=torch.zeros(channels, dtype=torch.float64),
-            saliency_sum=torch.zeros(channels, dtype=torch.float64),
-            saliency_row_count=torch.zeros(channels, dtype=torch.int64),
+            value_min=torch.full(shape, torch.inf, dtype=torch.float64),
+            value_max=torch.full(shape, -torch.inf, dtype=torch.float64),
+            abs_max=torch.zeros(shape, dtype=torch.float64),
+            sum_abs=torch.zeros(shape, dtype=torch.float64),
+            sum_sq=torch.zeros(shape, dtype=torch.float64),
+            saliency_sum=torch.zeros(saliency_shape, dtype=torch.float64),
+            saliency_row_count=torch.zeros(saliency_shape, dtype=torch.int64),
             row_count=torch.zeros((), dtype=torch.int64),
             tensor_count=torch.zeros((), dtype=torch.int64),
-            phase_channels=None,
-            phase_ema_abs_max=torch.empty(0, dtype=torch.float32),
-            phase_ema_updates=torch.empty(0, dtype=torch.int64),
+            phase_ema_abs_max=torch.zeros(shape, dtype=torch.float32),
+            phase_ema_updates=torch.zeros(shape, dtype=torch.int64),
         )
 
-    def _ensure_phase_channels(self, channels: int) -> None:
-        channels = int(channels)
-        if channels <= 0:
-            raise ValueError("Phase channel dimension must be positive")
-        if self.phase_channels is None:
-            self.phase_channels = channels
-            self.phase_ema_abs_max = torch.zeros(channels, dtype=torch.float32)
-            self.phase_ema_updates = torch.zeros(channels, dtype=torch.int64)
-            return
-        if self.phase_channels != channels:
+    def _reduced(self, activation: torch.Tensor) -> tuple[torch.Tensor, int]:
+        heads, width, channels = _shape_metadata(self.layout_kind, activation)
+        if (heads, width, channels) != (self.num_heads, self.channels_per_head, self.channels):
             raise ValueError(
-                "Phase channel dimension changed from "
-                f"{self.phase_channels} to {channels}"
+                "Statistics layout changed: "
+                f"expected heads/width/channels={(self.num_heads, self.channels_per_head, self.channels)}, "
+                f"got={(heads, width, channels)}"
             )
+        work = activation.detach().float()
+        if self.layout_kind == "last_dim":
+            values = work.reshape(-1, work.shape[-1])
+            return values, int(values.shape[0])
+        if self.layout_kind == "attention_head":
+            # [B,H,L,D] -> [B*L,H,D], preserving H and D.
+            values = work.permute(0, 2, 1, 3).reshape(-1, work.shape[1], work.shape[3])
+            return values, int(values.shape[0])
+        # Site 5: all query/key positions reduce independently inside each head.
+        values = work.permute(0, 2, 3, 1).reshape(-1, work.shape[1])
+        return values, int(values.shape[0])
 
     @torch.no_grad()
-    def update(
-        self,
-        activation: torch.Tensor,
-        *,
-        phase_activation: torch.Tensor | None = None,
-    ) -> None:
-        values = activation.detach().reshape(-1, activation.shape[-1])
-        active = int(values.shape[-1])
-        if (not self.variable_channels and active != self.channels) or active > self.channels:
-            raise ValueError(f"Channel dimension changed from {self.channels} to {values.shape[-1]}")
-        work = values.float()
-        # self.value_min[:active].minimum_(work.amin(dim=0).double().cpu())
-        # self.value_max[:active].maximum_(work.amax(dim=0).double().cpu())
-        # self.abs_max[:active].maximum_(work.abs().amax(dim=0).double().cpu())
-
-        current_min = work.amin(dim=0).double().cpu()
-        current_max = work.amax(dim=0).double().cpu()
-        current_abs_max = work.abs().amax(dim=0).double().cpu()
-        self.value_min[:active].copy_(torch.minimum(self.value_min[:active], current_min))
-        self.value_max[:active].copy_(torch.maximum(self.value_max[:active], current_max))
-        self.abs_max[:active].copy_(torch.maximum(self.abs_max[:active], current_abs_max))
-
-        phase_source = activation if phase_activation is None else phase_activation
-        phase_values = phase_source.detach().reshape(-1, phase_source.shape[-1])
-        phase_work = phase_values.float()
-        phase_active = int(phase_values.shape[-1])
-        self._ensure_phase_channels(phase_active)
-        current_phase_abs_max = phase_work.abs().amax(dim=0).float().cpu()
-        previous_updates = self.phase_ema_updates
-        first = previous_updates == 0
-        ema = self.phase_ema_abs_max
-        ema.copy_(
+    def update(self, activation: torch.Tensor) -> None:
+        values, rows = self._reduced(activation)
+        current_min = values.amin(dim=0).double().cpu()
+        current_max = values.amax(dim=0).double().cpu()
+        current_abs = values.abs().amax(dim=0).float().cpu()
+        self.value_min.copy_(torch.minimum(self.value_min, current_min))
+        self.value_max.copy_(torch.maximum(self.value_max, current_max))
+        self.abs_max.copy_(torch.maximum(self.abs_max, current_abs.double()))
+        first = self.phase_ema_updates == 0
+        self.phase_ema_abs_max.copy_(
             torch.where(
                 first,
-                current_phase_abs_max,
-                0.99 * ema + 0.01 * current_phase_abs_max,
+                current_abs,
+                PHASE_TAU_EMA_FACTOR * self.phase_ema_abs_max
+                + (1.0 - PHASE_TAU_EMA_FACTOR) * current_abs,
             )
         )
-        previous_updates.add_(1)
-
-        self.sum_abs[:active].add_(work.abs().sum(dim=0).double().cpu())
-        self.sum_sq[:active].add_(work.square().sum(dim=0).double().cpu())
-        self.row_count.add_(values.shape[0])
+        self.phase_ema_updates.add_(1)
+        self.sum_abs.add_(values.abs().sum(dim=0).double().cpu())
+        self.sum_sq.add_(values.square().sum(dim=0).double().cpu())
+        self.row_count.add_(rows)
         self.tensor_count.add_(1)
 
     @torch.no_grad()
     def update_saliency(self, score: torch.Tensor) -> None:
-        values = score.detach().reshape(-1, score.shape[-1])
-        active = int(values.shape[-1])
-        if (not self.variable_channels and active != self.channels) or active > self.channels:
-            raise ValueError(
-                f"Saliency channel dimension changed from {self.channels} to {values.shape[-1]}"
-            )
-        self.saliency_sum[:active].add_(values.float().sum(dim=0).double().cpu())
-        self.saliency_row_count[:active].add_(values.shape[0])
-
-    @torch.no_grad()
-    def update_saliency_reduced(self, score_sum: torch.Tensor, row_count: int) -> None:
-        active = int(score_sum.numel())
-        if (not self.variable_channels and active != self.channels) or active > self.channels:
-            raise ValueError(
-                f"Reduced saliency channel dimension changed from {self.channels} to {active}"
-            )
-        self.saliency_sum[:active].add_(score_sum.detach().double().cpu())
-        self.saliency_row_count[:active].add_(int(row_count))
+        if self.layout_kind == "attention_softmax":
+            raise ValueError("Softmax Site 5 does not collect GIF saliency")
+        values, rows = self._reduced(score)
+        self.saliency_sum.add_(values.sum(dim=0).double().cpu())
+        self.saliency_row_count.add_(rows)
 
     def distributed_reduce(self) -> None:
         if not torch.distributed.is_available() or not torch.distributed.is_initialized():
             return
         if torch.distributed.get_world_size() > 1:
             raise RuntimeError(
-                "SpikingLLM Phase EMA calibration is order-dependent and only supports "
-                "single-process calibration"
+                "Phase EMA calibration is order-dependent and only supports single-process calibration"
             )
-        backend = torch.distributed.get_backend()
-        device = torch.device("cuda") if backend == "nccl" else torch.device("cpu")
-        reductions = (
-            (self.value_min, torch.distributed.ReduceOp.MIN),
-            (self.value_max, torch.distributed.ReduceOp.MAX),
-            (self.abs_max, torch.distributed.ReduceOp.MAX),
-            (self.sum_abs, torch.distributed.ReduceOp.SUM),
-            (self.sum_sq, torch.distributed.ReduceOp.SUM),
-            (self.saliency_sum, torch.distributed.ReduceOp.SUM),
-            (self.saliency_row_count, torch.distributed.ReduceOp.SUM),
-            (self.row_count, torch.distributed.ReduceOp.SUM),
-            (self.tensor_count, torch.distributed.ReduceOp.SUM),
-        )
-        for tensor, operation in reductions:
-            work = tensor.to(device)
-            torch.distributed.all_reduce(work, op=operation)
-            tensor.copy_(work.cpu())
 
     def state_dict(self) -> dict[str, Any]:
         return {
+            "format_version": STATISTICS_FORMAT_VERSION,
+            "site_index": self.site_index,
+            "layout_kind": self.layout_kind,
+            "num_heads": self.num_heads,
+            "channels_per_head": self.channels_per_head,
             "channels": self.channels,
-            "variable_channels": self.variable_channels,
             "value_min": self.value_min,
             "value_max": self.value_max,
             "abs_max": self.abs_max,
@@ -171,76 +175,56 @@ class SiteStatistics:
             "saliency_row_count": self.saliency_row_count,
             "row_count": self.row_count,
             "tensor_count": self.tensor_count,
-            "phase_channels": self.phase_channels,
             "phase_ema_abs_max": self.phase_ema_abs_max,
             "phase_ema_updates": self.phase_ema_updates,
-            "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
-            "phase_tau_ema_factor": 0.99,
-            "phase_tau_accumulator_dtype": "float32",
-            "phase_statistical_view": PHASE_STATISTICAL_VIEW,
-            "phase_statistical_view_version": PHASE_STATISTICAL_VIEW_VERSION,
+            "phase_tau_calibration": PHASE_TAU_CALIBRATION,
+            "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+            "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
+            "phase_tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
+            "phase_tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
         }
 
     def summary(self) -> dict[str, Any]:
         count = max(int(self.row_count.item()), 1)
+        observed = self.saliency_row_count > 0
         return {
+            "format_version": STATISTICS_FORMAT_VERSION,
+            "site_index": self.site_index,
+            "layout_kind": self.layout_kind,
+            "num_heads": self.num_heads,
+            "channels_per_head": self.channels_per_head,
             "channels": self.channels,
-            "phase_channels": self.phase_channels,
+            "statistics_shape": list(self.value_min.shape),
             "row_count": int(self.row_count.item()),
             "tensor_count": int(self.tensor_count.item()),
-            "global_min": float(self.value_min.min().item()),
-            "global_max": float(self.value_max.max().item()),
-            "global_abs_max": float(self.abs_max.max().item()),
-            "mean_abs": float((self.sum_abs / count).mean().item()),
-            "mean_square": float((self.sum_sq / count).mean().item()),
-            "saliency_row_count_min_seen": int(
-                self.saliency_row_count[self.saliency_row_count > 0].min().item()
-            ) if torch.any(self.saliency_row_count > 0) else 0,
-            "saliency_observed_channels": int((self.saliency_row_count > 0).sum().item()),
-            "mean_operator_saliency": float(
-                (
-                    self.saliency_sum[self.saliency_row_count > 0]
-                    / self.saliency_row_count[self.saliency_row_count > 0].clamp_min(1)
-                ).mean().item()
-                if torch.any(self.saliency_row_count > 0)
-                else 0.0
-            ),
-            "phase_tau_statistic": "spikingllm_ema_channel_abs_max",
-            "phase_tau_ema_factor": 0.99,
-            "phase_tau_accumulator_dtype": "float32",
-            "phase_statistical_view": PHASE_STATISTICAL_VIEW,
-            "phase_statistical_view_version": PHASE_STATISTICAL_VIEW_VERSION,
-            "phase_ema_updates_min_seen": int(
-                self.phase_ema_updates[self.phase_ema_updates > 0].min().item()
-            ) if torch.any(self.phase_ema_updates > 0) else 0,
-            "phase_ema_updates_max": int(self.phase_ema_updates.max().item()),
+            "global_min": float(self.value_min.min()),
+            "global_max": float(self.value_max.max()),
+            "global_abs_max": float(self.abs_max.max()),
+            "mean_abs": float((self.sum_abs / count).mean()),
+            "mean_square": float((self.sum_sq / count).mean()),
+            "saliency_observed_channels": int(observed.sum()),
+            "phase_tau_calibration": PHASE_TAU_CALIBRATION,
+            "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+            "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
+            "phase_tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
+            "phase_tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+            "phase_ema_updates_min_seen": int(self.phase_ema_updates.min()),
+            "phase_ema_updates_max": int(self.phase_ema_updates.max()),
         }
 
 
 class StatisticsStore:
-    def __init__(self, max_channels_by_site: dict[int, int] | None = None):
+    def __init__(self) -> None:
         self.items: dict[str, SiteStatistics] = {}
         self.global_items: dict[str, SiteStatistics] = {}
-        self.max_channels_by_site = dict(max_channels_by_site or {})
 
-    def update(
-        self,
-        layer_index: int,
-        site_index: int,
-        activation: torch.Tensor,
-        *,
-        phase_activation: torch.Tensor | None = None,
-    ) -> None:
+    def update(self, layer_index: int, site_index: int, activation: torch.Tensor) -> None:
         key = site_key(layer_index, site_index)
         if key not in self.items:
-            variable = site_index in self.max_channels_by_site
-            channels = self.max_channels_by_site.get(site_index, int(activation.shape[-1]))
-            self.items[key] = SiteStatistics.create(channels, variable_channels=variable)
-        self.items[key].update(activation, phase_activation=phase_activation)
+            self.items[key] = SiteStatistics.create(site_index, activation)
+        self.items[key].update(activation)
 
-    def update_saliency(
-        self, layer_index: int, site_index: int, score: torch.Tensor
-    ) -> None:
+    def update_saliency(self, layer_index: int, site_index: int, score: torch.Tensor) -> None:
         key = site_key(layer_index, site_index)
         if key not in self.items:
             raise RuntimeError(f"Activation statistics must be recorded before saliency: {key}")
@@ -248,24 +232,17 @@ class StatisticsStore:
 
     def update_global(self, name: str, activation: torch.Tensor) -> None:
         if name not in self.global_items:
-            self.global_items[name] = SiteStatistics.create(int(activation.shape[-1]))
+            self.global_items[name] = SiteStatistics.create(None, activation)
         self.global_items[name].update(activation)
-
-    def update_saliency_reduced(
-        self,
-        layer_index: int,
-        site_index: int,
-        score_sum: torch.Tensor,
-        row_count: int,
-    ) -> None:
-        key = site_key(layer_index, site_index)
-        if key not in self.items:
-            raise RuntimeError(f"Activation statistics must be recorded before saliency: {key}")
-        self.items[key].update_saliency_reduced(score_sum, row_count)
 
     def reduce_and_save(self, root: str | Path) -> dict[str, Any]:
         root = Path(root)
-        manifest: dict[str, Any] = {"format_version": 1, **topology_metadata(), "sites": {}}
+        manifest: dict[str, Any] = {
+            "format_version": STATISTICS_FORMAT_VERSION,
+            "statistics_layout_policy": "native_site_layout_v2",
+            **topology_metadata(),
+            "sites": {},
+        }
         for key, stats in sorted(self.items.items()):
             stats.distributed_reduce()
             directory = root / key

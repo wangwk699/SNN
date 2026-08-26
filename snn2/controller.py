@@ -5,8 +5,8 @@ from typing import Any
 
 import torch
 
-from .neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, StaticGIF
-from .sites import site_key
+from .neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, gif_module_from_state
+from .sites import site_key, site_supports_clip
 from .stats import StatisticsStore
 from .state_validation import validate_site_state_bundle
 from .temporal_ops import from_temporal, to_temporal
@@ -57,10 +57,11 @@ class SiteController:
         if self.site_root is None:
             raise RuntimeError("A calibration site_root is required for replacement/deployment")
 
+        clip_enabled = self.common_clip_enabled and site_supports_clip(site_index)
         if self.mode == "phase":
-            required = ("phase", "clip") if self.common_clip_enabled else ("phase",)
+            required = ("phase", "clip") if clip_enabled else ("phase",)
         elif self.mode == "gif":
-            required = ("gif", "clip") if self.common_clip_enabled else ("gif",)
+            required = ("gif", "clip") if clip_enabled else ("gif",)
         elif self.mode.startswith("deploy_"):
             neuron = self.mode.removeprefix("deploy_")
             if neuron not in {"phase", "gif", "mtn"}:
@@ -73,7 +74,7 @@ class SiteController:
         modules = self._modules.setdefault(key, {})
         factories = {
             "phase": PhaseSurrogate,
-            "gif": StaticGIF,
+            "gif": gif_module_from_state,
             "mtn": MultiThresholdNeuron,
             "clip": Clipper,
         }
@@ -110,42 +111,21 @@ class SiteController:
         if self.mode == "collect":
             self.statistics.update_saliency(layer_index, site_index, score)
 
-    def record_saliency_reduced(
-        self,
-        layer_index: int,
-        site_index: int,
-        score_sum: torch.Tensor,
-        row_count: int,
-    ) -> None:
-        if self.mode == "collect":
-            self.statistics.update_saliency_reduced(
-                layer_index, site_index, score_sum, row_count
-            )
-
     def record_activation(
         self,
         layer_index: int,
         site_index: int,
         x: torch.Tensor,
-        *,
-        phase_activation: torch.Tensor | None = None,
     ) -> None:
         """Record calibration statistics without changing the runtime tensor."""
         if self.mode == "collect":
-            self.statistics.update(
-                layer_index,
-                site_index,
-                x,
-                phase_activation=phase_activation,
-            )
+            self.statistics.update(layer_index, site_index, x)
 
     def apply(
         self,
         layer_index: int,
         site_index: int,
         x: torch.Tensor,
-        *,
-        phase_activation: torch.Tensor | None = None,
     ) -> torch.Tensor:
         recorder = self.regression_recorder
         checkpoint = f"layer_{layer_index:03d}/site_{site_index:02d}"
@@ -156,12 +136,7 @@ class SiteController:
                 self.record_regression(f"{checkpoint}/post", x)
             return x
         if self.mode == "collect":
-            self.statistics.update(
-                layer_index,
-                site_index,
-                x,
-                phase_activation=phase_activation,
-            )
+            self.statistics.update(layer_index, site_index, x)
             if recorder is not None:
                 self.record_regression(f"{checkpoint}/post", x)
             return x
@@ -172,13 +147,13 @@ class SiteController:
                 module.to(x.device)
         if self.mode == "phase":
             output = modules["phase"](x)
-            output = modules["clip"](output) if self.common_clip_enabled else output
+            output = modules["clip"](output) if self.common_clip_enabled and site_supports_clip(site_index) else output
             if recorder is not None:
                 self.record_regression(f"{checkpoint}/post", output)
             return output
         if self.mode == "gif":
             output = modules["gif"](x)
-            output = modules["clip"](output) if self.common_clip_enabled else output
+            output = modules["clip"](output) if self.common_clip_enabled and site_supports_clip(site_index) else output
             if recorder is not None:
                 self.record_regression(f"{checkpoint}/post", output)
             return output

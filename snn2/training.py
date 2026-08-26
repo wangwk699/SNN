@@ -17,6 +17,7 @@ from .model_integration import install_model_integration
 from .modeling import load_model, load_tokenizer, model_source_for_stage, prefix_ids_for_stage, prefix_key_values_for_stage, rotation_state
 from .prefix_cache import install_prefix_kv_forward
 from .state_validation import validate_site_state_bundle
+from .temporal_ops import CALIBRATION_GROUPING_POLICY, STATISTICS_FORMAT_VERSION
 
 
 def format_runtime_hms(runtime_seconds: float) -> str:
@@ -71,7 +72,15 @@ def capture_training_artifact_provenance(
             }
         )
     if is_aware_ann_mode(cfg):
-        validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)
+        validation = validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)
+        manifest_metadata = validation["manifest"]
+        expected_group = int(cfg["calibration"]["group_size"])
+        if (
+            manifest_metadata.get("calibration_group_size") != expected_group
+            or manifest_metadata.get("calibration_grouping_policy") != CALIBRATION_GROUPING_POLICY
+            or manifest_metadata.get("statistics_format_version") != STATISTICS_FORMAT_VERSION
+        ):
+            raise ValueError("ANN-training calibration grouping provenance differs from config")
         calibration_manifest = (
             layout.ann_training_site_dir / "calibration_state_manifest.json"
         )
@@ -83,6 +92,11 @@ def capture_training_artifact_provenance(
                 "ann_training_calibration_manifest_sha256": sha256_file(
                     calibration_manifest
                 ),
+                "ann_training_calibration_group_size": int(
+                    cfg["calibration"]["group_size"]
+                ),
+                "ann_training_calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+                "statistics_format_version": STATISTICS_FORMAT_VERSION,
             }
         )
     return captured
@@ -127,6 +141,9 @@ def validate_recorded_training_artifact_provenance(
         "ann_training_prefix_token_ids",
         "ann_training_calibration_root",
         "ann_training_calibration_manifest_sha256",
+        "ann_training_calibration_group_size",
+        "ann_training_calibration_grouping_policy",
+        "statistics_format_version",
     )
     recorded = {key: recorded_result[key] for key in keys if key in recorded_result}
     try:
