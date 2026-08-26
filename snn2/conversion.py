@@ -277,6 +277,7 @@ def create_conversion(
     ann_checkpoint = layout.ann_checkpoint_dir
     ann_config = ann_checkpoint / "config.json"
     expected_num_hidden_layers = _ann_num_hidden_layers(ann_config)
+    reused = conversion_reuses_ann_training_artifacts(cfg)
     prefix, validation, manifest_path, training_provenance = _source_bundle(cfg, layout)
     controller = SiteController(site_root=layout.conversion_site_dir)
     steps = controller.set_deployment(
@@ -289,7 +290,6 @@ def create_conversion(
     rotation_path = layout.rotation_dir / "rotation_state.pt"
     if rotation_enabled and not rotation_path.exists():
         raise FileNotFoundError(rotation_path)
-    reused = conversion_reuses_ann_training_artifacts(cfg)
     metadata = {
         "format_version": CONVERSION_METADATA_FORMAT_VERSION,
         "experiment": cfg["experiment"],

@@ -7,7 +7,8 @@ import torch
 
 from snn2.artifacts import sha256_file
 from snn2.calibration import materialize_calibration_states
-from snn2.conversion import validate_conversion_metadata
+from snn2.conversion import create_conversion, validate_conversion_metadata
+from snn2.controller import SiteController
 from snn2.sites import SITE_IDS, SITE_NAMES
 from snn2.temporal_ops import (
     CALIBRATION_GROUPING_POLICY,
@@ -236,3 +237,65 @@ def test_conversion_rejects_stale_post_finetuning_clip_state(tmp_path):
     torch.save({}, stale / "clip_state.pt")
     with pytest.raises(ValueError, match="clip-free"):
         validate_conversion_metadata(_cfg(), layout, "gif")
+
+
+@pytest.mark.parametrize(
+    ("ann_mode", "expected_reused", "expected_clip_policy"),
+    [
+        ("phase_aware", True, "allow_eligible"),
+        ("gif_aware", True, "allow_eligible"),
+        ("vanilla", False, "forbid_all"),
+        ("unaware", False, "forbid_all"),
+    ],
+)
+def test_create_conversion_selects_clip_policy_and_records_reuse(
+    monkeypatch, tmp_path, ann_mode, expected_reused, expected_clip_policy
+):
+    layout, _ = _prepare(tmp_path)
+    cfg = _cfg()
+    cfg["experiment"]["ann_mode"] = ann_mode
+    cfg["prefix"] = {"enabled": ann_mode != "vanilla"}
+    cfg["ann_training"] = {"prefix_enabled": ann_mode != "vanilla"}
+    cfg["replacement"] = {"common_clip_enabled": False}
+    cfg["post_finetuning"]["prefix_enabled"] = False
+    manifest = (
+        layout.post_finetuning_site_dir / "calibration_state_manifest.json"
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        "snn2.conversion._source_bundle",
+        lambda _cfg, _layout: (
+            {
+                "prefix_source_stage": "pre_finetuning"
+                if expected_reused
+                else "post_finetuning",
+                "prefix_token_ids": [],
+                "prefix_state_sha256": None,
+                "prefix_kv_sha256": None,
+                "prefix_root": None,
+            },
+            {"temporal_steps": {"phase": 4}},
+            manifest,
+            {},
+        ),
+    )
+
+    def fake_set_deployment(self, neuron, *, clip_bundle_policy):
+        captured["neuron"] = neuron
+        captured["clip_bundle_policy"] = clip_bundle_policy
+        return 4
+
+    monkeypatch.setattr(SiteController, "set_deployment", fake_set_deployment)
+
+    metadata = create_conversion(cfg, layout, "phase")
+
+    assert captured == {
+        "neuron": "phase",
+        "clip_bundle_policy": expected_clip_policy,
+    }
+    assert metadata["deployment_neuron"] == "phase"
+    assert metadata["reused_ann_training_artifacts"] is expected_reused
+    assert (
+        layout.snn_conversion_dir("phase") / "conversion_metadata.json"
+    ).exists()
