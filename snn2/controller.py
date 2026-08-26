@@ -8,7 +8,7 @@ import torch
 from .neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, gif_module_from_state
 from .sites import site_key, site_supports_clip
 from .stats import StatisticsStore
-from .state_validation import validate_site_state_bundle
+from .state_validation import ClipBundlePolicy, validate_site_state_bundle
 from .temporal_ops import from_temporal, to_temporal
 
 
@@ -92,7 +92,9 @@ class SiteController:
                     modules[name] = factories[name](state)
         return modules
 
-    def set_deployment(self, neuron: str) -> int:
+    def set_deployment(
+        self, neuron: str, *, clip_bundle_policy: ClipBundlePolicy
+    ) -> int:
         if neuron not in {"phase", "gif", "mtn"}:
             raise ValueError(neuron)
         if self.common_clip_enabled:
@@ -100,7 +102,7 @@ class SiteController:
         if self.site_root is None:
             raise RuntimeError("Deployment requires site_root")
         validation = validate_site_state_bundle(
-            self.site_root, require_clip=False
+            self.site_root, clip_policy=clip_bundle_policy
         )
         self.mode = f"deploy_{neuron}"
         self.temporal_steps = int(validation["temporal_steps"][neuron])

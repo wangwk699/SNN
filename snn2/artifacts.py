@@ -197,6 +197,14 @@ class ArtifactLayout:
         return self.ann_training_calibration_dir / "sites"
 
     @property
+    def ann_training_calibration_config_dir(self) -> Path:
+        return self.ann_training_calibration_dir / "config"
+
+    @property
+    def ann_training_calibration_logs_dir(self) -> Path:
+        return self.ann_training_calibration_dir / "logs"
+
+    @property
     def vanilla_analysis_calibration_dir(self) -> Path:
         return (
             self.shared_model_root
@@ -208,6 +216,14 @@ class ArtifactLayout:
     @property
     def vanilla_analysis_site_dir(self) -> Path:
         return self.vanilla_analysis_calibration_dir / "sites"
+
+    @property
+    def vanilla_analysis_calibration_config_dir(self) -> Path:
+        return self.vanilla_analysis_calibration_dir / "config"
+
+    @property
+    def vanilla_analysis_calibration_logs_dir(self) -> Path:
+        return self.vanilla_analysis_calibration_dir / "logs"
 
     @property
     def prefix_dir(self) -> Path:
@@ -257,6 +273,14 @@ class ArtifactLayout:
         return self.post_finetuning_conversion_calibration_dir / "sites"
 
     @property
+    def post_finetuning_conversion_calibration_config_dir(self) -> Path:
+        return self.post_finetuning_conversion_calibration_dir / "config"
+
+    @property
+    def post_finetuning_conversion_calibration_logs_dir(self) -> Path:
+        return self.post_finetuning_conversion_calibration_dir / "logs"
+
+    @property
     def conversion_prefix_dir(self) -> Path:
         return (
             self.ann_training_prefix_dir
@@ -281,9 +305,11 @@ class ArtifactLayout:
         return self.root / "logs"
 
     def snn_dir(self, neuron: str) -> Path:
+        base = self.root / "snn"
+        if is_aware_ann_mode(self._cfg):
+            return base / neuron
         return (
-            self.root
-            / "snn"
+            base
             / calibration_group_dirname(self._cfg["calibration"]["group_size"])
             / neuron
         )
@@ -304,11 +330,17 @@ class ArtifactLayout:
             self.rotated_pre_finetuning_prefix_dir,
             self.rotated_pre_finetuning_evaluation_dir,
             self.ann_training_calibration_dir,
+            self.ann_training_calibration_config_dir,
+            self.ann_training_calibration_logs_dir,
             self.ann_training_site_dir,
             self.vanilla_analysis_calibration_dir,
+            self.vanilla_analysis_calibration_config_dir,
+            self.vanilla_analysis_calibration_logs_dir,
             self.vanilla_analysis_site_dir,
             self.post_finetuning_prefix_dir,
             self.post_finetuning_conversion_calibration_dir,
+            self.post_finetuning_conversion_calibration_config_dir,
+            self.post_finetuning_conversion_calibration_logs_dir,
             self.post_finetuning_site_dir,
             self.policy_logs_dir,
             self.ann_dir,

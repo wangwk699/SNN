@@ -72,7 +72,9 @@ def capture_training_artifact_provenance(
             }
         )
     if is_aware_ann_mode(cfg):
-        validation = validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)
+        validation = validate_site_state_bundle(
+            layout.ann_training_site_dir, clip_policy="require_eligible"
+        )
         manifest_metadata = validation["manifest"]
         expected_group = int(cfg["calibration"]["group_size"])
         if (
@@ -185,7 +187,9 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         ),
     )
     if is_aware_ann_mode(cfg):
-        validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)
+        validate_site_state_bundle(
+            layout.ann_training_site_dir, clip_policy="require_eligible"
+        )
     if cfg["rotation"]["enabled"] or mode != "none":
         install_model_integration(model, controller, rotation_state(cfg, layout))
     model.config.snn2_ann_mode = cfg["experiment"]["ann_mode"]

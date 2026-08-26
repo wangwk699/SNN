@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 
@@ -29,6 +29,11 @@ _FACTORIES = {
     "mtn": MultiThresholdNeuron,
     "clip": Clipper,
 }
+
+ClipBundlePolicy = Literal["require_eligible", "allow_eligible", "forbid_all"]
+CLIP_BUNDLE_POLICIES = frozenset(
+    {"require_eligible", "allow_eligible", "forbid_all"}
+)
 
 
 def load_calibration_manifest(site_root: str | Path) -> dict[str, Any]:
@@ -62,9 +67,14 @@ def validate_site_state_bundle(
     site_root: str | Path,
     manifest: dict[str, Any] | None = None,
     *,
-    require_clip: bool,
+    clip_policy: ClipBundlePolicy,
     expected_num_hidden_layers: int | None = None,
 ) -> dict[str, Any]:
+    if clip_policy not in CLIP_BUNDLE_POLICIES:
+        raise ValueError(
+            f"Unknown Clip bundle policy {clip_policy!r}; expected one of "
+            f"{sorted(CLIP_BUNDLE_POLICIES)}"
+        )
     root = Path(site_root)
     manifest = load_calibration_manifest(root) if manifest is None else manifest
     if manifest.get("format_version") != CALIBRATION_MANIFEST_FORMAT_VERSION:
@@ -124,11 +134,14 @@ def validate_site_state_bundle(
             if site_index not in SITE_IDS:
                 raise ValueError(f"Calibration manifest has invalid site_index: {site_key}")
             clip_path = directory / "clip_state.pt"
-            clip_required = require_clip and site_supports_clip(site_index)
+            clip_eligible = site_supports_clip(site_index)
+            clip_required = clip_policy == "require_eligible" and clip_eligible
             if is_softmax_site(site_index) and clip_path.exists():
                 raise ValueError(f"Site 5 permanently forbids Clip state: {clip_path}")
-            if not require_clip and clip_path.exists():
-                raise ValueError(f"clip-free conversion bundle contains stale Clip state: {clip_path}")
+            if clip_policy == "forbid_all" and clip_path.exists():
+                raise ValueError(
+                    f"clip-free calibration bundle contains stale Clip state: {clip_path}"
+                )
             required = ("phase", "gif", "mtn", "clip") if clip_required else ("phase", "gif", "mtn")
             for kind in required:
                 state_path = directory / f"{kind}_state.pt"

@@ -131,6 +131,69 @@ def test_group_size_isolates_calibration_aware_runs_and_snn_but_not_identity_ann
     assert layout_a.snn_dir("phase") != layout_b.snn_dir("phase")
 
 
+@pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
+def test_aware_snn_path_contains_group_size_exactly_once(mode):
+    layout = ArtifactLayout(_cfg(mode))
+    path = layout.snn_dir("phase")
+    assert path.parts.count("calibration_group_size_-1") == 1
+    assert path.parts[-4:] == (
+        "calibration_group_size_-1", "seed42", "snn", "phase"
+    )
+
+
+@pytest.mark.parametrize("mode", ["vanilla", "unaware"])
+def test_identity_ann_snn_path_groups_below_snn(mode):
+    layout = ArtifactLayout(_cfg(mode))
+    path = layout.snn_dir("phase")
+    assert path.parts.count("calibration_group_size_-1") == 1
+    assert path.parts[-3:] == (
+        "snn", "calibration_group_size_-1", "phase"
+    )
+
+
+def test_calibration_config_logs_and_sites_are_group_isolated_but_shared_inputs_are_not():
+    first_cfg = _cfg("phase_aware")
+    second_cfg = _cfg("phase_aware")
+    second_cfg["calibration"]["group_size"] = 32
+    first = ArtifactLayout(first_cfg)
+    second = ArtifactLayout(second_cfg)
+
+    assert first.ann_training_calibration_config_dir != second.ann_training_calibration_config_dir
+    assert first.ann_training_calibration_logs_dir != second.ann_training_calibration_logs_dir
+    assert first.ann_training_site_dir != second.ann_training_site_dir
+    assert first.ann_training_prefix_dir == second.ann_training_prefix_dir
+    assert first.rotation_dir == second.rotation_dir
+    assert first.data_dir == second.data_dir
+
+
+@pytest.mark.parametrize("mode", ["vanilla", "unaware"])
+def test_post_finetuning_calibration_config_logs_and_sites_are_group_isolated(mode):
+    first_cfg = _cfg(mode)
+    second_cfg = _cfg(mode)
+    second_cfg["calibration"]["group_size"] = 32
+    first = ArtifactLayout(first_cfg)
+    second = ArtifactLayout(second_cfg)
+
+    assert first.post_finetuning_conversion_calibration_config_dir != second.post_finetuning_conversion_calibration_config_dir
+    assert first.post_finetuning_conversion_calibration_logs_dir != second.post_finetuning_conversion_calibration_logs_dir
+    assert first.post_finetuning_site_dir != second.post_finetuning_site_dir
+    assert first.ann_checkpoint_dir == second.ann_checkpoint_dir
+    assert first.post_finetuning_prefix_dir == second.post_finetuning_prefix_dir
+
+
+def test_vanilla_analysis_calibration_config_logs_and_sites_are_group_isolated():
+    first_cfg = _cfg("vanilla")
+    second_cfg = _cfg("vanilla")
+    second_cfg["calibration"]["group_size"] = 32
+    first = ArtifactLayout(first_cfg)
+    second = ArtifactLayout(second_cfg)
+
+    assert first.vanilla_analysis_calibration_config_dir != second.vanilla_analysis_calibration_config_dir
+    assert first.vanilla_analysis_calibration_logs_dir != second.vanilla_analysis_calibration_logs_dir
+    assert first.vanilla_analysis_site_dir != second.vanilla_analysis_site_dir
+    assert first.data_dir == second.data_dir
+
+
 @pytest.mark.parametrize(
     ("configured", "suffix"),
     [(None, "lr1e-06_train_samples_full/prefix_enabled_false/seed42"),

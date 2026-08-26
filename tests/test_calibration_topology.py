@@ -69,7 +69,7 @@ def test_validate_calibration_requires_exact_current_topology(tmp_path):
     for index in SITE_IDS:
         _write_site(tmp_path, index, SITE_NAMES[index])
     materialize_calibration_states(tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1)
-    metadata = validate_calibration(tmp_path)
+    metadata = validate_calibration(tmp_path, clip_policy="forbid_all")
     assert metadata["site_count"] == 10
     assert metadata["sites"] == 10
 
@@ -81,7 +81,7 @@ def test_validate_conversion_calibration_does_not_require_clip(tmp_path):
         tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1
     )
 
-    metadata = validate_calibration(tmp_path)
+    metadata = validate_calibration(tmp_path, clip_policy="forbid_all")
     assert metadata["sites"] == len(SITE_IDS)
 
 
@@ -95,7 +95,7 @@ def test_validate_conversion_calibration_rejects_stale_clip_state(tmp_path):
     torch.save(_statistics(), directories[0] / "clip_state.pt")
 
     with pytest.raises(ValueError, match="clip-free"):
-        validate_calibration(tmp_path)
+        validate_calibration(tmp_path, clip_policy="forbid_all")
 
 def test_validate_calibration_rejects_legacy_manifest(tmp_path):
     for index in SITE_IDS:
@@ -106,7 +106,7 @@ def test_validate_calibration_rejects_legacy_manifest(tmp_path):
     data["format_version"] = 1
     manifest.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="legacy calibration manifest"):
-        validate_calibration(tmp_path)
+        validate_calibration(tmp_path, clip_policy="forbid_all")
 
 
 def _write_layer(root, layer):
@@ -151,7 +151,7 @@ def test_materialize_and_validate_complete_two_layer_bundle(tmp_path):
     assert manifest["expected_num_hidden_layers"] == 2
     assert manifest["expected_layer_names"] == ["layer_000", "layer_001"]
     validation = validate_calibration(
-        tmp_path, expected_num_hidden_layers=2
+        tmp_path, clip_policy="forbid_all", expected_num_hidden_layers=2
     )
     assert validation["layers"] == 2
     assert validation["sites"] == 2 * len(SITE_IDS)
@@ -167,7 +167,9 @@ def test_validate_rejects_ann_config_layer_count_mismatch(tmp_path):
         expected_num_hidden_layers=2,
     )
     with pytest.raises(ValueError, match="ANN config num_hidden_layers"):
-        validate_calibration(tmp_path, expected_num_hidden_layers=3)
+        validate_calibration(
+            tmp_path, clip_policy="forbid_all", expected_num_hidden_layers=3
+        )
 
 
 def test_validate_rejects_manifest_layer_name_mismatch(tmp_path):
@@ -183,4 +185,4 @@ def test_validate_rejects_manifest_layer_name_mismatch(tmp_path):
     manifest["expected_layer_names"] = ["layer_001"]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="expected_layer_names"):
-        validate_calibration(tmp_path)
+        validate_calibration(tmp_path, clip_policy="forbid_all")

@@ -39,7 +39,7 @@ Aware final ANN evaluation 同时镜像训练期 common Clip 开关；SNN evalua
 
 `vanilla` 不使用 Pre-finetuning Prefix；`vanilla` 和 `unaware` 在 ANN 微调后生成 Post-finetuning Prefix 与 clip-free conversion calibration。`phase_aware` 和 `gif_aware` 则跳过这两个 Post-finetuning 步骤，最终 Phase/GIF/MTN conversion 必须复用 ANN 微调前固定的 Pre-finetuning Prefix 与 ANN-training calibration，并用 SHA-256 校验它们与训练记录完全一致。
 
-Aware ANN-training bundle 在 Site 1/2/3/4/6/7/8/9/10 保留 `clip_state.pt`，Site 5 不存在该文件；SNN controller 只加载选定的 Phase/GIF/MTN state，conversion、deployment 和 evaluation 均不实例化或执行 Clip。
+Aware ANN-training bundle 在 Site 1/2/3/4/6/7/8/9/10 保留 `clip_state.pt`，Site 5 不存在该文件；bundle 校验使用 `require_eligible`（aware ANN）、`allow_eligible`（aware SNN reuse）和 `forbid_all`（post-finetuning）三态协议。SNN controller 即使复用含 9 个 Clip 的 bundle 也只加载选定的 Phase/GIF/MTN state，conversion、deployment 和 evaluation 均不实例化或执行 Clip。
 
 其中 GIF 内部量化使用的整数范围 clamp 属于 GIF 自身算法，不属于 ANN-aware training 中的 common Clip。
 
@@ -47,7 +47,7 @@ Prefix K/V 在 ANN-aware replacement 与 SNN deployment runtime 中都经过 Sit
 
 `calibration.group_size` 同时控制 ordinary Phase/GIF/MTN/Clip 和 final RMSNorm Phase。`G=-1` 对非 attention 表示整个最后维度一组，对 Site 2/3/4/6 表示每个 head 各自一组；`G>0` 只在每个 head 的 `D` 内分组，绝不跨 head。Site 2/6 使用 query heads，Site 3/4 保留 `repeat_kv()` 前的原生 KV heads，并把 repeat 后 saliency 累加回 KV heads。Site 5 忽略 G：Phase/MTN 为 per-head `[H,1]`，GIF 显式执行 `round(65535*x)/65535`，temporal 使用 quantized cumulative difference，且永远 no-Clip。完整 Softmax（含 Prefix columns）在 runtime 经过 Site 5；final RMSNorm Phase 也按 G 分组。
 
-所有 G-dependent calibration、aware ANN run 和 SNN conversion/evaluation 路径均包含 `calibration_group_size_<G>`，metadata 同时记录 G 与 `per_head_within_head_groups_v1` policy。vanilla/unaware identity ANN checkpoint 可跨 G 共享，但改变 G 后仍必须重做其 post-finetuning calibration 与 SNN 工件。
+所有 G-dependent calibration（包括 resolved config、logs、statistics、states、manifest）、aware ANN run 和 SNN conversion/evaluation 路径均包含且只包含一次 `calibration_group_size_<G>`，metadata 同时记录 G 与 `per_head_within_head_groups_v1` policy。aware SNN 路径为已按 G 分叉的 run root 下 `snn/<neuron>`；vanilla/unaware 为 `snn/calibration_group_size_<G>/<neuron>`。identity ANN checkpoint 可跨 G 共享，但改变 G 后仍必须重做其 post-finetuning calibration 与 SNN 工件；Rotation、数据和 Prefix 不随 G 复制。
 
 ## 主要入口
 

@@ -6,7 +6,7 @@
 
 3. Site 5 忽略全局 G：Phase `tau` 与 MTN `base_scale` 固定为 `[H,1]`，GIF 固定执行 `[0,1]` Q16 fake quantization，temporal GIF 使用 quantized cumulative difference；Site 5 永远不得生成、加载或执行 Clip。
 
-4. ANN-training calibration 对 Site 1/2/3/4/6/7/8/9/10 全部生成 `clip_state.pt`，Site 5 是永久例外；`replacement.common_clip_enabled` 只控制 phase-aware/gif-aware ANN forward 是否在 clip-eligible site 执行 Clip，不得改变 shared calibration 内容。Post-finetuning conversion calibration 与所有 SNN deployment 必须完全无 Clip。
+4. ANN-training calibration 对 Site 1/2/3/4/6/7/8/9/10 全部生成 `clip_state.pt`，Site 5 是永久例外；Clip bundle 必须使用 `require_eligible`（aware ANN）、`allow_eligible`（aware SNN 复用）与 `forbid_all`（post-finetuning）三态语义。`replacement.common_clip_enabled` 只控制 aware ANN forward；aware SNN bundle 可保留 9 个 Clip 文件，但 SNN controller 永不加载、实例化或执行 Clip，post-finetuning bundle 则必须完全 clip-free。
 
 5. Prefix K/V 在实际 ANN-aware replacement 与 SNN deployment 中必须经过 Site 3/4 neuron，完整 Softmax（含 Prefix key columns）必须经过 Site 5；calibration statistics 可以排除 Prefix positions/columns，但不得让 Prefix runtime bypass Site 3/4/5。
 
@@ -14,7 +14,7 @@
 
 7. Phase `surrogate_slope` 允许任意正有限值，且仅作为 phase-aware ANN training/final ANN evaluation 的运行时反向传播参数；Phase state 不得保存 slope，ANN controller 必须从当前 YAML 显式接收，SNN deployment 使用硬阈值。phase-aware run root 必须包含 `surrogate_slope_<value>_warmup_ratio_<value>`。
 
-8. G-dependent calibration、aware ANN run、SNN conversion/evaluation 路径必须包含 `calibration_group_size_<G>`，metadata 还必须显式保存 G 与 grouping policy；vanilla/unaware identity ANN checkpoint 不因 G 分叉，但其 post-finetuning calibration 和 SNN 工件必须分叉。Rotation、数据与 Prefix 等 G-independent shared 工件不得复制。
+8. G-dependent calibration 的 config/log/statistics/state/manifest、aware ANN run、SNN conversion/evaluation 路径必须包含且只包含一次 `calibration_group_size_<G>`，metadata 还必须显式保存 G 与 grouping policy；aware SNN 在已含 G 的 run root 下直接使用 `snn/<neuron>`，vanilla/unaware 在 `snn/calibration_group_size_<G>/<neuron>` 下分叉。identity ANN checkpoint 不因 G 分叉，Rotation、数据与 Prefix 等 G-independent shared 工件不得复制。
 
 9. `phase_aware` 与 `gif_aware` 仍是 site-local static replacement 的 ANN fine-tuning，时间维度不跨层传播；只有 `deploy_phase/gif/mtn` 属于 full-temporal SNN。`--neuron ann` 按 ann_mode 恢复 identity/Phase/GIF static semantics，`--neuron phase|gif|mtn` 始终使用 temporal deployment。
 

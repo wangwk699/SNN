@@ -39,12 +39,12 @@ def validate_calibration(
     site_root: str | Path,
     *,
     expected_num_hidden_layers: int | None = None,
-    allow_clip_bundle: bool = False,
+    clip_policy: str,
 ) -> dict[str, Any]:
     root = Path(site_root)
     validation = validate_site_state_bundle(
         root,
-        require_clip=allow_clip_bundle,
+        clip_policy=clip_policy,
         expected_num_hidden_layers=expected_num_hidden_layers,
     )
     required = ["statistics.pt", "phase_state.pt", "gif_state.pt", "mtn_state.pt"]
@@ -53,7 +53,7 @@ def validate_calibration(
             if not (directory / name).exists():
                 raise FileNotFoundError(directory / name)
     clip_states = sorted(root.glob("layer_*/site_*/clip_state.pt"))
-    if not allow_clip_bundle and clip_states:
+    if clip_policy == "forbid_all" and clip_states:
         raise ValueError(
             "Post-finetuning conversion calibration must be clip-free; "
             "re-run calibrate_sites.py --stage post_finetuning"
@@ -187,7 +187,7 @@ def _source_bundle(
     validation = validate_calibration(
         layout.conversion_site_dir,
         expected_num_hidden_layers=layers,
-        allow_clip_bundle=reused,
+        clip_policy="allow_eligible" if reused else "forbid_all",
     )
     manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
     manifest = read_json(manifest_path)
@@ -279,7 +279,10 @@ def create_conversion(
     expected_num_hidden_layers = _ann_num_hidden_layers(ann_config)
     prefix, validation, manifest_path, training_provenance = _source_bundle(cfg, layout)
     controller = SiteController(site_root=layout.conversion_site_dir)
-    steps = controller.set_deployment(neuron)
+    steps = controller.set_deployment(
+        neuron,
+        clip_bundle_policy="allow_eligible" if reused else "forbid_all",
+    )
     output = layout.snn_conversion_dir(neuron)
     output.mkdir(parents=True, exist_ok=True)
     rotation_enabled = bool(cfg["rotation"]["enabled"])

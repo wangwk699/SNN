@@ -627,7 +627,7 @@ def main():
         reused = conversion_reuses_ann_training_artifacts(cfg)
         calibration = validate_calibration(
             layout.conversion_site_dir,
-            allow_clip_bundle=reused,
+            clip_policy="allow_eligible" if reused else "forbid_all",
         )
         source_manifest = read_json(
             layout.conversion_site_dir / "calibration_state_manifest.json"

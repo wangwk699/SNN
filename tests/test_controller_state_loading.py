@@ -17,6 +17,7 @@ from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE, PHASE_TAU_CHANNEL_POLICY,
     PHASE_TAU_REDUCTION_POLICY,
 )
+from snn2.state_validation import validate_site_state_bundle
 
 
 def _header(kind):
@@ -170,14 +171,36 @@ def _clip_state():
 def test_deployment_loads_only_selected_neuron_state(
     tmp_path, neuron, state, expected_steps
 ):
-    _write_bundle(tmp_path)
+    _write_bundle(tmp_path, include_clip=True)
     controller = SiteController(site_root=tmp_path)
 
-    assert controller.set_deployment(neuron) == expected_steps
+    assert controller.set_deployment(
+        neuron, clip_bundle_policy="allow_eligible"
+    ) == expected_steps
     output = controller.apply(0, 1, torch.zeros(expected_steps, 1, 3))
 
     assert output.shape == (expected_steps, 1, 3)
     assert set(controller._modules[site_key(0, 1)]) == {neuron}
+
+
+def test_allow_eligible_still_rejects_site5_clip(tmp_path):
+    _write_bundle(tmp_path, include_clip=True)
+    torch.save(_clip_state(), tmp_path / site_key(0, 5) / "clip_state.pt")
+
+    with pytest.raises(ValueError, match="Site 5 permanently forbids"):
+        SiteController(site_root=tmp_path).set_deployment(
+            "phase", clip_bundle_policy="allow_eligible"
+        )
+
+
+def test_require_eligible_rejects_missing_ordinary_clip(tmp_path):
+    _write_bundle(tmp_path, include_clip=True)
+    (tmp_path / site_key(0, 1) / "clip_state.pt").unlink()
+
+    with pytest.raises((FileNotFoundError, ValueError), match="clip_state.pt"):
+        validate_site_state_bundle(
+            tmp_path, clip_policy="require_eligible"
+        )
 
 
 @pytest.mark.parametrize(
@@ -305,7 +328,7 @@ def test_deployment_rejects_common_clip_switch(tmp_path):
         phase_surrogate_slope=1.0,
     )
     with pytest.raises(ValueError, match="cannot enable"):
-        controller.set_deployment("phase")
+        controller.set_deployment("phase", clip_bundle_policy="forbid_all")
 
 def test_deployment_rejects_cross_site_temporal_step_mismatch(tmp_path):
     _write_bundle(tmp_path)
@@ -320,7 +343,9 @@ def test_deployment_rejects_cross_site_temporal_step_mismatch(tmp_path):
     manifest["sites"][site_key(0, 2)]["state_sha256"]["phase"] = sha256_file(path)
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="Inconsistent temporal steps"):
-        SiteController(site_root=tmp_path).set_deployment("phase")
+        SiteController(site_root=tmp_path).set_deployment(
+            "phase", clip_bundle_policy="forbid_all"
+        )
 
 
 def test_deployment_rejects_manifest_policy_mismatch(tmp_path):
@@ -332,12 +357,14 @@ def test_deployment_rejects_manifest_policy_mismatch(tmp_path):
     manifest["prefix_temporal_policy"] = "full_prefix_each_timestep"
     path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="incompatible legacy temporal"):
-        SiteController(site_root=tmp_path).set_deployment("phase")
+        SiteController(site_root=tmp_path).set_deployment(
+            "phase", clip_bundle_policy="forbid_all"
+        )
 
 def test_final_rmsnorm_phase_is_phase_only_and_not_part_of_sites(tmp_path):
     _write_bundle(tmp_path)
     phase = SiteController(site_root=tmp_path)
-    phase.set_deployment("phase")
+    phase.set_deployment("phase", clip_bundle_policy="forbid_all")
     value = torch.randn(2, 1, 3)
     output = phase.apply_final_norm_phase(value)
     assert output.shape == value.shape
@@ -346,7 +373,7 @@ def test_final_rmsnorm_phase_is_phase_only_and_not_part_of_sites(tmp_path):
 
     for neuron in ("gif", "mtn"):
         controller = SiteController(site_root=tmp_path)
-        controller.set_deployment(neuron)
+        controller.set_deployment(neuron, clip_bundle_policy="forbid_all")
         assert controller.apply_final_norm_phase(value) is value
         assert controller._final_norm_phase is None
     assert not (tmp_path / "_global" / "final_rmsnorm" / "clip_state.pt").exists()

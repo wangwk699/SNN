@@ -13,7 +13,11 @@ def main():
     arg_parser = parser("Collect activation statistics for every replacement site")
     arg_parser.add_argument("--stage", required=True, choices=("ann_training", "vanilla_analysis", "post_finetuning"))
     args = arg_parser.parse_args()
-    scope = "policy_shared" if args.stage in {"ann_training", "vanilla_analysis"} else "run"
+    scope = {
+        "ann_training": "ann_training_calibration",
+        "vanilla_analysis": "vanilla_analysis_calibration",
+        "post_finetuning": "post_finetuning_calibration",
+    }[args.stage]
     cfg, layout = setup(args.config, config_scope=scope)
     if args.stage == "ann_training" and not requires_ann_training_calibration(cfg):
         raise ValueError(
@@ -30,7 +34,12 @@ def main():
     site_root = {"ann_training": layout.ann_training_site_dir, "vanilla_analysis": layout.vanilla_analysis_site_dir, "post_finetuning": layout.post_finetuning_site_dir}[args.stage]
     purpose = {"ann_training": "ann_training_calibration", "vanilla_analysis": "vanilla_analysis_calibration", "post_finetuning": "post_finetuning_conversion_calibration"}[args.stage]
     source = model_source_for_stage(cfg, layout, stage=args.stage)
-    with StageRun(f"calibrate_sites_{args.stage}", layout.policy_logs_dir if args.stage in {"ann_training", "vanilla_analysis"} else layout.logs_dir, cfg["experiment"]) as run:
+    logs_dir = {
+        "ann_training": layout.ann_training_calibration_logs_dir,
+        "vanilla_analysis": layout.vanilla_analysis_calibration_logs_dir,
+        "post_finetuning": layout.post_finetuning_conversion_calibration_logs_dir,
+    }[args.stage]
+    with StageRun(f"calibrate_sites_{args.stage}", logs_dir, cfg["experiment"]) as run:
         if args.stage == "post_finetuning" and not layout.ann_checkpoint_dir.exists():
             raise FileNotFoundError(layout.ann_checkpoint_dir)
         model = load_model(cfg, source, training=False, device_map=cfg["calibration"].get("device_map"))

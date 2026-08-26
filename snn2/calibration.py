@@ -560,18 +560,27 @@ def collect_site_statistics(
             if (
                 metadata.get("site_topology_version") != SITE_TOPOLOGY_VERSION
                 or metadata.get("site_count") != SITE_COUNT
-                or (
-                    manifest_name == "statistics_manifest.json"
-                    and metadata.get("format_version") != STATISTICS_FORMAT_VERSION
-                )
-                or (
-                    manifest_name == "calibration_state_manifest.json"
-                    and metadata.get("format_version") != CALIBRATION_MANIFEST_FORMAT_VERSION
-                )
             ):
                 raise RuntimeError(
                     "Existing calibration artifact uses a stale site topology; "
                     "remove or move the old sites/ directory before recalibrating."
+                )
+            if (
+                manifest_name == "statistics_manifest.json"
+                and metadata.get("format_version") != STATISTICS_FORMAT_VERSION
+            ):
+                raise RuntimeError(
+                    "Existing calibration artifact uses a stale statistics schema; "
+                    "remove or move the old sites/ directory before recalibrating."
+                )
+            if (
+                manifest_name == "calibration_state_manifest.json"
+                and metadata.get("format_version")
+                != CALIBRATION_MANIFEST_FORMAT_VERSION
+            ):
+                raise RuntimeError(
+                    "Existing calibration artifact uses a stale calibration manifest "
+                    "schema; remove or move the old sites/ directory before recalibrating."
                 )
     dataset = tokenize_dataset(calibration_raw, tokenizer, cfg, prefix_ids=None)
     loader = DataLoader(

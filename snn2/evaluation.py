@@ -93,7 +93,9 @@ def build_evaluation_controller(
         mode = final_ann_replacement_mode(cfg)
         aware = is_aware_ann_mode(cfg)
         if aware:
-            validation = validate_site_state_bundle(layout.ann_training_site_dir, require_clip=True)
+            validation = validate_site_state_bundle(
+                layout.ann_training_site_dir, clip_policy="require_eligible"
+            )
             manifest = validation["manifest"]
             if (
                 manifest.get("calibration_group_size") != int(cfg["calibration"]["group_size"])
@@ -121,7 +123,14 @@ def build_evaluation_controller(
         site_root=layout.conversion_site_dir,
         common_clip_enabled=False,
     )
-    return controller, controller.set_deployment(neuron)
+    clip_policy = (
+        "allow_eligible"
+        if conversion_reuses_ann_training_artifacts(cfg)
+        else "forbid_all"
+    )
+    return controller, controller.set_deployment(
+        neuron, clip_bundle_policy=clip_policy
+    )
 
 
 def evaluation_forward_metadata(

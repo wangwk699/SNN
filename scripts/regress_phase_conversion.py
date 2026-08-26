@@ -27,6 +27,7 @@ from snn2.phase_conversion_regression import (
 )
 from snn2.prefix_cache import install_prefix_kv_forward
 from snn2.controller import SiteController
+from snn2.config import conversion_reuses_ann_training_artifacts
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -55,7 +56,14 @@ def _controller(cfg, layout, graph: str, *, bypass_final_norm_phase: bool):
         )
     elif graph == "phase_temporal":
         controller = SiteController(mode="identity", site_root=layout.ann_training_site_dir)
-        controller.set_deployment("phase")
+        controller.set_deployment(
+            "phase",
+            clip_bundle_policy=(
+                "allow_eligible"
+                if conversion_reuses_ann_training_artifacts(cfg)
+                else "forbid_all"
+            ),
+        )
         controller.regression_bypass_final_norm_phase = bool(bypass_final_norm_phase)
     else:
         raise ValueError(graph)
