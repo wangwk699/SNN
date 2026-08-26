@@ -23,6 +23,7 @@ from .temporal_ops import (
     GIF_LOW_QMAX,
     GIF_STEP_QMAX,
     SITE_STATE_FORMAT_VERSION,
+    SOFTMAX_SITE5_GIF_POLICY,
     TEMPORAL_IMPLEMENTATION_VERSION,
 )
 
@@ -412,8 +413,8 @@ class Clipper(nn.Module):
         super().__init__()
         _validate_state_header(state, "clip")
         expected = {
-            "gif_high_qmax": GIF_HIGH_QMAX,
-            "gif_per_step_qmax": GIF_STEP_QMAX,
+            "ordinary_gif_high_qmax": GIF_HIGH_QMAX,
+            "ordinary_gif_per_step_qmax": GIF_STEP_QMAX,
             "gif_integer_decomposition": GIF_INTEGER_DECOMPOSITION,
         }
         mismatched = {
@@ -465,63 +466,65 @@ class Clipper(nn.Module):
         return hard_clip(x, lower, upper)
 
 
-class SoftmaxFixedGIF(nn.Module):
+class SoftmaxIdentityGIF(nn.Module):
     def __init__(self, state: dict[str, Any]):
         super().__init__()
         _validate_state_header(state, "gif")
         expected = {
-            "parameter_layout": "softmax_fixed_range",
-            "gif_policy": "softmax_fixed_range_u16",
+            "parameter_layout": "softmax_identity",
+            "gif_policy": SOFTMAX_SITE5_GIF_POLICY,
             "group_size": -1,
-            "group_size_source": "site5_fixed_override",
-            "range_min": 0.0,
-            "range_max": 1.0,
-            "quantization_bits": 16,
-            "qmin": 0,
-            "qmax": 65535,
-            "zero_point": 0,
+            "group_size_source": "site5_identity_override",
+            "reference_n_bits": 16,
+            "reference_metric": "fix0to1",
+            "quantization_applied": False,
             "temporal_steps": GIF_LOCAL_STEPS,
-            "temporal_policy": "quantized_cumulative_difference",
+            "temporal_policy": "identity",
         }
         mismatched = {k: (v, state.get(k)) for k, v in expected.items() if state.get(k) != v}
-        if mismatched or not math.isclose(float(state.get("scale", -1.0)), 1.0 / 65535.0):
-            raise ValueError(f"Invalid Site 5 fixed Q16 GIF state: {mismatched}")
+        forbidden = sorted(
+            key
+            for key in (
+                "range_min", "range_max", "quantization_bits", "qmin",
+                "qmax", "scale", "zero_point",
+            )
+            if key in state
+        )
+        if mismatched or forbidden:
+            raise ValueError(
+                "Invalid SpikeLLM-aligned Site 5 GIF identity state: "
+                f"mismatched={mismatched}, forbidden={forbidden}"
+            )
         self.num_heads = int(state["num_heads"])
+        self._temporal_steps = int(state["temporal_steps"])
         if self.num_heads <= 0 or int(state.get("configured_group_size", 0)) == 0:
             raise ValueError("Site 5 GIF requires valid head/group metadata")
 
     @property
     def temporal_steps(self) -> int:
-        return GIF_LOCAL_STEPS
-
-    @staticmethod
-    def _hard_q16(x: torch.Tensor) -> torch.Tensor:
-        return torch.round(x.float().clamp(0.0, 1.0) * 65535.0) / 65535.0
+        return self._temporal_steps
 
     def _validate_input(self, x: torch.Tensor) -> None:
         if x.ndim != 4 or x.shape[1] != self.num_heads:
             raise ValueError(
-                f"SoftmaxFixedGIF expects [B,{self.num_heads},Q,K], got {tuple(x.shape)}"
+                f"SoftmaxIdentityGIF expects [B,{self.num_heads},Q,K], got {tuple(x.shape)}"
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._validate_input(x)
-        hard = self._hard_q16(x)
-        return ((hard - x.float()).detach() + x.float()).to(x.dtype)
+        return x
 
     def temporal(self, incoming: torch.Tensor) -> torch.Tensor:
         if incoming.ndim != 5 or incoming.shape[0] != self.temporal_steps:
             raise ValueError(
-                f"SoftmaxFixedGIF expects [T,B,H,Q,K] with T={self.temporal_steps}, "
+                f"SoftmaxIdentityGIF expects [T,B,H,Q,K] with T={self.temporal_steps}, "
                 f"got {tuple(incoming.shape)}"
             )
         self._validate_input(incoming[0])
-        quantized = self._hard_q16(incoming.float().cumsum(dim=0))
-        previous = torch.cat((torch.zeros_like(quantized[:1]), quantized[:-1]), dim=0)
-        return (quantized - previous).to(incoming.dtype)
+        return incoming
 
 
 def gif_module_from_state(state: dict[str, Any]) -> nn.Module:
-    if state.get("gif_policy") == "softmax_fixed_range_u16":
-        return SoftmaxFixedGIF(state)
+    if state.get("gif_policy") == SOFTMAX_SITE5_GIF_POLICY:
+        return SoftmaxIdentityGIF(state)
     return StaticGIF(state)

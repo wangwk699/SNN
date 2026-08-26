@@ -18,7 +18,7 @@ from snn2.evaluation import (
 
 @pytest.mark.parametrize(
     ("neuron", "expected"),
-    [("phase", 281), ("gif", 280), ("mtn", 280), ("ann", 0)],
+    [("phase", 281), ("gif", 252), ("mtn", 280), ("ann", 0)],
 )
 def test_activation_neuron_operator_count_includes_global_phase(neuron, expected):
     assert activation_neuron_operators_per_temporal_forward(

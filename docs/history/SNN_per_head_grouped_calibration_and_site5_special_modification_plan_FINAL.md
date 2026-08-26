@@ -1,5 +1,12 @@
 # SNN 项目完整修改方案：Per-Head Grouped Calibration 与 Softmax Site 5 特殊策略（最终版）
 
+> **历史说明：**
+> 本文记录的是当时的 Q16 Site 5 设计，该设计现已被
+> `SNN_Site5_GIF_Strict_SpikeLLM_Identity_Modification_Plan.md` 替代。
+> 当前实现以 SpikeLLM `n_bits=16` sentinel 的真实 identity 行为为准；
+> 本文中的 Q16 / `SoftmaxFixedGIF` / cumulative-difference 内容仅用于历史追溯，
+> 不再代表当前实现。
+
 > 本文档是本次修改的唯一实施依据，面向部署在服务器上的 Codex。无需依赖此前对话上下文。
 >
 > 基线：`https://github.com/wangwk699/SNN/tree/main` 当前实现。

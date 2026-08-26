@@ -4,7 +4,9 @@
 
 2. Site 2/3/4/6 必须保留原生 `[B,H,L,D]` layout，只允许在每个 head 的 `D` 内 grouping，禁止 flatten heads 或重新引入跨 head global τ；其中 Site 2/6 使用 query heads，GQA/MQA Site 3/4 使用 `repeat_kv()` 前的原生 KV heads，repeat 后 saliency 必须按 query groups 求和回 KV heads。
 
-3. Site 5 忽略全局 G：Phase `tau` 与 MTN `base_scale` 固定为 `[H,1]`，GIF 固定执行 `[0,1]` Q16 fake quantization，temporal GIF 使用 quantized cumulative difference；Site 5 永远不得生成、加载或执行 Clip。
+3. Site 5 忽略全局 G：Phase `tau` 与 MTN `base_scale` 固定为 `[H,1]`；GIF 必须严格遵循 SpikeLLM `n_bits=16` sentinel 的真实行为，static 与 temporal 均 exact identity，不得执行 Q16、round/clamp、scale/zero-point calibration、qmax30/[0,15] chunk 或 cumulative-difference quantization；Site 5 永远不得生成、加载或执行 Clip。
+
+3a. ordinary GIF 的 qmax30/T=2/[0,15]×2 仅允许用于 Site 1/2/3/4/6/7/8/9/10；禁止将 ordinary GIF metadata 解释为 Site 5 策略。
 
 4. ANN-training calibration 对 Site 1/2/3/4/6/7/8/9/10 全部生成 `clip_state.pt`，Site 5 是永久例外；Clip bundle 必须使用 `require_eligible`（aware ANN）、`allow_eligible`（aware SNN 复用）与 `forbid_all`（post-finetuning）三态语义。`replacement.common_clip_enabled` 只控制 aware ANN forward；aware SNN bundle 可保留 9 个 Clip 文件，但 SNN controller 永不加载、实例化或执行 Clip，post-finetuning bundle 则必须完全 clip-free。
 

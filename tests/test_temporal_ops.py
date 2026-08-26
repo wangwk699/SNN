@@ -9,6 +9,7 @@ from snn2.temporal_ops import (
     CONVERSION_METADATA_FORMAT_VERSION,
     SITE_STATE_FORMAT_VERSION,
     TEMPORAL_IMPLEMENTATION_VERSION,
+    temporal_policy_metadata,
     from_temporal,
     temporal_bias_once,
     temporal_rmsnorm,
@@ -157,10 +158,22 @@ def test_temporal_linear_bias_is_kept_only_at_timestep_zero():
 
 
 def test_artifact_schema_versions_do_not_change_temporal_arithmetic():
-    assert CALIBRATION_MANIFEST_FORMAT_VERSION == 7
-    assert CONVERSION_METADATA_FORMAT_VERSION == 8
-    assert SITE_STATE_FORMAT_VERSION == 6
-    assert TEMPORAL_IMPLEMENTATION_VERSION == 4
+    assert CALIBRATION_MANIFEST_FORMAT_VERSION == 8
+    assert CONVERSION_METADATA_FORMAT_VERSION == 9
+    assert SITE_STATE_FORMAT_VERSION == 7
+    assert TEMPORAL_IMPLEMENTATION_VERSION == 5
+
+
+def test_temporal_metadata_scopes_ordinary_gif_and_site5_identity():
+    metadata = temporal_policy_metadata()
+    assert metadata["ordinary_gif_high_qmax"] == 30
+    assert metadata["ordinary_gif_local_decomposition_steps"] == 2
+    assert metadata["ordinary_gif_per_step_qmax"] == 15
+    assert metadata["softmax_site5_gif_policy"] == (
+        "spikellm_nbits16_sentinel_identity"
+    )
+    for key in ("gif_high_qmax", "gif_local_decomposition_steps", "gif_per_step_qmax"):
+        assert key not in metadata
 
 
 def test_temporal_rmsnorm_matches_qwen_bf16_cast_order_at_first_frame():

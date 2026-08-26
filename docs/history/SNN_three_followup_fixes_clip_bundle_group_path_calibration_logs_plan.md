@@ -1,5 +1,12 @@
 # SNN 三项收尾修复方案：Aware SNN Clip Bundle、Group-Size 路径去重与 Calibration Config/Logs 隔离
 
+> **历史说明：**
+> 本文记录的是当时的 Q16 Site 5 设计，该设计现已被
+> `SNN_Site5_GIF_Strict_SpikeLLM_Identity_Modification_Plan.md` 替代。
+> 当前实现以 SpikeLLM `n_bits=16` sentinel 的真实 identity 行为为准；
+> 本文中的 Q16 / `SoftmaxFixedGIF` / cumulative-difference 内容仅用于历史追溯，
+> 不再代表当前实现。
+
 > 目标：修复当前 `main`（基于提交 `1d87c715d493f443deb3835727a040933fdc5937`）中剩余的 3 个问题。
 >
 > 本文档可直接交给部署在服务器上的 Codex 实施。

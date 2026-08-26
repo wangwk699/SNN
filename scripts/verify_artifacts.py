@@ -43,7 +43,7 @@ def _verify_final_ann_forward_metadata(cfg, layout, path):
     expected = {
         "identity": ("identity_ann", False, None),
         "phase": ("phase_surrogate_ann", True, "PhaseSurrogate.forward"),
-        "gif": ("gif_surrogate_ann", True, "StaticGIF/SoftmaxFixedGIF.forward"),
+        "gif": ("gif_surrogate_ann", True, "StaticGIF/SoftmaxIdentityGIF.forward"),
     }[mode]
     required = {
         "evaluation_forward_kind": expected[0],
@@ -111,8 +111,10 @@ def _verify_grouped_calibration(cfg, layout, manifest, calibration):
         clip_count += int(clip_present)
         if site == SOFTMAX_SITE_ID:
             gif = torch.load(directory / "gif_state.pt", map_location="cpu", weights_only=False)
-            if gif.get("gif_policy") != "softmax_fixed_range_u16" or clip_present:
-                raise ValueError(f"Site 5 must use Q16 and no Clip: {directory}")
+            if gif.get("gif_policy") != SOFTMAX_SITE5_GIF_POLICY or clip_present:
+                raise ValueError(
+                    f"Site 5 must use SpikeLLM identity GIF and no Clip: {directory}"
+                )
     expected_clips = calibration["layers"] * len(CLIP_ELIGIBLE_SITE_IDS) if conversion_reuses_ann_training_artifacts(cfg) else 0
     if clip_count != expected_clips:
         raise ValueError(f"Calibration Clip count mismatch: {clip_count} != {expected_clips}")

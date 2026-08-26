@@ -9,7 +9,7 @@ from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE, PHASE_TAU_CALIBRATION,
     PHASE_TAU_CHANNEL_POLICY, PHASE_TAU_EMA_FACTOR, PHASE_TAU_REDUCTION_POLICY,
 )
-from snn2.temporal_ops import STATISTICS_FORMAT_VERSION
+from snn2.temporal_ops import SOFTMAX_SITE5_GIF_POLICY, STATISTICS_FORMAT_VERSION
 
 
 def _statistics(site_index=1):
@@ -84,8 +84,15 @@ def test_non_divisible_ordinary_group_fails_but_site5_ignores_global_group():
     assert set(states) == {"phase", "gif", "mtn"}
     assert states["phase"]["tau"].shape == (1, 1)
     assert states["mtn"]["base_scale"].shape == (1, 1)
-    assert states["gif"]["gif_policy"] == "softmax_fixed_range_u16"
-    assert states["gif"]["qmax"] == 65535
+    site5_gif = states["gif"]
+    assert site5_gif["gif_policy"] == SOFTMAX_SITE5_GIF_POLICY
+    assert site5_gif["quantization_applied"] is False
+    assert site5_gif["temporal_policy"] == "identity"
+    for key in (
+        "range_min", "range_max", "quantization_bits", "qmin", "qmax",
+        "scale", "zero_point",
+    ):
+        assert key not in site5_gif
 
 
 def test_conversion_materialization_removes_common_clip(tmp_path):

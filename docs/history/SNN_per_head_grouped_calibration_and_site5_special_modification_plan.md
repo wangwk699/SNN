@@ -1,5 +1,12 @@
 # SNN 项目修改方案：Per-Head Grouped Calibration 与 Softmax Site 5 特殊策略
 
+> **历史说明：**
+> 本文记录的是当时的 Q16 Site 5 设计，该设计现已被
+> `SNN_Site5_GIF_Strict_SpikeLLM_Identity_Modification_Plan.md` 替代。
+> 当前实现以 SpikeLLM `n_bits=16` sentinel 的真实 identity 行为为准；
+> 本文中的 Q16 / `SoftmaxFixedGIF` / cumulative-difference 内容仅用于历史追溯，
+> 不再代表当前实现。
+
 ## 0. 任务目标与实施原则
 
 本次修改基于当前 `main` 分支实现，目标是重构 activation calibration / state materialization / ANN replacement / Temporal SNN deployment 的参数粒度，使：

@@ -2,7 +2,15 @@ import torch
 
 import snn2.model_integration as model_integration
 from snn2.model_integration import _make_mlp_forward, _linear_score, record_down_proj_saliency
-from snn2.sites import SITE_COORDINATES, SITE_COUNT, SITE_IDS, SITE_NAMES, site_key
+from snn2.sites import (
+    GIF_ACTIVE_SITE_IDS,
+    GIF_IDENTITY_SITE_IDS,
+    SITE_COORDINATES,
+    SITE_COUNT,
+    SITE_IDS,
+    SITE_NAMES,
+    site_key,
+)
 
 
 class _Controller:
@@ -42,6 +50,8 @@ def test_site_topology_is_ten_sites():
     assert (SITE_NAMES[10], SITE_COORDINATES[10]) == ("post_mlp_product_r4", "R4")
     assert site_key(0, 9).endswith("site_09_post_mlp_up_proj")
     assert site_key(0, 10).endswith("site_10_post_mlp_product_r4")
+    assert GIF_IDENTITY_SITE_IDS == {5}
+    assert GIF_ACTIVE_SITE_IDS == {1, 2, 3, 4, 6, 7, 8, 9, 10}
 
 
 def test_mlp_places_new_up_site_before_product_and_preserves_identity_parity():

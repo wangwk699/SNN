@@ -157,7 +157,7 @@ def validate_site_state_bundle(
                 elif kind == "gif":
                     steps_by_neuron[kind].add(int(module.temporal_steps))
                     if is_softmax_site(site_index):
-                        if state.get("gif_policy") != "softmax_fixed_range_u16":
+                        if state.get("gif_policy") != SOFTMAX_SITE5_GIF_POLICY:
                             raise ValueError(f"Invalid Site 5 GIF policy at {state_path}")
                     elif (
                         state.get("high_qmax") != GIF_HIGH_QMAX

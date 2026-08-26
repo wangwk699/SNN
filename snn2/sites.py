@@ -19,6 +19,10 @@ SITE_COUNT = len(SITE_IDS)
 ATTENTION_HEAD_GROUPED_SITE_IDS = frozenset({2, 3, 4, 6})
 SOFTMAX_SITE_ID = 5
 CLIP_ELIGIBLE_SITE_IDS = frozenset({1, 2, 3, 4, 6, 7, 8, 9, 10})
+GIF_IDENTITY_SITE_IDS = frozenset({SOFTMAX_SITE_ID})
+GIF_ACTIVE_SITE_IDS = frozenset(
+    site for site in SITE_IDS if site not in GIF_IDENTITY_SITE_IDS
+)
 
 
 def is_attention_head_grouped_site(site_index: int) -> bool:

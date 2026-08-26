@@ -15,7 +15,7 @@ from .config import (
 from .controller import SiteController
 from .model_integration import temporal_forward
 from .prefix_cache import install_prefix_kv_forward
-from .sites import SITE_COUNT
+from .sites import GIF_ACTIVE_SITE_IDS, SITE_COUNT
 from .state_validation import validate_site_state_bundle
 from .temporal_ops import (
     CALIBRATION_GROUPING_POLICY,
@@ -51,7 +51,9 @@ def activation_neuron_operators_per_temporal_forward(
     base = int(num_hidden_layers) * SITE_COUNT
     if neuron == "phase":
         return base + 1
-    if neuron in {"gif", "mtn"}:
+    if neuron == "gif":
+        return int(num_hidden_layers) * len(GIF_ACTIVE_SITE_IDS)
+    if neuron == "mtn":
         return base
     raise ValueError(f"Unknown neuron: {neuron}")
 
@@ -153,7 +155,7 @@ def evaluation_forward_metadata(
             implementation, root = "PhaseSurrogate.forward", str(layout.ann_training_site_dir)
         elif controller.mode == "gif":
             kind, enabled = "gif_surrogate_ann", True
-            implementation, root = "StaticGIF/SoftmaxFixedGIF.forward", str(layout.ann_training_site_dir)
+            implementation, root = "StaticGIF/SoftmaxIdentityGIF.forward", str(layout.ann_training_site_dir)
         else:
             raise ValueError(f"Invalid final ANN controller mode: {controller.mode}")
         temporal = False

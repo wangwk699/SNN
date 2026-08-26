@@ -140,7 +140,7 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         "reused_ann_training_artifacts": False,
         "snn_clip_applied": False,
         "source_ann_common_clip_enabled": False,
-        "gif_local_decomposition_steps": GIF_LOCAL_STEPS,
+        "ordinary_gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         "calibration_group_size": -1,
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
@@ -154,10 +154,10 @@ def _prepare(tmp_path, *, rotation_enabled=False):
     return layout, path
 
 
-def test_conversion_metadata_v8_is_accepted(tmp_path):
+def test_conversion_metadata_v9_is_accepted(tmp_path):
     layout, _ = _prepare(tmp_path)
     metadata = validate_conversion_metadata(_cfg(), layout, "gif")
-    assert metadata["gif_high_qmax"] == 30
+    assert metadata["ordinary_gif_high_qmax"] == 30
     assert metadata["source_ann_common_clip_enabled"] is False
     assert metadata["snn_clip_applied"] is False
 
@@ -175,7 +175,11 @@ def test_conversion_rejects_source_ann_common_clip_mismatch(monkeypatch, tmp_pat
     ("key", "value"),
     [
         ("format_version", 3),
-        ("gif_high_qmax", 31),
+        ("ordinary_gif_high_qmax", 31),
+        (
+            "softmax_site5_gif_policy",
+            "fixed_range_u16_quantized_cumulative_difference",
+        ),
         ("full_temporal_steps", 3),
         ("snn_clip_applied", True),
     ],

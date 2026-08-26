@@ -3,6 +3,7 @@ import torch
 
 from snn2.controller import SiteController
 from snn2.calibration import materialize_calibration_states
+from snn2.neurons import SoftmaxIdentityGIF
 from snn2.sites import SITE_IDS, SITE_NAMES, site_key
 from snn2.temporal_ops import (
     GIF_INTEGER_DECOMPOSITION,
@@ -69,14 +70,28 @@ def _write_bundle(root, *, include_clip=False):
     materialize_calibration_states(root, cfg, include_clip=include_clip, expected_num_hidden_layers=1)
 
 
-def test_site5_common_clip_uses_q16_gif_without_loading_clipper(tmp_path):
+def test_site5_common_clip_uses_identity_gif_without_loading_clipper(tmp_path):
     _write_bundle(tmp_path, include_clip=True)
     site5 = tmp_path / "layer_000" / f"site_05_{SITE_NAMES[5]}"
     assert not (site5 / "clip_state.pt").exists()
     controller = SiteController(mode="gif", site_root=tmp_path, common_clip_enabled=True)
     x = torch.rand(1, 1, 2, 3)
     output = controller.apply(0, 5, x)
-    torch.testing.assert_close(output, torch.round(x * 65535) / 65535)
+    assert output is x
+    assert torch.equal(output, x)
+    assert set(controller._modules[site_key(0, 5)]) == {"gif"}
+    assert isinstance(
+        controller._modules[site_key(0, 5)]["gif"], SoftmaxIdentityGIF
+    )
+
+
+def test_deploy_gif_site5_is_exact_identity(tmp_path):
+    _write_bundle(tmp_path)
+    controller = SiteController(site_root=tmp_path)
+    controller.set_deployment("gif", clip_bundle_policy="forbid_all")
+    incoming = torch.randn(2, 1, 1, 2, 3)
+    output = controller.apply(0, 5, incoming.reshape(2, 1, 2, 3))
+    assert torch.equal(output, incoming.reshape(2, 1, 2, 3))
     assert set(controller._modules[site_key(0, 5)]) == {"gif"}
 
 
@@ -147,8 +162,8 @@ def _mtn_state():
 def _clip_state():
     return {
         **_header("clip"),
-        "gif_high_qmax": 30,
-        "gif_per_step_qmax": 15,
+        "ordinary_gif_high_qmax": 30,
+        "ordinary_gif_per_step_qmax": 15,
         "gif_integer_decomposition": GIF_INTEGER_DECOMPOSITION,
         "parameter_layout": "last_dim_grouped", "configured_group_size": -1,
         "group_size": 3, "num_heads": None, "channels_per_head": 3,
