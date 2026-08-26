@@ -73,6 +73,11 @@ class ArtifactLayout:
                     )
                 train_samples = str(configured_train_samples)
             learning_rate = f"{learning_rate}_train_samples_{train_samples}"
+        if is_aware_ann_mode(cfg):
+            learning_rate = (
+                f"{learning_rate}_"
+                f"{calibration_group_dirname(cfg['calibration']['group_size'])}"
+            )
 
         self.model_root = model_root
         self.seed_name = seed
@@ -96,10 +101,6 @@ class ArtifactLayout:
             run_root = run_root / phase_training_dirname(
                 surrogate_slope=cfg["phase"]["surrogate_slope"],
                 warmup_ratio=cfg["training"]["warmup_ratio"],
-            )
-        if is_aware_ann_mode(cfg):
-            run_root = run_root / calibration_group_dirname(
-                cfg["calibration"]["group_size"]
             )
         self.root = run_root / seed
         # 原始 Base 模型独立目录：

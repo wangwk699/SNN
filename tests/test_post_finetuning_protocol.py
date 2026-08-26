@@ -75,14 +75,19 @@ def test_aware_run_root_records_common_clip_variant(mode, enabled):
         else "prefix_enabled_ture_common_clip_enabled_false"
     )
     variant_dir = (
+        layout.root.parent.parent
+        if mode == "phase_aware"
+        else layout.root.parent
+    )
+    assert variant_dir.name == expected
+    if mode == "phase_aware":
+        assert layout.root.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
+    learning_rate_dir = (
         layout.root.parent.parent.parent
         if mode == "phase_aware"
         else layout.root.parent.parent
     )
-    assert variant_dir.name == expected
-    if mode == "phase_aware":
-        assert layout.root.parent.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
-    assert layout.root.parent.name == "calibration_group_size_-1"
+    assert learning_rate_dir.name == "lr1e-06_calibration_group_size_-1"
 
 
 def test_phase_aware_run_root_records_slope_and_warmup_ratio():
@@ -93,8 +98,9 @@ def test_phase_aware_run_root_records_slope_and_warmup_ratio():
     first = ArtifactLayout(first_cfg)
     second = ArtifactLayout(second_cfg)
 
-    assert first.root.parent.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
-    assert second.root.parent.parent.name == "surrogate_slope_0.5_warmup_ratio_0.1"
+    assert first.root.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
+    assert second.root.parent.name == "surrogate_slope_0.5_warmup_ratio_0.1"
+    assert first.root.parent.parent.parent.name == "lr1e-06_calibration_group_size_-1"
     assert first.root != second.root
     assert first.ann_training_prefix_dir == second.ann_training_prefix_dir
     assert first.ann_training_calibration_dir == second.ann_training_calibration_dir
@@ -135,10 +141,11 @@ def test_group_size_isolates_calibration_aware_runs_and_snn_but_not_identity_ann
 def test_aware_snn_path_contains_group_size_exactly_once(mode):
     layout = ArtifactLayout(_cfg(mode))
     path = layout.snn_dir("phase")
-    assert path.parts.count("calibration_group_size_-1") == 1
-    assert path.parts[-4:] == (
-        "calibration_group_size_-1", "seed42", "snn", "phase"
-    )
+    assert sum(
+        part.count("calibration_group_size_-1") for part in path.parts
+    ) == 1
+    assert path.parts[-3:] == ("seed42", "snn", "phase")
+    assert "lr1e-06_calibration_group_size_-1" in path.parts
 
 
 @pytest.mark.parametrize("mode", ["vanilla", "unaware"])
