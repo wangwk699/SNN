@@ -89,7 +89,7 @@ experiments:
       saliency_rule: operator_aware_spikellm_extension
     replacement:
       train_mode: phase
-      common_clip_enabled: true
+      common_clip_enabled: false
       outer_clip_backward: hard_clip
       clip_rule: phase_mtn_gif_low_high_common_intersection
     rotated_pre_finetuning:
@@ -99,13 +99,13 @@ experiments:
       per_device_train_batch_size: 1
       per_device_eval_batch_size: 1
       gradient_accumulation_steps: 16
-      learning_rate: 1.0e-06
+      learning_rate: 5.0e-05
       weight_decay: 0.0
       adam_beta1: 0.9
       adam_beta2: 0.999
       adam_epsilon: 1.0e-08
       lr_scheduler_type: cosine
-      warmup_ratio: 0.03
+      warmup_ratio: 0.0
       bf16: true
       fp16: false
       dtype: bfloat16
@@ -126,7 +126,7 @@ experiments:
       batch_size: 32
       max_new_tokens: 32
       tldr_input_length: 512
-      tldr_test_samples: 128
+      tldr_test_samples: 256
       tldr_test_seed: 42
       rouge_types:
       - rouge1
@@ -251,7 +251,7 @@ experiments:
       saliency_rule: operator_aware_spikellm_extension
     replacement:
       train_mode: phase
-      common_clip_enabled: true
+      common_clip_enabled: false
       outer_clip_backward: hard_clip
       clip_rule: phase_mtn_gif_low_high_common_intersection
     rotated_pre_finetuning:
@@ -267,7 +267,7 @@ experiments:
       adam_beta2: 0.999
       adam_epsilon: 1.0e-08
       lr_scheduler_type: cosine
-      warmup_ratio: 0.03
+      warmup_ratio: 0.0
       bf16: true
       fp16: false
       dtype: bfloat16
@@ -415,7 +415,7 @@ experiments:
       saliency_rule: operator_aware_spikellm_extension
     replacement:
       train_mode: phase
-      common_clip_enabled: true
+      common_clip_enabled: false
       outer_clip_backward: hard_clip
       clip_rule: phase_mtn_gif_low_high_common_intersection
     rotated_pre_finetuning:
@@ -431,7 +431,7 @@ experiments:
       adam_beta2: 0.999
       adam_epsilon: 1.0e-08
       lr_scheduler_type: cosine
-      warmup_ratio: 0.03
+      warmup_ratio: 0.0
       bf16: true
       fp16: false
       dtype: bfloat16

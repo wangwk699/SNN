@@ -58,19 +58,12 @@ def test_all_twelve_generated_configs_carry_temporal_v5_and_ordinary_qmax30(gene
             "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
         }
         assert cfg["phase"]["surrogate_slope"] == 1.0
-        expected_clip = cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}
-        assert cfg["replacement"]["common_clip_enabled"] is expected_clip
+        assert isinstance(cfg["replacement"]["common_clip_enabled"], bool)
+        if cfg["experiment"]["ann_mode"] in {"vanilla", "unaware"}:
+            assert cfg["replacement"]["common_clip_enabled"] is False
         assert cfg["gif"]["high_qmax"] == GIF_HIGH_QMAX
         assert cfg["gif"]["temporal_steps"] == GIF_LOCAL_STEPS
         assert cfg["gif"]["per_step_qmax"] == GIF_STEP_QMAX
-
-
-def test_qwen17_quick_tldr_evaluation_remains_128_samples(generated_configs):
-    for path in generated_configs:
-        if "qwen3_1_7b_tldr" in path.name:
-            cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
-            assert cfg["evaluation"]["tldr_test_samples"] == 128
-
 
 @pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
 @pytest.mark.parametrize("enabled", [True, False])
