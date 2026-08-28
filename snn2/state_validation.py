@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Literal
@@ -36,6 +37,45 @@ CLIP_BUNDLE_POLICIES = frozenset(
 )
 
 
+def compute_state_fingerprint(
+    state_root: str | Path,
+    state_kinds: tuple[str, ...],
+    *,
+    include_global_phase: bool = False,
+) -> dict[str, Any]:
+    root = Path(state_root)
+    hashes: dict[str, str] = {}
+    for kind in state_kinds:
+        for path in sorted(root.glob(f"layer_*/site_*/{kind}_state.pt")):
+            hashes[path.relative_to(root).as_posix()] = sha256_file(path)
+    if include_global_phase:
+        path = root / "_global" / "final_rmsnorm" / "phase_state.pt"
+        if not path.exists():
+            raise FileNotFoundError(path)
+        hashes[path.relative_to(root).as_posix()] = sha256_file(path)
+    if not hashes:
+        raise ValueError(f"No requested state files found in {root}: {state_kinds}")
+    payload = "".join(f"{name}\0{digest}\n" for name, digest in sorted(hashes.items()))
+    return {"sha256": hashlib.sha256(payload.encode()).hexdigest(), "file_hashes": hashes}
+
+
+def ann_training_state_kinds(cfg: dict[str, Any]) -> tuple[str, ...]:
+    mode = cfg["experiment"]["ann_mode"]
+    if mode == "phase_aware":
+        base = ("phase",)
+    elif mode == "gif_aware":
+        base = ("gif",)
+    else:
+        return ()
+    return base + (("clip",) if bool(cfg["replacement"]["common_clip_enabled"]) else ())
+
+
+def deployment_state_fingerprint(state_root: str | Path, neuron: str) -> dict[str, Any]:
+    if neuron not in {"phase", "gif", "mtn"}:
+        raise ValueError(f"Unsupported deployment neuron: {neuron}")
+    return compute_state_fingerprint(state_root, (neuron,), include_global_phase=neuron == "phase")
+
+
 def load_calibration_manifest(site_root: str | Path) -> dict[str, Any]:
     path = Path(site_root) / "calibration_state_manifest.json"
     if not path.exists():
@@ -58,8 +98,12 @@ def load_calibration_manifest(site_root: str | Path) -> dict[str, Any]:
     }
     mismatched = {key: (value, manifest.get(key)) for key, value in expected.items() if manifest.get(key) != value}
     group_size = manifest.get("calibration_group_size")
-    if mismatched or not isinstance(group_size, int) or group_size == 0 or group_size < -1:
-        raise ValueError(f"Calibration manifest has invalid grouping provenance: {mismatched}")
+    num_samples = manifest.get("calibration_num_samples")
+    if mismatched or not isinstance(group_size, int) or group_size == 0 or group_size < -1 or not isinstance(num_samples, int) or num_samples <= 0:
+        raise ValueError(f"Calibration manifest has invalid grouping/sample provenance: {mismatched}")
+    source_path = Path(manifest.get("source_statistics_manifest_path", ""))
+    if not source_path.exists() or sha256_file(source_path) != manifest.get("source_statistics_manifest_sha256"):
+        raise ValueError("Calibration state bundle has invalid Stage-A statistics provenance")
     return manifest
 
 

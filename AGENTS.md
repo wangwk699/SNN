@@ -16,7 +16,7 @@
 
 7. Phase `surrogate_slope` 允许任意正有限值，且仅作为 phase-aware ANN training/final ANN evaluation 的运行时反向传播参数；Phase state 不得保存 slope，ANN controller 必须从当前 YAML 显式接收，SNN deployment 使用硬阈值。phase-aware run root 必须包含 `surrogate_slope_<value>_warmup_ratio_<value>`。
 
-8. G-dependent calibration 的 config/log/statistics/state/manifest、aware ANN run、SNN conversion/evaluation 路径必须包含且只包含一次 `calibration_group_size_<G>`，metadata 还必须显式保存 G 与 grouping policy；aware ANN run 将其写入学习率目录后缀 `lr..._calibration_group_size_<G>`，并在该 run root 下使用 `snn/<neuron>`，vanilla/unaware 在 `snn/calibration_group_size_<G>/<neuron>` 下分叉。identity ANN checkpoint 不因 G 分叉，Rotation、数据与 Prefix 等 G-independent shared 工件不得复制。
+8. G-dependent calibration scope 必须包含且只包含一次 `calibration_group_size_<G>_num_samples_<N>`，Stage A statistics 与 Stage B parameterized states 分目录保存，metadata 显式保存 G、N 与 grouping policy；aware ANN run 将 scope 写入学习率目录后缀并在 `snn/<neuron>/<variant>` 下保存，vanilla/unaware 在 `snn/<scope>/<neuron>/<variant>` 下分叉。identity ANN checkpoint 不因 G/N 分叉，Rotation、训练数据与 Prefix 等无关 shared 工件不得复制。
 
 9. `phase_aware` 与 `gif_aware` 仍是 site-local static replacement 的 ANN fine-tuning，时间维度不跨层传播；只有 `deploy_phase/gif/mtn` 属于 full-temporal SNN。`--neuron ann` 按 ann_mode 恢复 identity/Phase/GIF static semantics，`--neuron phase|gif|mtn` 始终使用 temporal deployment。
 

@@ -198,7 +198,6 @@ class PhaseSurrogate(nn.Module):
             not math.isfinite(self.slope) or self.slope <= 0.0
         ):
             raise ValueError("Phase surrogate_slope must be a positive finite number")
-        self.max_spikes = int(state.get("max_spikes", 2))
         self.register_buffer("tau", state["tau"].float())
         self.register_buffer("v0", state["v0"].float())
         _require_parameter_shape("Phase tau", self.tau, self.layout)
@@ -210,7 +209,6 @@ class PhaseSurrogate(nn.Module):
         tau = _parameter_values(x, self.tau, self.layout)
         v0 = _parameter_values(x, self.v0, self.layout)
         membrane = x.abs() + v0
-        spike_count = torch.zeros_like(x)
         outputs = []
         for timestep in range(self.T):
             amplitude = tau * (self.base ** (-(timestep + 1)))
@@ -220,9 +218,6 @@ class PhaseSurrogate(nn.Module):
                 if self.slope is None
                 else HeavisideSigmoid.apply(distance, self.slope)
             )
-            if self.max_spikes > 0:
-                spike = spike * (spike_count < self.max_spikes).to(spike.dtype)
-            spike_count = spike_count + spike.detach()
             outputs.append(sign * amplitude * spike)
             membrane = membrane - amplitude * spike
         temporal = torch.stack(outputs, dim=0)

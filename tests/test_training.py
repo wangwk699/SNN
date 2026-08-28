@@ -47,13 +47,17 @@ def _provenance_fixture(tmp_path):
     )
     (prefix_dir / "prefixed_key_values.pt").write_bytes(b"kv-v1")
     (site_dir / "calibration_state_manifest.json").write_text(
-        json.dumps({"format_version": 6}), encoding="utf-8"
+        json.dumps({"format_version": 9}), encoding="utf-8"
     )
+    phase_dir = site_dir / "layer_000" / "site_01_test"
+    phase_dir.mkdir(parents=True)
+    (phase_dir / "phase_state.pt").write_bytes(b"phase-v1")
     cfg = {
         "experiment": {"ann_mode": "phase_aware"},
         "ann_training": {"prefix_enabled": True},
         "prefix": {"enabled": True},
-        "calibration": {"group_size": -1},
+        "calibration": {"group_size": -1, "num_samples": 128},
+        "replacement": {"common_clip_enabled": False},
     }
     layout = SimpleNamespace(
         ann_training_prefix_dir=prefix_dir,
@@ -63,7 +67,7 @@ def _provenance_fixture(tmp_path):
 
 
 def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
-    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "per_head_within_head_groups_v1", "statistics_format_version": 2}})
+    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "calibration_grouping_policy": "per_head_within_head_groups_v1", "statistics_format_version": 2, "source_statistics_manifest_sha256": "stats"}})
     cfg, layout = _provenance_fixture(tmp_path)
     captured = capture_training_artifact_provenance(
         cfg, layout, prefix_ids=[7, 8]
@@ -72,7 +76,7 @@ def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
     assert captured["ann_training_prefix_token_ids"] == [7, 8]
     assert captured["ann_training_prefix_state_sha256"]
     assert captured["ann_training_prefix_kv_sha256"]
-    assert captured["ann_training_calibration_manifest_sha256"]
+    assert captured["ann_training_state_fingerprint_sha256"]
 
 
 @pytest.mark.parametrize(
@@ -80,13 +84,13 @@ def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
     [
         ("prefix/prefix_state.json", b"{\"prefix_token_ids\": [7, 8], \"changed\": true}"),
         ("prefix/prefixed_key_values.pt", b"kv-v2"),
-        ("sites/calibration_state_manifest.json", b"{\"format_version\": 6, \"changed\": true}"),
+        ("sites/layer_000/site_01_test/phase_state.pt", b"phase-v2"),
     ],
 )
 def test_training_artifact_provenance_rejects_mid_training_changes(
     monkeypatch, tmp_path, relative_path, replacement
 ):
-    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "per_head_within_head_groups_v1", "statistics_format_version": 2}})
+    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "calibration_grouping_policy": "per_head_within_head_groups_v1", "statistics_format_version": 2, "source_statistics_manifest_sha256": "stats"}})
     cfg, layout = _provenance_fixture(tmp_path)
     captured = capture_training_artifact_provenance(
         cfg, layout, prefix_ids=[7, 8]

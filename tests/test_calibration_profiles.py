@@ -39,7 +39,7 @@ def _statistics(site_index=1):
 def _cfg():
     return {
         "calibration": {"group_size": -1, "expected_sites_per_layer": 10},
-        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0, "max_spikes": 4},
+        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
     }

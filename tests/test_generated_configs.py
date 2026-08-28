@@ -38,7 +38,7 @@ def generated_configs(tmp_path):
     )
 
 
-def test_all_twelve_generated_configs_carry_temporal_v5_and_ordinary_qmax30(generated_configs):
+def test_all_twelve_generated_configs_carry_temporal_v6_and_ordinary_qmax30(generated_configs):
     paths = generated_configs
     assert len(paths) == 12
     for path in paths:

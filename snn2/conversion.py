@@ -12,7 +12,7 @@ from .config import (
 )
 from .controller import SiteController
 from .sites import topology_metadata
-from .state_validation import validate_site_state_bundle
+from .state_validation import ann_training_state_kinds, compute_state_fingerprint, deployment_state_fingerprint, validate_site_state_bundle
 from .temporal_ops import (
     CONVERSION_METADATA_FORMAT_VERSION,
     CALIBRATION_GROUPING_POLICY,
@@ -47,7 +47,7 @@ def validate_calibration(
         clip_policy=clip_policy,
         expected_num_hidden_layers=expected_num_hidden_layers,
     )
-    required = ["statistics.pt", "phase_state.pt", "gif_state.pt", "mtn_state.pt"]
+    required = ["phase_state.pt", "gif_state.pt", "mtn_state.pt"]
     for directory in sorted(path for path in root.glob("layer_*/site_*") if path.is_dir()):
         for name in required:
             if not (directory / name).exists():
@@ -56,7 +56,7 @@ def validate_calibration(
     if clip_policy == "forbid_all" and clip_states:
         raise ValueError(
             "Post-finetuning conversion calibration must be clip-free; "
-            "re-run calibrate_sites.py --stage post_finetuning"
+            "run Stage A statistics collection and Stage B state materialization for post_finetuning"
         )
     return {
         "expected_num_hidden_layers": validation["expected_num_hidden_layers"],
@@ -158,9 +158,10 @@ def _validate_aware_training_provenance(
         "ann_training_prefix_state_sha256": prefix["prefix_state_sha256"],
         "ann_training_prefix_kv_sha256": prefix["prefix_kv_sha256"],
         "ann_training_prefix_token_ids": prefix["prefix_token_ids"],
-        "ann_training_calibration_root": str(layout.ann_training_site_dir.resolve()),
-        "ann_training_calibration_manifest_sha256": sha256_file(calibration_manifest),
+        "ann_training_state_dependency_kinds": list(ann_training_state_kinds(cfg)),
+        "ann_training_state_fingerprint_sha256": compute_state_fingerprint(layout.ann_training_site_dir, ann_training_state_kinds(cfg))["sha256"],
         "ann_training_calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "ann_training_calibration_num_samples": int(cfg["calibration"]["num_samples"]),
         "ann_training_calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
     }
@@ -194,6 +195,7 @@ def _source_bundle(
     _validate_source_manifest(manifest, reused=reused)
     expected_grouping = {
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
@@ -233,13 +235,15 @@ def validate_conversion_metadata(
     ann_config = layout.ann_checkpoint_dir / "config.json"
     rotation_enabled = bool(cfg["rotation"]["enabled"])
     rotation_path = layout.rotation_dir / "rotation_state.pt"
+    deployment_fingerprint = deployment_state_fingerprint(layout.conversion_site_dir, neuron)
     expected = {
         "deployment_neuron": neuron,
+        "deployment_state_kinds": [neuron],
+        "deployment_state_fingerprint_sha256": deployment_fingerprint["sha256"],
         "full_temporal_steps": bundle["temporal_steps"].get(neuron),
         "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()),
         "source_ann_config_sha256": sha256_file(ann_config),
         "calibration_root": str(layout.conversion_site_dir.resolve()),
-        "calibration_state_manifest_sha256": sha256_file(manifest_path),
         "calibration_source_stage": conversion_calibration_stage(cfg),
         "prefix_source_stage": prefix["prefix_source_stage"],
         "reused_ann_training_artifacts": reused,
@@ -255,6 +259,7 @@ def validate_conversion_metadata(
         "source_ann_common_clip_enabled": training_common_clip_enabled(cfg),
         "ordinary_gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
@@ -290,8 +295,18 @@ def create_conversion(
     rotation_path = layout.rotation_dir / "rotation_state.pt"
     if rotation_enabled and not rotation_path.exists():
         raise FileNotFoundError(rotation_path)
+    deployment_fingerprint = deployment_state_fingerprint(layout.conversion_site_dir, neuron)
+    deployment_parameters = (
+        {"phase_T": int(cfg["phase"]["T"])} if neuron == "phase" else
+        ({"mtn_T": int(cfg["mtn"]["T"]), "mtn_K": int(cfg["mtn"]["K"])} if neuron == "mtn" else
+         {"gif_low_ratio": float(cfg["gif"]["low_ratio"]), "gif_salient_ratio": float(cfg["gif"]["salient_ratio"])})
+    )
     metadata = {
         "format_version": CONVERSION_METADATA_FORMAT_VERSION,
+        "deployment_state_kinds": [neuron],
+        "deployment_state_fingerprint_sha256": deployment_fingerprint["sha256"],
+        "deployment_state_file_hashes": deployment_fingerprint["file_hashes"],
+        "deployment_parameters": deployment_parameters,
         "experiment": cfg["experiment"],
         "source_ann_checkpoint": str(ann_checkpoint.resolve()),
         "source_ann_config_sha256": sha256_file(ann_config),
@@ -314,6 +329,7 @@ def create_conversion(
         "snn_clip_applied": False,
         "source_ann_common_clip_enabled": training_common_clip_enabled(cfg),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,

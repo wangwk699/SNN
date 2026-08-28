@@ -63,7 +63,7 @@ def _write_bundle(root, *, include_clip=False):
     torch.save(_statistics(None), global_directory / "statistics.pt")
     cfg = {
         "calibration": {"group_size": -1, "expected_sites_per_layer": 10},
-        "phase": {"T": 2, "base": 2.0, "surrogate_slope": 1.0, "max_spikes": 2},
+        "phase": {"T": 2, "base": 2.0, "surrogate_slope": 1.0},
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
         "mtn": {"T": 2, "K": 2, "threshold_factor": 0.75},
     }
@@ -110,7 +110,6 @@ def _phase_state():
         "parameter_layout": "last_dim_grouped", "configured_group_size": -1,
         "group_size": 3, "num_heads": None, "channels_per_head": 3,
         "groups_per_head": 1,
-        "max_spikes": 2,
         "tau": torch.tensor([1.0]),
         "v0": torch.tensor([0.125]),
         "tau_calibration": PHASE_TAU_CALIBRATION,

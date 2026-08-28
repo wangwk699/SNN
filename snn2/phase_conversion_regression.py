@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from .artifacts import ArtifactLayout, read_json, sha256_file
 from .conversion import validate_conversion_metadata
 from .neurons import PhaseSurrogate
+from .state_validation import compute_state_fingerprint
 from .sites import SITE_IDS, site_key
 from .temporal_ops import (
     from_temporal,
@@ -181,7 +182,8 @@ def validate_phase_conversion_artifacts(
         "ann_training_common_clip_state_required": True,
         "ann_training_prefix_state_sha256": sha256_file(prefix_state),
         "ann_training_prefix_kv_sha256": sha256_file(prefix_kv) if prefix_ids else None,
-        "ann_training_calibration_manifest_sha256": sha256_file(manifest),
+        "ann_training_state_dependency_kinds": ["phase"],
+        "ann_training_state_fingerprint_sha256": compute_state_fingerprint(layout.ann_training_site_dir, ("phase",))["sha256"],
         "final_model_checkpoint": str(layout.ann_checkpoint_dir.resolve()),
     }
     ann_mismatch = {
@@ -210,9 +212,10 @@ def validate_phase_conversion_artifacts(
         "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()),
         "prefix_state_sha256": expected_training["ann_training_prefix_state_sha256"],
         "prefix_kv_sha256": expected_training["ann_training_prefix_kv_sha256"],
-        "calibration_state_manifest_sha256": expected_training[
-            "ann_training_calibration_manifest_sha256"
-        ],
+        "deployment_state_kinds": ["phase"],
+        "deployment_state_fingerprint_sha256": compute_state_fingerprint(
+            layout.ann_training_site_dir, ("phase",), include_global_phase=True
+        )["sha256"],
     }
     conversion_mismatch = {
         key: {"expected": value, "actual": conversion.get(key)}

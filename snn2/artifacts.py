@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -32,19 +33,58 @@ def ann_run_variant_dirname(
     return result
 
 
-def phase_training_dirname(*, surrogate_slope: Any, warmup_ratio: Any) -> str:
-    """Return the Phase-aware run directory for its training hyperparameters."""
+def format_path_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        raise ValueError("Boolean values are not valid numeric path scalars")
+    if isinstance(value, int):
+        return str(value)
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("Path scalars must be finite")
+    return "0.0" if number == 0.0 else repr(number)
+
+
+def calibration_scope_dirname(*, group_size: Any, num_samples: Any) -> str:
+    group_value = int(group_size)
+    sample_value = int(num_samples)
+    if group_value != -1 and group_value <= 0:
+        raise ValueError("calibration.group_size must be -1 or a positive integer")
+    if sample_value <= 0:
+        raise ValueError("calibration.num_samples must be a positive integer")
+    return f"calibration_group_size_{group_value}_num_samples_{sample_value}"
+
+
+def calibration_state_variant_dirname(cfg: dict[str, Any]) -> str:
     return (
-        f"surrogate_slope_{float(surrogate_slope)}"
-        f"_warmup_ratio_{float(warmup_ratio)}"
+        f"phase_T_{int(cfg['phase']['T'])}_mtn_T_{int(cfg['mtn']['T'])}"
+        f"_mtn_K_{int(cfg['mtn']['K'])}"
+        f"_gif_low_ratio_{format_path_scalar(cfg['gif']['low_ratio'])}"
+        f"_gif_salient_ratio_{format_path_scalar(cfg['gif']['salient_ratio'])}"
     )
 
 
-def calibration_group_dirname(group_size: Any) -> str:
-    value = int(group_size)
-    if value != -1 and value <= 0:
-        raise ValueError("calibration.group_size must be -1 or a positive integer")
-    return f"calibration_group_size_{value}"
+def aware_training_dirname(cfg: dict[str, Any]) -> str:
+    result = (
+        f"phase_T_{int(cfg['phase']['T'])}_mtn_T_{int(cfg['mtn']['T'])}"
+        f"_low_ratio_{format_path_scalar(cfg['gif']['low_ratio'])}"
+        f"_salient_ratio_{format_path_scalar(cfg['gif']['salient_ratio'])}"
+    )
+    if cfg["experiment"]["ann_mode"] == "phase_aware":
+        result += f"_surrogate_slope_{format_path_scalar(cfg['phase']['surrogate_slope'])}"
+    return result + f"_warmup_ratio_{format_path_scalar(cfg['training']['warmup_ratio'])}"
+
+
+def snn_neuron_variant_dirname(cfg: dict[str, Any], neuron: str) -> str:
+    if neuron == "phase":
+        return f"T_{int(cfg['phase']['T'])}"
+    if neuron == "mtn":
+        return f"T_{int(cfg['mtn']['T'])}_K_{int(cfg['mtn']['K'])}"
+    if neuron == "gif":
+        return (
+            f"low_ratio_{format_path_scalar(cfg['gif']['low_ratio'])}"
+            f"_salient_ratio_{format_path_scalar(cfg['gif']['salient_ratio'])}"
+        )
+    raise ValueError(f"Unsupported SNN neuron: {neuron}")
 
 
 def safe_name(value: str) -> str:
@@ -76,7 +116,7 @@ class ArtifactLayout:
         if is_aware_ann_mode(cfg):
             learning_rate = (
                 f"{learning_rate}_"
-                f"{calibration_group_dirname(cfg['calibration']['group_size'])}"
+                f"{calibration_scope_dirname(group_size=cfg['calibration']['group_size'], num_samples=cfg['calibration']['num_samples'])}"
             )
 
         self.model_root = model_root
@@ -97,11 +137,8 @@ class ArtifactLayout:
             / learning_rate
             / run_variant
         )
-        if exp["ann_mode"] == "phase_aware":
-            run_root = run_root / phase_training_dirname(
-                surrogate_slope=cfg["phase"]["surrogate_slope"],
-                warmup_ratio=cfg["training"]["warmup_ratio"],
-            )
+        if is_aware_ann_mode(cfg):
+            run_root = run_root / aware_training_dirname(cfg)
         self.root = run_root / seed
         # 原始 Base 模型独立目录：
         # 不依赖 ann_mode，也不依赖 learning_rate
@@ -131,6 +168,14 @@ class ArtifactLayout:
     @property
     def data_dir(self) -> Path:
         return self.shared_task_root / "data"
+
+    @property
+    def calibration_data_manifest_path(self) -> Path:
+        return (
+            self.data_dir / "calibration"
+            / f"calibration_seed_{int(self._cfg['calibration']['seed'])}_num_samples_{int(self._cfg['calibration']['num_samples'])}"
+            / "calibration_manifest.json"
+        )
 
     @property
     def shared_task_logs_dir(self) -> Path:
@@ -190,20 +235,40 @@ class ArtifactLayout:
             / "rotated_prefix"
             / "ann_training_calibration"
             / prefix_enabled_dirname(enabled)
-            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
+            / calibration_scope_dirname(group_size=self._cfg["calibration"]["group_size"], num_samples=self._cfg["calibration"]["num_samples"])
         )
 
     @property
+    def ann_training_statistics_dir(self) -> Path:
+        return self.ann_training_calibration_dir / "statistics"
+
+    @property
+    def ann_training_states_root(self) -> Path:
+        return self.ann_training_calibration_dir / "states"
+
+    @property
+    def ann_training_state_dir(self) -> Path:
+        return self.ann_training_states_root / calibration_state_variant_dirname(self._cfg)
+
+    @property
     def ann_training_site_dir(self) -> Path:
-        return self.ann_training_calibration_dir / "sites"
+        return self.ann_training_state_dir
 
     @property
     def ann_training_calibration_config_dir(self) -> Path:
-        return self.ann_training_calibration_dir / "config"
+        return self.ann_training_statistics_dir / "config"
 
     @property
     def ann_training_calibration_logs_dir(self) -> Path:
-        return self.ann_training_calibration_dir / "logs"
+        return self.ann_training_statistics_dir / "logs"
+
+    @property
+    def ann_training_state_config_dir(self) -> Path:
+        return self.ann_training_state_dir / "config"
+
+    @property
+    def ann_training_state_logs_dir(self) -> Path:
+        return self.ann_training_state_dir / "logs"
 
     @property
     def vanilla_analysis_calibration_dir(self) -> Path:
@@ -211,20 +276,20 @@ class ArtifactLayout:
             self.shared_model_root
             / "vanilla_original"
             / "vanilla_analysis_calibration"
-            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
+            / calibration_scope_dirname(group_size=self._cfg["calibration"]["group_size"], num_samples=self._cfg["calibration"]["num_samples"])
         )
 
     @property
     def vanilla_analysis_site_dir(self) -> Path:
-        return self.vanilla_analysis_calibration_dir / "sites"
+        return self.vanilla_analysis_calibration_dir / "statistics"
 
     @property
     def vanilla_analysis_calibration_config_dir(self) -> Path:
-        return self.vanilla_analysis_calibration_dir / "config"
+        return self.vanilla_analysis_site_dir / "config"
 
     @property
     def vanilla_analysis_calibration_logs_dir(self) -> Path:
-        return self.vanilla_analysis_calibration_dir / "logs"
+        return self.vanilla_analysis_site_dir / "logs"
 
     @property
     def prefix_dir(self) -> Path:
@@ -266,20 +331,40 @@ class ArtifactLayout:
             self.post_finetuning_dir
             / "conversion_calibration"
             / prefix_enabled_dirname(enabled)
-            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
+            / calibration_scope_dirname(group_size=self._cfg["calibration"]["group_size"], num_samples=self._cfg["calibration"]["num_samples"])
         )
 
     @property
+    def post_finetuning_statistics_dir(self) -> Path:
+        return self.post_finetuning_conversion_calibration_dir / "statistics"
+
+    @property
+    def post_finetuning_states_root(self) -> Path:
+        return self.post_finetuning_conversion_calibration_dir / "states"
+
+    @property
+    def post_finetuning_state_dir(self) -> Path:
+        return self.post_finetuning_states_root / calibration_state_variant_dirname(self._cfg)
+
+    @property
     def post_finetuning_site_dir(self) -> Path:
-        return self.post_finetuning_conversion_calibration_dir / "sites"
+        return self.post_finetuning_state_dir
 
     @property
     def post_finetuning_conversion_calibration_config_dir(self) -> Path:
-        return self.post_finetuning_conversion_calibration_dir / "config"
+        return self.post_finetuning_statistics_dir / "config"
 
     @property
     def post_finetuning_conversion_calibration_logs_dir(self) -> Path:
-        return self.post_finetuning_conversion_calibration_dir / "logs"
+        return self.post_finetuning_statistics_dir / "logs"
+
+    @property
+    def post_finetuning_state_config_dir(self) -> Path:
+        return self.post_finetuning_state_dir / "config"
+
+    @property
+    def post_finetuning_state_logs_dir(self) -> Path:
+        return self.post_finetuning_state_dir / "logs"
 
     @property
     def conversion_prefix_dir(self) -> Path:
@@ -299,7 +384,7 @@ class ArtifactLayout:
 
     @property
     def conversion_site_dir(self) -> Path:
-        return self.conversion_calibration_dir / "sites"
+        return self.ann_training_state_dir if is_aware_ann_mode(self._cfg) else self.post_finetuning_state_dir
 
     @property
     def logs_dir(self) -> Path:
@@ -308,11 +393,12 @@ class ArtifactLayout:
     def snn_dir(self, neuron: str) -> Path:
         base = self.root / "snn"
         if is_aware_ann_mode(self._cfg):
-            return base / neuron
+            return base / neuron / snn_neuron_variant_dirname(self._cfg, neuron)
         return (
             base
-            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
+            / calibration_scope_dirname(group_size=self._cfg["calibration"]["group_size"], num_samples=self._cfg["calibration"]["num_samples"])
             / neuron
+            / snn_neuron_variant_dirname(self._cfg, neuron)
         )
 
     def snn_conversion_dir(self, neuron: str) -> Path:

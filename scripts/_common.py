@@ -39,12 +39,16 @@ def setup(config_path: str, config_scope: str = "run"):
         config_dir = layout.policy_config_dir
     elif config_scope == "rotated_pre_finetuning":
         config_dir = layout.rotated_pre_finetuning_config_dir
-    elif config_scope == "ann_training_calibration":
+    elif config_scope in {"ann_training_calibration", "ann_training_statistics"}:
         config_dir = layout.ann_training_calibration_config_dir
-    elif config_scope == "vanilla_analysis_calibration":
+    elif config_scope == "ann_training_states":
+        config_dir = layout.ann_training_state_config_dir
+    elif config_scope in {"vanilla_analysis_calibration", "vanilla_analysis_statistics"}:
         config_dir = layout.vanilla_analysis_calibration_config_dir
-    elif config_scope == "post_finetuning_calibration":
+    elif config_scope in {"post_finetuning_calibration", "post_finetuning_statistics"}:
         config_dir = layout.post_finetuning_conversion_calibration_config_dir
+    elif config_scope == "post_finetuning_states":
+        config_dir = layout.post_finetuning_state_config_dir
     elif config_scope == "run":
         config_dir = layout.config_dir
     elif config_scope == "base":

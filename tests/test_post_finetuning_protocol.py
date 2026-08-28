@@ -26,11 +26,13 @@ def _cfg(mode, root="artifacts", common_clip_enabled=True):
         "training": {"learning_rate": 1e-6, "warmup_ratio": 0.03},
         "rotation": {"enabled": mode != "vanilla"},
         "prefix": {"enabled": mode != "vanilla"},
-        "phase": {"surrogate_slope": 1.0},
+        "phase": {"T": 4, "surrogate_slope": 1.0},
+        "mtn": {"T": 4, "K": 6},
+        "gif": {"low_ratio": 0.9, "salient_ratio": 0.1},
         "ann_training": {"prefix_enabled": mode != "vanilla"},
         "post_finetuning": {"prefix_enabled": not aware},
         "replacement": {"common_clip_enabled": common_clip_enabled},
-        "calibration": {"group_size": -1},
+        "calibration": {"group_size": -1, "num_samples": 128, "seed": 42},
     }
 
 
@@ -69,25 +71,13 @@ def test_mode_aware_conversion_roots():
 @pytest.mark.parametrize("enabled", [True, False])
 def test_aware_run_root_records_common_clip_variant(mode, enabled):
     layout = ArtifactLayout(_cfg(mode, common_clip_enabled=enabled))
-    expected = (
-        "prefix_enabled_ture_common_clip_enabled_true"
-        if enabled
-        else "prefix_enabled_ture_common_clip_enabled_false"
-    )
-    variant_dir = (
-        layout.root.parent.parent
-        if mode == "phase_aware"
-        else layout.root.parent
-    )
-    assert variant_dir.name == expected
-    if mode == "phase_aware":
-        assert layout.root.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
-    learning_rate_dir = (
-        layout.root.parent.parent.parent
-        if mode == "phase_aware"
-        else layout.root.parent.parent
-    )
-    assert learning_rate_dir.name == "lr1e-06_calibration_group_size_-1"
+    expected = f"prefix_enabled_ture_common_clip_enabled_{str(enabled).lower()}"
+    assert layout.root.parent.parent.name == expected
+    expected_params = "phase_T_4_mtn_T_4_low_ratio_0.9_salient_ratio_0.1"
+    if mode == "phase_aware": expected_params += "_surrogate_slope_1.0"
+    expected_params += "_warmup_ratio_0.03"
+    assert layout.root.parent.name == expected_params
+    assert layout.root.parent.parent.parent.name == "lr1e-06_calibration_group_size_-1_num_samples_128"
 
 
 def test_phase_aware_run_root_records_slope_and_warmup_ratio():
@@ -98,9 +88,9 @@ def test_phase_aware_run_root_records_slope_and_warmup_ratio():
     first = ArtifactLayout(first_cfg)
     second = ArtifactLayout(second_cfg)
 
-    assert first.root.parent.name == "surrogate_slope_1.0_warmup_ratio_0.03"
-    assert second.root.parent.name == "surrogate_slope_0.5_warmup_ratio_0.1"
-    assert first.root.parent.parent.parent.name == "lr1e-06_calibration_group_size_-1"
+    assert first.root.parent.name == "phase_T_4_mtn_T_4_low_ratio_0.9_salient_ratio_0.1_surrogate_slope_1.0_warmup_ratio_0.03"
+    assert second.root.parent.name == "phase_T_4_mtn_T_4_low_ratio_0.9_salient_ratio_0.1_surrogate_slope_0.5_warmup_ratio_0.1"
+    assert first.root.parent.parent.parent.name == "lr1e-06_calibration_group_size_-1_num_samples_128"
     assert first.root != second.root
     assert first.ann_training_prefix_dir == second.ann_training_prefix_dir
     assert first.ann_training_calibration_dir == second.ann_training_calibration_dir
@@ -144,18 +134,16 @@ def test_aware_snn_path_contains_group_size_exactly_once(mode):
     assert sum(
         part.count("calibration_group_size_-1") for part in path.parts
     ) == 1
-    assert path.parts[-3:] == ("seed42", "snn", "phase")
-    assert "lr1e-06_calibration_group_size_-1" in path.parts
+    assert path.parts[-4:] == ("seed42", "snn", "phase", "T_4")
+    assert "lr1e-06_calibration_group_size_-1_num_samples_128" in path.parts
 
 
 @pytest.mark.parametrize("mode", ["vanilla", "unaware"])
 def test_identity_ann_snn_path_groups_below_snn(mode):
     layout = ArtifactLayout(_cfg(mode))
     path = layout.snn_dir("phase")
-    assert path.parts.count("calibration_group_size_-1") == 1
-    assert path.parts[-3:] == (
-        "snn", "calibration_group_size_-1", "phase"
-    )
+    assert path.parts.count("calibration_group_size_-1_num_samples_128") == 1
+    assert path.parts[-4:] == ("snn", "calibration_group_size_-1_num_samples_128", "phase", "T_4")
 
 
 def test_calibration_config_logs_and_sites_are_group_isolated_but_shared_inputs_are_not():

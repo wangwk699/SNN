@@ -75,7 +75,7 @@ def main():
         install_model_integration(model_c, controller_c, state)
 
         calibration = load_selected_raw(cfg, layout).calibration
-        manifest_path = layout.data_dir / "calibration_manifest.json"
+        manifest_path = layout.calibration_data_manifest_path
         try:
             regression = validate_rotation_regression_suite(
                 model_a,

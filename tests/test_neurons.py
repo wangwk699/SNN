@@ -45,7 +45,7 @@ def _phase_state(kind="last_dim_grouped"):
     shape = (2,) if kind == "last_dim_grouped" else (2, 2) if kind == "attention_head_grouped" else (2, 1)
     tau = torch.full(shape, 2.0)
     return {
-        **_header("phase"), **layout, "T": 4, "base": 2.0, "max_spikes": 2,
+        **_header("phase"), **layout, "T": 4, "base": 2.0,
         "tau": tau, "v0": tau / 32,
         "tau_calibration": PHASE_TAU_CALIBRATION,
         "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
@@ -89,6 +89,18 @@ def test_phase_supports_all_grouped_layouts(kind, shape):
     module = PhaseSurrogate(_phase_state(kind), surrogate_slope=1.0)
     x = torch.randn(*shape)
     assert module(x).shape == x.shape
+
+
+def test_phase_t6_has_no_historical_four_spike_cap():
+    state = _phase_state()
+    state["T"] = 6
+    state["v0"] = state["tau"] / 128
+    assert "max_spikes" not in state
+    module = PhaseSurrogate(state)
+    assert not hasattr(module, "max_spikes")
+    temporal = module.encode(torch.full((1, 4), 100.0), return_temporal=True)
+    assert temporal.shape[0] == 6
+    assert torch.all(temporal != 0)
 
 
 def test_phase_hard_forward_and_temporal_sum_match():

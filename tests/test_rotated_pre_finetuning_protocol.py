@@ -31,9 +31,11 @@ def _cfg(mode="unaware", learning_rate=5e-6):
         "training": {"learning_rate": learning_rate, "warmup_ratio": 0.03},
         "rotation": {"enabled": mode != "vanilla"},
         "prefix": {"enabled": mode != "vanilla"},
-        "phase": {"surrogate_slope": 1.0},
+        "phase": {"T": 4, "surrogate_slope": 1.0},
+        "mtn": {"T": 4, "K": 6},
+        "gif": {"low_ratio": 0.9, "salient_ratio": 0.1},
         "post_finetuning": {"prefix_enabled": True},
-        "calibration": {"group_size": -1},
+        "calibration": {"group_size": -1, "num_samples": 128, "seed": 42},
     }
 
 

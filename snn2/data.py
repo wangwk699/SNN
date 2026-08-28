@@ -186,6 +186,7 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
                 else "seeded_without_replacement"
             ),
             "calibration_seed": int(cfg["calibration"]["seed"]),
+            "calibration_num_samples": draws,
             "positions_in_selected_train": calibration_positions,
             "indices": calibration_indices,
             "record_ids": _record_ids(raw_train, calibration_indices),
@@ -206,14 +207,16 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         }
     layout.data_dir.mkdir(parents=True, exist_ok=True)
     for name, manifest in manifests.items():
-        write_json(layout.data_dir / f"{name}_manifest.json", manifest)
+        path = layout.calibration_data_manifest_path if name == "calibration" else layout.data_dir / f"{name}_manifest.json"
+        write_json(path, manifest)
     return manifests
 
 
 def load_manifests(layout: ArtifactLayout) -> dict[str, dict[str, Any]]:
     result = {
-        name: read_json(layout.data_dir / f"{name}_manifest.json")
-        for name in ("train", "validation", "calibration")
+        "train": read_json(layout.data_dir / "train_manifest.json"),
+        "validation": read_json(layout.data_dir / "validation_manifest.json"),
+        "calibration": read_json(layout.calibration_data_manifest_path),
     }
     evaluation = layout.data_dir / "evaluation_manifest.json"
     if evaluation.exists():

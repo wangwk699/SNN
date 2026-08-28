@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from dataclasses import dataclass
 
 import torch
@@ -175,6 +177,8 @@ def evaluation_forward_metadata(
         "evaluation_common_clip_applied": clip_applied,
         "replacement_state_root": root,
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
+        "state_variant": None if inactive else Path(str(layout.ann_training_site_dir if aware_ann else layout.conversion_site_dir)).name,
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
         "softmax_site5_clip_applied": False,
@@ -213,6 +217,8 @@ def evaluation_calibration_metadata(
             else (None if inactive else str(layout.conversion_site_dir))
         ),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
+        "state_variant": None if inactive else Path(str(layout.ann_training_site_dir if aware_ann else layout.conversion_site_dir)).name,
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
     }
 

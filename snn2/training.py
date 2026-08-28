@@ -16,7 +16,7 @@ from .data import CausalLMCollator, load_selected_raw, tokenize_dataset
 from .model_integration import install_model_integration
 from .modeling import load_model, load_tokenizer, model_source_for_stage, prefix_ids_for_stage, prefix_key_values_for_stage, rotation_state
 from .prefix_cache import install_prefix_kv_forward
-from .state_validation import validate_site_state_bundle
+from .state_validation import ann_training_state_kinds, compute_state_fingerprint, validate_site_state_bundle
 from .temporal_ops import CALIBRATION_GROUPING_POLICY, STATISTICS_FORMAT_VERSION
 
 
@@ -91,12 +91,13 @@ def capture_training_artifact_provenance(
                 "ann_training_calibration_root": str(
                     layout.ann_training_site_dir.resolve()
                 ),
-                "ann_training_calibration_manifest_sha256": sha256_file(
-                    calibration_manifest
-                ),
-                "ann_training_calibration_group_size": int(
-                    cfg["calibration"]["group_size"]
-                ),
+                "ann_training_state_dependency_kinds": list(ann_training_state_kinds(cfg)),
+                "ann_training_state_fingerprint_sha256": compute_state_fingerprint(layout.ann_training_site_dir, ann_training_state_kinds(cfg))["sha256"],
+                "ann_training_state_file_hashes": compute_state_fingerprint(layout.ann_training_site_dir, ann_training_state_kinds(cfg))["file_hashes"],
+                "ann_training_state_root_at_training_time": str(layout.ann_training_site_dir.resolve()),
+                "ann_training_statistics_manifest_sha256": manifest_metadata["source_statistics_manifest_sha256"],
+                "ann_training_calibration_group_size": int(cfg["calibration"]["group_size"]),
+                "ann_training_calibration_num_samples": int(cfg["calibration"]["num_samples"]),
                 "ann_training_calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
                 "statistics_format_version": STATISTICS_FORMAT_VERSION,
             }
@@ -141,9 +142,12 @@ def validate_recorded_training_artifact_provenance(
         "ann_training_prefix_state_sha256",
         "ann_training_prefix_kv_sha256",
         "ann_training_prefix_token_ids",
-        "ann_training_calibration_root",
-        "ann_training_calibration_manifest_sha256",
+        "ann_training_state_dependency_kinds",
+        "ann_training_state_fingerprint_sha256",
+        "ann_training_state_file_hashes",
+        "ann_training_statistics_manifest_sha256",
         "ann_training_calibration_group_size",
+        "ann_training_calibration_num_samples",
         "ann_training_calibration_grouping_policy",
         "statistics_format_version",
     )
@@ -161,7 +165,8 @@ def validate_recorded_training_artifact_provenance(
         raise RuntimeError(
             "Recorded ANN-training Prefix/calibration provenance is invalid"
         ) from exc
-    if current != recorded:
+    comparable_current = {key: current.get(key) for key in recorded}
+    if comparable_current != recorded:
         raise RuntimeError(
             "Recorded ANN-training Prefix/calibration provenance does not match current artifacts"
         )

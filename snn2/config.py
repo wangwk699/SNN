@@ -124,8 +124,9 @@ def validate_config(cfg: dict[str, Any]) -> None:
     mode = cfg["experiment"].get("ann_mode")
     if mode not in ANN_MODES:
         raise ValueError(f"ann_mode must be one of {sorted(ANN_MODES)}, got {mode}")
-    if int(cfg["calibration"]["num_samples"]) != 128:
-        raise ValueError("Main experiments require exactly 128 calibration draws")
+    num_samples = cfg["calibration"].get("num_samples")
+    if not isinstance(num_samples, int) or isinstance(num_samples, bool) or num_samples <= 0:
+        raise ValueError("calibration.num_samples must be a positive integer")
     expected_sites = int(cfg["calibration"]["expected_sites_per_layer"])
     if expected_sites != SITE_COUNT:
         raise ValueError(

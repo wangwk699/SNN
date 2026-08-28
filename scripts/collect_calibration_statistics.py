@@ -1,0 +1,54 @@
+from _common import parser, setup
+
+from snn2.calibration import calibration_provenance, collect_site_statistics
+from snn2.controller import SiteController
+from snn2.data import load_selected_raw
+from snn2.logging_utils import StageRun
+from snn2.model_integration import install_model_integration
+from snn2.modeling import load_model, load_tokenizer, model_source_for_stage, prefix_key_values_for_stage, rotation_state
+from snn2.config import requires_ann_training_calibration, requires_post_finetuning_artifacts
+
+
+def main():
+    arg_parser = parser("Collect activation statistics for every replacement site")
+    arg_parser.add_argument("--stage", required=True, choices=("ann_training", "vanilla_analysis", "post_finetuning"))
+    args = arg_parser.parse_args()
+    scope = {
+        "ann_training": "ann_training_statistics",
+        "vanilla_analysis": "vanilla_analysis_statistics",
+        "post_finetuning": "post_finetuning_statistics",
+    }[args.stage]
+    cfg, layout = setup(args.config, config_scope=scope)
+    if args.stage == "ann_training" and not requires_ann_training_calibration(cfg):
+        raise ValueError(
+            "ANN-training calibration is only used by phase_aware/gif_aware modes"
+        )
+    if args.stage == "post_finetuning" and not requires_post_finetuning_artifacts(cfg):
+        raise ValueError(
+            "This aware ANN mode reuses ANN-training calibration for SNN conversion; "
+            "do not run post-finetuning calibration."
+        )
+    if args.stage == "vanilla_analysis":
+        if (cfg["experiment"]["ann_mode"] != "vanilla" or cfg["rotation"]["enabled"]):
+            raise ValueError("vanilla_analysis calibration requires a vanilla config with rotation disabled")
+    site_root = {"ann_training": layout.ann_training_statistics_dir, "vanilla_analysis": layout.vanilla_analysis_site_dir, "post_finetuning": layout.post_finetuning_statistics_dir}[args.stage]
+    purpose = {"ann_training": "ann_training_calibration", "vanilla_analysis": "vanilla_analysis_calibration", "post_finetuning": "post_finetuning_conversion_calibration"}[args.stage]
+    source = model_source_for_stage(cfg, layout, stage=args.stage)
+    logs_dir = {
+        "ann_training": layout.ann_training_calibration_logs_dir,
+        "vanilla_analysis": layout.vanilla_analysis_calibration_logs_dir,
+        "post_finetuning": layout.post_finetuning_conversion_calibration_logs_dir,
+    }[args.stage]
+    with StageRun(f"collect_calibration_statistics_{args.stage}", logs_dir, cfg["experiment"]) as run:
+        if args.stage == "post_finetuning" and not layout.ann_checkpoint_dir.exists():
+            raise FileNotFoundError(layout.ann_checkpoint_dir)
+        model = load_model(cfg, source, training=False, device_map=cfg["calibration"].get("device_map"))
+        tokenizer = load_tokenizer(cfg, source)
+        controller = SiteController(mode="collect")
+        install_model_integration(model, controller, None if args.stage == "vanilla_analysis" else rotation_state(cfg, layout))
+        result = collect_site_statistics(model, controller, tokenizer, load_selected_raw(cfg, layout).calibration, cfg, None if args.stage == "vanilla_analysis" else prefix_key_values_for_stage(cfg, layout, stage="ann_training" if args.stage == "ann_training" else "post_finetuning"), site_root, purpose=purpose, extra_metadata=calibration_provenance(cfg, layout, stage=args.stage))
+        run.event("site_statistics_saved", stage=args.stage, sites=len(result.get("sites", {})), site_root=str(site_root))
+
+
+if __name__ == "__main__":
+    main()

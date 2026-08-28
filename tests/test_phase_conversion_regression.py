@@ -40,7 +40,6 @@ def _phase_state():
         "num_heads": None,
         "channels_per_head": 9,
         "groups_per_head": 1,
-        "max_spikes": 2,
         "tau": torch.tensor([2.0]),
         "v0": torch.tensor([0.0625]),
         "tau_calibration": PHASE_TAU_CALIBRATION,
@@ -142,6 +141,9 @@ def test_regression_rejects_training_provenance_mismatch(tmp_path, monkeypatch):
     )
     (prefix_dir / "prefixed_key_values.pt").write_bytes(b"kv")
     (site_dir / "calibration_state_manifest.json").write_text("{}", encoding="utf-8")
+    phase_dir = site_dir / "layer_000" / "site_01_test"
+    phase_dir.mkdir(parents=True)
+    (phase_dir / "phase_state.pt").write_bytes(b"phase")
     (conversion_dir / "conversion_metadata.json").write_text("{}", encoding="utf-8")
     (ann_checkpoint / "config.json").write_text(
         json.dumps(
@@ -158,9 +160,8 @@ def test_regression_rejects_training_provenance_mismatch(tmp_path, monkeypatch):
         "ann_training_common_clip_state_required": True,
         "ann_training_prefix_state_sha256": "wrong",
         "ann_training_prefix_kv_sha256": sha256_file(prefix_dir / "prefixed_key_values.pt"),
-        "ann_training_calibration_manifest_sha256": sha256_file(
-            site_dir / "calibration_state_manifest.json"
-        ),
+        "ann_training_state_dependency_kinds": ["phase"],
+        "ann_training_state_fingerprint_sha256": "placeholder",
         "final_model_checkpoint": str(ann_checkpoint.resolve()),
     }
     (tmp_path / "ann" / "training_result.json").write_text(

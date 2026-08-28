@@ -34,6 +34,7 @@ from .temporal_ops import (
     GIF_STEP_QMAX,
     SITE_STATE_FORMAT_VERSION,
     STATISTICS_FORMAT_VERSION,
+    STATISTICS_MANIFEST_FORMAT_VERSION,
     TEMPORAL_IMPLEMENTATION_VERSION,
     CALIBRATION_GROUPING_POLICY,
     SOFTMAX_SITE5_CLIP_POLICY,
@@ -82,7 +83,7 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
     rotation_path = layout.rotation_dir / "rotation_state.pt" if cfg["rotation"]["enabled"] else None
     if rotation_path and not rotation_path.exists():
         raise FileNotFoundError(f"Rotation state required for rotated calibration: {rotation_path}")
-    data_manifest = layout.data_dir / "calibration_manifest.json"
+    data_manifest = layout.calibration_data_manifest_path
     if not data_manifest.exists():
         raise FileNotFoundError(f"Calibration data manifest is missing: {data_manifest}")
     ann_config = layout.ann_checkpoint_dir / "config.json" if stage == "post_finetuning" else None
@@ -128,6 +129,8 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "learning_rate": cfg["training"]["learning_rate"] if post else None,
         "seed": int(cfg["experiment"]["seed"]),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
+        "calibration_seed": int(cfg["calibration"]["seed"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
@@ -247,7 +250,6 @@ def build_phase_state(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[s
         "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
         "T": steps,
         "base": float(phase_cfg["base"]),
-        "max_spikes": int(phase_cfg.get("max_spikes", steps)),
         **layout,
         "tau": tau,
         "v0": (0.5 * tau * 2 ** (-steps)).float(),
@@ -405,7 +407,8 @@ def build_site_states(
 
 
 def materialize_calibration_states(
-    site_root: str | Path,
+    statistics_root: str | Path,
+    state_root: str | Path,
     cfg: dict[str, Any],
     metadata: dict[str, Any] | None = None,
     *,
@@ -418,12 +421,52 @@ def materialize_calibration_states(
         or expected_num_hidden_layers <= 0
     ):
         raise ValueError("expected_num_hidden_layers must be a positive integer")
-    root = Path(site_root)
+    statistics_root = Path(statistics_root)
+    root = Path(state_root)
+    if any(root.glob("layer_*/site_*/statistics.pt")):
+        raise ValueError("Stage-B state root must not contain statistics.pt")
+    if any(statistics_root.glob("layer_*/site_*/*_state.pt")):
+        raise ValueError("Legacy one-shot calibration artifact detected in Stage-A statistics root")
+    statistics_manifest_path = statistics_root / "statistics_manifest.json"
+    if not statistics_manifest_path.exists():
+        raise FileNotFoundError(statistics_manifest_path)
+    statistics_manifest = read_json(statistics_manifest_path)
+    if statistics_manifest.get("statistics_manifest_format_version") != STATISTICS_MANIFEST_FORMAT_VERSION:
+        raise ValueError("Legacy one-shot calibration artifact detected. Re-run Stage A statistics collection and Stage B state materialization.")
+    if statistics_manifest.get("statistics_format_version") != STATISTICS_FORMAT_VERSION:
+        raise ValueError("Incompatible statistics format")
+    if statistics_manifest.get("calibration_group_size") != int(cfg["calibration"]["group_size"]) or statistics_manifest.get("calibration_num_samples") != int(cfg["calibration"]["num_samples"]):
+        raise ValueError("Stage-A calibration scope differs from current config")
+    provenance_keys = (
+        "purpose", "source_model_stage", "source_ann_mode", "source_ann_checkpoint",
+        "source_ann_config_sha256", "prefix_enabled", "prefix_state_sha256",
+        "prefix_kv_sha256", "rotation_enabled", "rotation_state_sha256",
+        "calibration_data_manifest_sha256", "calibration_grouping_policy",
+    )
+    current_metadata = metadata or {}
+    provenance_mismatch = {
+        key: (statistics_manifest.get(key), current_metadata.get(key))
+        for key in provenance_keys
+        if statistics_manifest.get(key) != current_metadata.get(key)
+    }
+    if provenance_mismatch:
+        raise ValueError(f"Stage-A provenance differs from current Stage-B inputs: {provenance_mismatch}")
+    validate_site_topology(statistics_root, expected_num_hidden_layers=expected_num_hidden_layers)
     manifest: dict[str, Any] = {
         **(metadata or {}),
         "format_version": CALIBRATION_MANIFEST_FORMAT_VERSION,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "source_statistics_root": str(statistics_root.resolve()),
+        "source_statistics_manifest_path": str(statistics_manifest_path.resolve()),
+        "source_statistics_manifest_sha256": sha256_file(statistics_manifest_path),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
+        "materialization_parameters": {
+            "phase_T": int(cfg["phase"]["T"]), "mtn_T": int(cfg["mtn"]["T"]),
+            "mtn_K": int(cfg["mtn"]["K"]), "gif_low_ratio": float(cfg["gif"]["low_ratio"]),
+            "gif_salient_ratio": float(cfg["gif"]["salient_ratio"]),
+        },
+        "calibration_seed": int(cfg["calibration"]["seed"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
@@ -438,9 +481,14 @@ def materialize_calibration_states(
         ],
         "sites": {},
     }
-    for statistics_path in sorted(root.glob("layer_*/site_*/statistics.pt")):
-        directory = statistics_path.parent
-        key = directory.relative_to(root).as_posix()
+    for statistics_path in sorted(statistics_root.glob("layer_*/site_*/statistics.pt")):
+        source_directory = statistics_path.parent
+        key = source_directory.relative_to(statistics_root).as_posix()
+        expected_hash = statistics_manifest.get("sites", {}).get(key, {}).get("statistics_sha256")
+        if expected_hash != sha256_file(statistics_path):
+            raise ValueError(f"Stage-A statistics hash mismatch: {statistics_path}")
+        directory = root / key
+        directory.mkdir(parents=True, exist_ok=True)
         statistics = torch.load(statistics_path, map_location="cpu", weights_only=False)
         _validate_statistics(statistics)
         states = build_site_states(statistics, cfg, include_clip=include_clip)
@@ -486,12 +534,16 @@ def materialize_calibration_states(
             )
         write_json(directory / "calibration_summary.json", summary)
         manifest["sites"][key] = summary
-    global_statistics = root / "_global" / "final_rmsnorm" / "statistics.pt"
+    global_statistics = statistics_root / "_global" / "final_rmsnorm" / "statistics.pt"
     if not global_statistics.exists():
         raise FileNotFoundError(
             f"Final RMSNorm Phase statistics are missing: {global_statistics}"
         )
-    global_directory = global_statistics.parent
+    expected_global_hash = statistics_manifest.get("global_states", {}).get("final_rmsnorm", {}).get("statistics_sha256")
+    if expected_global_hash != sha256_file(global_statistics):
+        raise ValueError(f"Stage-A final RMSNorm statistics hash mismatch: {global_statistics}")
+    global_directory = root / "_global" / "final_rmsnorm"
+    global_directory.mkdir(parents=True, exist_ok=True)
     final_phase_state = build_phase_state(
         torch.load(global_statistics, map_location="cpu", weights_only=False), cfg
     )
@@ -532,7 +584,6 @@ def collect_site_statistics(
     site_root: str | Path,
     *,
     purpose: str,
-    materialize_states: bool = True,
     extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = Path(site_root)
@@ -543,41 +594,17 @@ def collect_site_statistics(
         or expected_num_hidden_layers <= 0
     ):
         raise ValueError("model.config.num_hidden_layers must be a positive integer")
+    if any(root.glob("layer_*/site_*/*_state.pt")):
+        raise RuntimeError("Legacy one-shot calibration artifact detected. Move it aside and re-run Stage A.")
     existing_layers = [path for path in root.glob("layer_*") if path.is_dir()]
     if existing_layers:
-        validate_site_topology(
-            root, expected_num_hidden_layers=expected_num_hidden_layers
-        )
-        for manifest_name in ("statistics_manifest.json", "calibration_state_manifest.json"):
-            manifest_path = root / manifest_name
-            if not manifest_path.exists():
-                continue
-            metadata = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if (
-                metadata.get("site_topology_version") != SITE_TOPOLOGY_VERSION
-                or metadata.get("site_count") != SITE_COUNT
-            ):
-                raise RuntimeError(
-                    "Existing calibration artifact uses a stale site topology; "
-                    "remove or move the old sites/ directory before recalibrating."
-                )
-            if (
-                manifest_name == "statistics_manifest.json"
-                and metadata.get("format_version") != STATISTICS_FORMAT_VERSION
-            ):
-                raise RuntimeError(
-                    "Existing calibration artifact uses a stale statistics schema; "
-                    "remove or move the old sites/ directory before recalibrating."
-                )
-            if (
-                manifest_name == "calibration_state_manifest.json"
-                and metadata.get("format_version")
-                != CALIBRATION_MANIFEST_FORMAT_VERSION
-            ):
-                raise RuntimeError(
-                    "Existing calibration artifact uses a stale calibration manifest "
-                    "schema; remove or move the old sites/ directory before recalibrating."
-                )
+        manifest_path = root / "statistics_manifest.json"
+        if not manifest_path.exists():
+            raise RuntimeError("Legacy one-shot calibration artifact detected. Move it aside and re-run Stage A.")
+        existing = read_json(manifest_path)
+        if existing.get("statistics_manifest_format_version") != STATISTICS_MANIFEST_FORMAT_VERSION:
+            raise RuntimeError("Legacy statistics manifest detected. Move it aside and re-run Stage A.")
+        validate_site_topology(root, expected_num_hidden_layers=expected_num_hidden_layers)
     dataset = tokenize_dataset(calibration_raw, tokenizer, cfg, prefix_ids=None)
     loader = DataLoader(
         dataset,
@@ -659,6 +686,8 @@ def collect_site_statistics(
         "seed": int(cfg["experiment"]["seed"]),
         "actual_prefix_length": actual_prefix_length,
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
+        "calibration_seed": int(cfg["calibration"]["seed"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
@@ -683,28 +712,12 @@ def collect_site_statistics(
         ],
     }
     stats_manifest.update(metadata)
+    stats_manifest["format_version"] = STATISTICS_FORMAT_VERSION
+    stats_manifest["statistics_format_version"] = STATISTICS_FORMAT_VERSION
+    stats_manifest["statistics_manifest_format_version"] = STATISTICS_MANIFEST_FORMAT_VERSION
+    for key, entry in stats_manifest.get("sites", {}).items():
+        entry["statistics_sha256"] = sha256_file(root / key / "statistics.pt")
+    for name, entry in stats_manifest.get("global_states", {}).items():
+        entry["statistics_sha256"] = sha256_file(root / "_global" / name / "statistics.pt")
     write_json(root / "statistics_manifest.json", stats_manifest)
-    state_manifest = (
-        materialize_calibration_states(
-            site_root,
-            cfg,
-            metadata,
-            include_clip=eligible_ann,
-            expected_num_hidden_layers=expected_num_hidden_layers,
-        )
-        if materialize_states
-        else {
-            **metadata,
-            "format_version": CALIBRATION_MANIFEST_FORMAT_VERSION,
-            **topology_metadata(),
-            **temporal_policy_metadata(),
-            "expected_num_hidden_layers": expected_num_hidden_layers,
-            "expected_layer_names": [
-                f"layer_{index:03d}" for index in range(expected_num_hidden_layers)
-            ],
-            "sites": {},
-        }
-    )
-    if not materialize_states:
-        write_json(root / "calibration_state_manifest.json", state_manifest)
-    return {"statistics": stats_manifest, "states": state_manifest}
+    return stats_manifest

@@ -47,7 +47,7 @@ Prefix K/V 在 ANN-aware replacement 与 SNN deployment runtime 中都经过 Sit
 
 `calibration.group_size` 同时控制 ordinary Phase/GIF/MTN/Clip 和 final RMSNorm Phase。`G=-1` 对非 attention 表示整个最后维度一组，对 Site 2/3/4/6 表示每个 head 各自一组；`G>0` 只在每个 head 的 `D` 内分组，绝不跨 head。Site 2/6 使用 query heads，Site 3/4 保留 `repeat_kv()` 前的原生 KV heads，并把 repeat 后 saliency 累加回 KV heads。Site 5 忽略 G：Phase/MTN 为 per-head `[H,1]`，GIF 严格按 SpikeLLM `n_bits=16` sentinel 执行 identity，不做 GIF calibration、Q16 fake quantization 或 Site 5 temporal encoding，且永远 no-Clip。ordinary GIF 的 `high_qmax=30`、`per_step_qmax=15` 仅适用于其余九个 Site。完整 Softmax（含 Prefix columns）在 runtime 经过 Site 5；final RMSNorm Phase 也按 G 分组。
 
-所有 G-dependent calibration（包括 resolved config、logs、statistics、states、manifest）、aware ANN run 和 SNN conversion/evaluation 路径均包含且只包含一次 `calibration_group_size_<G>`，metadata 同时记录 G 与 `per_head_within_head_groups_v1` policy。aware ANN 将 G 写入学习率目录后缀（如 `lr5e-05_train_samples_2048_calibration_group_size_-1`），其 SNN 路径为该 run root 下的 `snn/<neuron>`；vanilla/unaware 为 `snn/calibration_group_size_<G>/<neuron>`。identity ANN checkpoint 可跨 G 共享，但改变 G 后仍必须重做其 post-finetuning calibration 与 SNN 工件；Rotation、数据和 Prefix 不随 G 复制。
+所有 G-dependent calibration（包括 resolved config、logs、statistics、states、manifest）、aware ANN run 和 SNN conversion/evaluation 路径均包含且只包含一次 `calibration_group_size_<G>_num_samples_<N>`，metadata 同时记录 G 与 `per_head_within_head_groups_v1` policy。aware ANN 将 G 写入学习率目录后缀（如 `lr5e-05_train_samples_2048_calibration_group_size_-1_num_samples_128`），其 SNN 路径为该 run root 下的 `snn/<neuron>/<neuron-variant>`；vanilla/unaware 为 `snn/calibration_group_size_<G>_num_samples_<N>/<neuron>/<neuron-variant>`。identity ANN checkpoint 可跨 G 共享，但改变 G 后仍必须重做其 post-finetuning calibration 与 SNN 工件；Rotation、数据和 Prefix 不随 G 复制。
 
 ## 主要入口
 

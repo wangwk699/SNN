@@ -55,6 +55,7 @@ def _verify_final_ann_forward_metadata(cfg, layout, path):
             training_common_clip_enabled(cfg) if expected[1] else False
         ),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "softmax_site5_clip_applied": False,
     }
@@ -85,6 +86,7 @@ def _require_manifest_flags(manifest, expected, label):
 def _verify_grouped_calibration(cfg, layout, manifest, calibration):
     expected = {
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
@@ -97,7 +99,8 @@ def _verify_grouped_calibration(cfg, layout, manifest, calibration):
     query_heads = int(ann_config["num_attention_heads"])
     kv_heads = int(ann_config.get("num_key_value_heads", query_heads))
     clip_count = 0
-    for statistics_path in sorted(layout.conversion_site_dir.glob("layer_*/site_*/statistics.pt")):
+    statistics_root = Path(manifest["source_statistics_root"])
+    for statistics_path in sorted(statistics_root.glob("layer_*/site_*/statistics.pt")):
         statistics = torch.load(statistics_path, map_location="cpu", weights_only=False)
         if statistics.get("format_version") != STATISTICS_FORMAT_VERSION:
             raise ValueError(f"Legacy statistics state: {statistics_path}")
@@ -106,14 +109,14 @@ def _verify_grouped_calibration(cfg, layout, manifest, calibration):
             raise ValueError(f"Site {site} must use query heads: {statistics_path}")
         if site in {3, 4} and int(statistics["num_heads"]) != kv_heads:
             raise ValueError(f"Site {site} must use native KV heads: {statistics_path}")
-        directory = statistics_path.parent
-        clip_present = (directory / "clip_state.pt").exists()
+        state_directory = layout.conversion_site_dir / statistics_path.parent.relative_to(statistics_root)
+        clip_present = (state_directory / "clip_state.pt").exists()
         clip_count += int(clip_present)
         if site == SOFTMAX_SITE_ID:
-            gif = torch.load(directory / "gif_state.pt", map_location="cpu", weights_only=False)
+            gif = torch.load(state_directory / "gif_state.pt", map_location="cpu", weights_only=False)
             if gif.get("gif_policy") != SOFTMAX_SITE5_GIF_POLICY or clip_present:
                 raise ValueError(
-                    f"Site 5 must use SpikeLLM identity GIF and no Clip: {directory}"
+                    f"Site 5 must use SpikeLLM identity GIF and no Clip: {state_directory}"
                 )
     expected_clips = calibration["layers"] * len(CLIP_ELIGIBLE_SITE_IDS) if conversion_reuses_ann_training_artifacts(cfg) else 0
     if clip_count != expected_clips:
@@ -454,7 +457,7 @@ def main():
         required = [
             layout.data_dir / "train_manifest.json",
             layout.data_dir / "validation_manifest.json",
-            layout.data_dir / "calibration_manifest.json",
+            layout.calibration_data_manifest_path,
             layout.ann_checkpoint_dir / "config.json",
             layout.ann_dir / "training_result.json",
         ]
@@ -564,7 +567,7 @@ def main():
                 or int(summary.get("rotation_regression_format_version", -1)) != 4
             ):
                 raise ValueError("Rotation summary metadata is incompatible with regression v4")
-            calibration_manifest = layout.data_dir / "calibration_manifest.json"
+            calibration_manifest = layout.calibration_data_manifest_path
             recorded_manifest = regression.get("calibration_manifest_path")
             if (
                 not recorded_manifest
