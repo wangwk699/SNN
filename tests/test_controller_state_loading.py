@@ -3,6 +3,7 @@ import torch
 
 from snn2.controller import SiteController
 from snn2.calibration import materialize_calibration_states
+from tests.calibration_fixtures import write_stage_a_statistics
 from snn2.neurons import SoftmaxIdentityGIF
 from snn2.sites import SITE_IDS, SITE_NAMES, site_key
 from snn2.temporal_ops import (
@@ -54,20 +55,19 @@ def _statistics(site_index=1):
 
 
 def _write_bundle(root, *, include_clip=False):
-    for index in SITE_IDS:
-        directory = root / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
-        directory.mkdir(parents=True)
-        torch.save(_statistics(index), directory / "statistics.pt")
-    global_directory = root / "_global" / "final_rmsnorm"
-    global_directory.mkdir(parents=True)
-    torch.save(_statistics(None), global_directory / "statistics.pt")
     cfg = {
-        "calibration": {"group_size": -1, "expected_sites_per_layer": 10},
+        "calibration": {"group_size": -1, "num_samples": 128, "seed": 42, "expected_sites_per_layer": 10},
         "phase": {"T": 2, "base": 2.0, "surrogate_slope": 1.0},
-        "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
+        "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5, "salient_ratio": 0.5},
         "mtn": {"T": 2, "K": 2, "threshold_factor": 0.75},
     }
-    materialize_calibration_states(root, cfg, include_clip=include_clip, expected_num_hidden_layers=1)
+    write_stage_a_statistics(root / "statistics", cfg, _statistics)
+    metadata = {"purpose": "ann_training_calibration", "source_model_stage": None, "source_ann_mode": None,
+        "source_ann_checkpoint": None, "source_ann_config_sha256": None, "prefix_enabled": False,
+        "prefix_state_sha256": None, "prefix_kv_sha256": None, "rotation_enabled": False,
+        "rotation_state_sha256": None, "calibration_data_manifest_sha256": None,
+        "calibration_grouping_policy": "per_head_within_head_groups_v1"}
+    materialize_calibration_states(root / "statistics", root, cfg, metadata, include_clip=include_clip, expected_num_hidden_layers=1)
 
 
 def test_site5_common_clip_uses_identity_gif_without_loading_clipper(tmp_path):

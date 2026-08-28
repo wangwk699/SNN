@@ -35,7 +35,7 @@ def test_activation_neuron_operator_count_rejects_unknown_neuron():
 
 @pytest.mark.parametrize("mode", ["vanilla", "unaware"])
 def test_identity_final_ann_evaluation_has_no_calibration_metadata(mode):
-    cfg = {"experiment": {"ann_mode": mode}, "calibration": {"group_size": -1}}
+    cfg = {"experiment": {"ann_mode": mode}, "calibration": {"group_size": -1, "num_samples": 128}}
     layout = SimpleNamespace(conversion_site_dir="conversion", ann_training_site_dir="training")
     assert evaluation_calibration_metadata(cfg, layout, neuron="ann") == {
         "calibration_source_stage": None,
@@ -43,13 +43,15 @@ def test_identity_final_ann_evaluation_has_no_calibration_metadata(mode):
         "post_finetuning_recalibration": False,
         "calibration_root": None,
         "calibration_group_size": -1,
+        "calibration_num_samples": 128,
+        "state_variant": None,
         "calibration_grouping_policy": "per_head_within_head_groups_v1",
     }
 
 
 @pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
 def test_aware_final_ann_evaluation_uses_training_calibration_metadata(mode):
-    cfg = {"experiment": {"ann_mode": mode}, "calibration": {"group_size": -1}}
+    cfg = {"experiment": {"ann_mode": mode}, "calibration": {"group_size": -1, "num_samples": 128}}
     layout = SimpleNamespace(conversion_site_dir="conversion", ann_training_site_dir="training")
     assert evaluation_calibration_metadata(cfg, layout, neuron="ann") == {
         "calibration_source_stage": "ann_training",
@@ -57,6 +59,8 @@ def test_aware_final_ann_evaluation_uses_training_calibration_metadata(mode):
         "post_finetuning_recalibration": False,
         "calibration_root": "training",
         "calibration_group_size": -1,
+        "calibration_num_samples": 128,
+        "state_variant": "training",
         "calibration_grouping_policy": "per_head_within_head_groups_v1",
     }
 
@@ -112,6 +116,14 @@ def test_rotated_pre_finetuning_prefix_result_path(configured, enabled, path):
 
 
 
+class _DataLayout:
+    def __init__(self, root, *, seed=42, num_samples=4):
+        self.data_dir = root
+        self.calibration_data_manifest_path = (
+            root / "calibration" / f"calibration_seed_{seed}_num_samples_{num_samples}" / "calibration_manifest.json"
+        )
+
+
 class _Dataset(list):
     column_names = ()
 
@@ -133,7 +145,7 @@ def test_tulu_full_training_uses_all_rows_except_fixed_validation(monkeypatch, t
         "training": {},
         "calibration": {"seed": 42, "num_samples": 4, "with_replacement": False},
     }
-    manifests = prepare_manifests(cfg, SimpleNamespace(data_dir=tmp_path))
+    manifests = prepare_manifests(cfg, _DataLayout(tmp_path))
     assert len(manifests["train"]["indices"]) == 15
     assert len(manifests["validation"]["indices"]) == 5
     assert set(manifests["train"]["indices"]).isdisjoint(
@@ -162,7 +174,7 @@ def test_tldr_train_subset_is_fixed_random_without_replacement(monkeypatch, tmp_
         "training": {"tldr_train_samples": 8, "tldr_train_seed": 42},
         "calibration": {"seed": 42, "num_samples": 4, "with_replacement": False},
     }
-    manifests = prepare_manifests(cfg, SimpleNamespace(data_dir=tmp_path))
+    manifests = prepare_manifests(cfg, _DataLayout(tmp_path))
     expected = random.Random(42).sample(range(20), k=8)
     expected.sort()
 
@@ -193,7 +205,7 @@ def test_ann_training_subset_uses_current_config_even_when_shared_manifest_is_fu
         "training": {"tldr_train_samples": None, "tldr_train_seed": 42},
         "calibration": {"seed": 42, "num_samples": 4, "with_replacement": False},
     }
-    layout = SimpleNamespace(data_dir=tmp_path)
+    layout = _DataLayout(tmp_path)
     prepare_manifests(cfg, layout)
     assert len(load_selected_raw(cfg, layout).train) == 20
 
@@ -227,7 +239,7 @@ def test_ann_training_subset_rejects_more_rows_than_raw_split(monkeypatch, tmp_p
         "training": {"tldr_train_samples": None, "tldr_train_seed": 42},
         "calibration": {"seed": 42, "num_samples": 2, "with_replacement": False},
     }
-    layout = SimpleNamespace(data_dir=tmp_path)
+    layout = _DataLayout(tmp_path)
     prepare_manifests(cfg, layout)
     cfg["training"]["tldr_train_samples"] = 6
 
@@ -249,7 +261,7 @@ def _evaluation_cfg(ann_mode, clip=False):
         "experiment": {"ann_mode": ann_mode},
         "phase": {"surrogate_slope": 2.0},
         "replacement": {"common_clip_enabled": clip},
-        "calibration": {"group_size": -1},
+        "calibration": {"group_size": -1, "num_samples": 128},
     }
 
 
@@ -324,5 +336,9 @@ def test_evaluation_forward_metadata(monkeypatch, ann_mode, neuron, kind):
         neuron == "ann" and ann_mode in {"phase_aware", "gif_aware"}
     )
     assert metadata["calibration_group_size"] == -1
+    assert metadata["calibration_num_samples"] == 128
+    expected_variant = None if neuron == "ann" and ann_mode in {"vanilla", "unaware"} else ("training" if neuron == "ann" else "conversion")
+    assert metadata["state_variant"] == expected_variant
+    assert metadata["replacement_state_root"] == (None if expected_variant is None else expected_variant)
     assert metadata["calibration_grouping_policy"] == "per_head_within_head_groups_v1"
     assert metadata["softmax_site5_clip_applied"] is False

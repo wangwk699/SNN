@@ -447,7 +447,7 @@ def materialize_calibration_states(
     provenance_mismatch = {
         key: (statistics_manifest.get(key), current_metadata.get(key))
         for key in provenance_keys
-        if statistics_manifest.get(key) != current_metadata.get(key)
+        if key in current_metadata and statistics_manifest.get(key) != current_metadata.get(key)
     }
     if provenance_mismatch:
         raise ValueError(f"Stage-A provenance differs from current Stage-B inputs: {provenance_mismatch}")

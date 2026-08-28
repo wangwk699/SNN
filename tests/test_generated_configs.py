@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 import copy
+import math
 
 from scripts.materialize_configs import materialize_configs
 from snn2.config import validate_config
@@ -58,6 +59,9 @@ def test_all_twelve_generated_configs_carry_temporal_v6_and_ordinary_qmax30(gene
             "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
         }
         assert cfg["phase"]["surrogate_slope"] == 1.0
+        assert "max_spikes" not in cfg["phase"]
+        assert "salient_ratio" in cfg["gif"]
+        assert math.isclose(float(cfg["gif"]["low_ratio"]) + float(cfg["gif"]["salient_ratio"]), 1.0)
         assert isinstance(cfg["replacement"]["common_clip_enabled"], bool)
         if cfg["experiment"]["ann_mode"] in {"vanilla", "unaware"}:
             assert cfg["replacement"]["common_clip_enabled"] is False
@@ -146,3 +150,10 @@ def test_generated_configs_define_final_ann_forward_semantics(generated_configs)
     for path in generated_configs:
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert final_ann_replacement_mode(cfg) == expected[cfg["experiment"]["ann_mode"]]
+
+
+def test_missing_gif_salient_ratio_is_rejected(generated_configs):
+    cfg = yaml.safe_load(generated_configs[0].read_text(encoding="utf-8"))
+    del cfg["gif"]["salient_ratio"]
+    with pytest.raises(ValueError, match="salient_ratio"):
+        validate_config(cfg)

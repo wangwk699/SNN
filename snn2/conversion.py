@@ -243,7 +243,6 @@ def validate_conversion_metadata(
         "full_temporal_steps": bundle["temporal_steps"].get(neuron),
         "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()),
         "source_ann_config_sha256": sha256_file(ann_config),
-        "calibration_root": str(layout.conversion_site_dir.resolve()),
         "calibration_source_stage": conversion_calibration_stage(cfg),
         "prefix_source_stage": prefix["prefix_source_stage"],
         "reused_ann_training_artifacts": reused,
@@ -262,6 +261,12 @@ def validate_conversion_metadata(
         "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "source_statistics_manifest_sha256": read_json(manifest_path)["source_statistics_manifest_sha256"],
+        "deployment_parameters": (
+            {"phase_T": int(cfg["phase"]["T"])} if neuron == "phase" else
+            ({"mtn_T": int(cfg["mtn"]["T"]), "mtn_K": int(cfg["mtn"]["K"])} if neuron == "mtn" else
+             {"gif_low_ratio": float(cfg["gif"]["low_ratio"]), "gif_salient_ratio": float(cfg["gif"]["salient_ratio"])})
+        ),
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
         "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
@@ -312,6 +317,8 @@ def create_conversion(
         "source_ann_config_sha256": sha256_file(ann_config),
         "calibration_root": str(layout.conversion_site_dir.resolve()),
         "calibration_state_manifest_sha256": sha256_file(manifest_path),
+        "source_statistics_manifest_path": read_json(manifest_path)["source_statistics_manifest_path"],
+        "source_statistics_manifest_sha256": read_json(manifest_path)["source_statistics_manifest_sha256"],
         "calibration_source_stage": conversion_calibration_stage(cfg),
         "prefix_source_stage": prefix["prefix_source_stage"],
         "reused_ann_training_artifacts": reused,

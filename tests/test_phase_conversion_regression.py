@@ -191,7 +191,7 @@ def test_official_phase_ann_controller_matches_graph_p(monkeypatch):
         "experiment": {"ann_mode": "phase_aware"},
         "phase": {"surrogate_slope": 2.0},
         "replacement": {"common_clip_enabled": False},
-        "calibration": {"group_size": -1},
+        "calibration": {"group_size": -1, "num_samples": 128},
     }
     controller, steps = build_evaluation_controller(cfg, layout, neuron="ann")
     assert controller.mode == "phase"

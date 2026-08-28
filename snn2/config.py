@@ -216,10 +216,20 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("MTN K must be positive")
     if int(cfg["gif"]["base_bits"]) < 2 or int(cfg["gif"]["add_bits"]) < 0:
         raise ValueError("Invalid GIF bit widths")
-    if not 0.0 < float(cfg["gif"]["low_ratio"]) <= 1.0:
+    if "salient_ratio" not in cfg["gif"]:
+        raise ValueError("gif.salient_ratio is required")
+    try:
+        low_ratio = float(cfg["gif"]["low_ratio"])
+        salient_ratio = float(cfg["gif"]["salient_ratio"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("GIF low_ratio and salient_ratio must be finite numbers") from exc
+    if not math.isfinite(low_ratio) or not math.isfinite(salient_ratio):
+        raise ValueError("GIF low_ratio and salient_ratio must be finite numbers")
+    if not 0.0 < low_ratio <= 1.0:
         raise ValueError("GIF low_ratio must be in (0, 1]")
-    salient = float(cfg["gif"].get("salient_ratio", 1.0 - float(cfg["gif"]["low_ratio"])))
-    if abs(float(cfg["gif"]["low_ratio"]) + salient - 1.0) > 1e-8:
+    if not 0.0 <= salient_ratio < 1.0:
+        raise ValueError("GIF salient_ratio must be in [0, 1)")
+    if abs(low_ratio + salient_ratio - 1.0) > 1e-8:
         raise ValueError("GIF low_ratio + salient_ratio must equal 1")
     if cfg["gif"].get("runtime_quantization") != "static":
         raise ValueError("Main experiments require static GIF runtime quantization")

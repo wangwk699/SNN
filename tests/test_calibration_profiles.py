@@ -4,6 +4,7 @@ import torch
 import pytest
 
 from snn2.calibration import build_site_states, materialize_calibration_states
+from tests.calibration_fixtures import write_stage_a_statistics
 from snn2.sites import SITE_IDS, SITE_NAMES
 from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE, PHASE_TAU_CALIBRATION,
@@ -38,23 +39,20 @@ def _statistics(site_index=1):
 
 def _cfg():
     return {
-        "calibration": {"group_size": -1, "expected_sites_per_layer": 10},
+        "calibration": {"group_size": -1, "num_samples": 128, "seed": 42, "expected_sites_per_layer": 10},
         "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
-        "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
+        "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5, "salient_ratio": 0.5},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
     }
 
 
-def _write_statistics(root):
+def _write_statistics(root, cfg):
+    write_stage_a_statistics(root, cfg, _statistics)
     directories = []
     for index in SITE_IDS:
-        directory = root / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
-        directory.mkdir(parents=True)
-        torch.save(_statistics(index), directory / "statistics.pt")
+        directory = root / "states" / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
+        directory.mkdir(parents=True, exist_ok=True)
         directories.append(directory)
-    global_directory = root / "_global" / "final_rmsnorm"
-    global_directory.mkdir(parents=True)
-    torch.save(_statistics(None), global_directory / "statistics.pt")
     return directories
 
 
@@ -96,12 +94,13 @@ def test_non_divisible_ordinary_group_fails_but_site5_ignores_global_group():
 
 
 def test_conversion_materialization_removes_common_clip(tmp_path):
-    directories = _write_statistics(tmp_path)
+    directories = _write_statistics(tmp_path, _cfg())
     for directory in directories:
         torch.save({}, directory / "clip_state.pt")
 
     manifest = materialize_calibration_states(
         tmp_path,
+        tmp_path / "states",
         _cfg(),
         {
             "state_profile": "snn_conversion_without_clip",
@@ -121,10 +120,11 @@ def test_conversion_materialization_removes_common_clip(tmp_path):
 
 
 def test_ann_training_materialization_keeps_common_clip(tmp_path):
-    directories = _write_statistics(tmp_path)
+    directories = _write_statistics(tmp_path, _cfg())
 
     manifest = materialize_calibration_states(
         tmp_path,
+        tmp_path / "states",
         _cfg(),
         {
             "state_profile": "ann_training_with_common_clip",
@@ -135,7 +135,7 @@ def test_ann_training_materialization_keeps_common_clip(tmp_path):
     )
 
     assert manifest["state_profile"] == "ann_training_with_common_clip"
-    assert (tmp_path / "_global" / "final_rmsnorm" / "phase_state.pt").exists()
+    assert (tmp_path / "states" / "_global" / "final_rmsnorm" / "phase_state.pt").exists()
     assert manifest["global_states"]["final_rmsnorm"]["phase_state_sha256"]
     assert all((directory / "clip_state.pt").exists() == (index != 5) for index, directory in zip(SITE_IDS, directories))
     summary = json.loads(
@@ -149,11 +149,12 @@ def test_ann_training_calibration_is_identical_for_common_clip_switch(tmp_path):
     roots = [tmp_path / "enabled", tmp_path / "disabled"]
     states_by_variant = []
     for root, enabled in zip(roots, (True, False)):
-        directories = _write_statistics(root)
+        directories = _write_statistics(root, _cfg())
         cfg = _cfg()
         cfg["replacement"] = {"common_clip_enabled": enabled}
         manifest = materialize_calibration_states(
             root,
+            root / "states",
             cfg,
             {
                 "common_clip_required": True,

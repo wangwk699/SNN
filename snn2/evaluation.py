@@ -149,6 +149,19 @@ def evaluation_forward_metadata(
     """Describe the actual evaluation graph with stable, shared enums."""
     ann_mode = cfg["experiment"]["ann_mode"]
     diagnostic_identity = base or rotated_pre_finetuning
+    aware_ann = (
+        neuron == "ann"
+        and is_aware_ann_mode(cfg)
+        and not diagnostic_identity
+    )
+    identity_ann = neuron == "ann" and not aware_ann
+    inactive_calibration = diagnostic_identity or identity_ann
+    if inactive_calibration:
+        state_variant = None
+    elif aware_ann:
+        state_variant = Path(layout.ann_training_site_dir).name
+    else:
+        state_variant = Path(layout.conversion_site_dir).name
     if neuron == "ann":
         if diagnostic_identity or controller.mode == "identity":
             kind, enabled, implementation, root = "identity_ann", False, None, None
@@ -178,7 +191,7 @@ def evaluation_forward_metadata(
         "replacement_state_root": root,
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
-        "state_variant": None if inactive else Path(str(layout.ann_training_site_dir if aware_ann else layout.conversion_site_dir)).name,
+        "state_variant": state_variant,
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
         "softmax_site5_clip_applied": False,

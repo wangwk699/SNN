@@ -129,6 +129,7 @@ def _verify_hashes(manifest, label):
         ("prefix_state_path", "prefix_state_sha256"),
         ("prefix_kv_path", "prefix_kv_sha256"),
         ("rotation_state_path", "rotation_state_sha256"),
+        ("source_statistics_manifest_path", "source_statistics_manifest_sha256"),
         ("source_ann_checkpoint", None),
     ):
         path = manifest.get(path_key)
