@@ -61,7 +61,9 @@ def _write_bundle(root, *, include_clip=False):
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5, "salient_ratio": 0.5},
         "mtn": {"T": 2, "K": 2, "threshold_factor": 0.75},
     }
-    write_stage_a_statistics(root / "statistics", cfg, _statistics)
+    write_stage_a_statistics(
+        root / "statistics", cfg, _statistics, purpose="ann_training_calibration"
+    )
     metadata = {"purpose": "ann_training_calibration", "source_model_stage": None, "source_ann_mode": None,
         "source_ann_checkpoint": None, "source_ann_config_sha256": None, "prefix_enabled": False,
         "prefix_state_sha256": None, "prefix_kv_sha256": None, "rotation_enabled": False,

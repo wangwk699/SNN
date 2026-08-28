@@ -300,8 +300,14 @@ def test_create_conversion_selects_clip_policy_and_records_reuse(
 
 def _rematerialize_post_finetuning(layout, cfg):
     metadata = {
-        "purpose": "post_finetuning_conversion_calibration", "source_model_stage": None,
-        "source_ann_mode": None, "source_ann_checkpoint": None, "source_ann_config_sha256": None,
+        "purpose": "post_finetuning_conversion_calibration",
+        "eligible_for_ann_training": False, "eligible_for_conversion": True,
+        "conversion_reuse_policy": "final_ann_only",
+        "post_finetuning_recalibration": True,
+        "state_profile": "snn_conversion_without_clip",
+        "common_clip_required": False, "common_clip_generated": False,
+        "common_clip_application_control": "replacement.common_clip_enabled",
+        "source_model_stage": None, "source_ann_mode": None, "source_ann_checkpoint": None, "source_ann_config_sha256": None,
         "prefix_enabled": False, "prefix_state_sha256": None, "prefix_kv_sha256": None,
         "rotation_enabled": False, "rotation_state_sha256": None,
         "calibration_data_manifest_sha256": None,
