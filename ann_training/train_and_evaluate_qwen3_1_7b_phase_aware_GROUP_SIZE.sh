@@ -6,7 +6,8 @@ SOURCE_CFG="configs/generated/exp1_qwen3_1_7b_tldr__phase_aware.yaml"
 
 # Group sizes to run sequentially.
 GROUP_SIZES=(
-  -1
+  128
+  32
 )
 
 # CUDA_VISIBLE_DEVICES is provided externally.
