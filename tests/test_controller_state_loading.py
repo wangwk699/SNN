@@ -49,7 +49,7 @@ def _statistics(site_index=1):
         "value_max": torch.full(shape, 1.0),
         "saliency_row_count_by_role": {role: torch.ones(saliency_shape, dtype=torch.long) for role in roles},
         "saliency_sum_by_role": {role: torch.zeros(saliency_shape, dtype=torch.float64 if site_index in {3, 4} else torch.float32) for role in roles},
-        "saliency_rule_by_role": {role: ("spikellm_matmul_fp64" if site_index in {3, 4} else "spikellm_linear_fp32") for role in roles},
+        "saliency_rule_by_role": {role: ("spikellm_qk_k_fp64" if site_index == 3 else ("spikellm_pv_v_fp64" if site_index == 4 else "spikellm_linear_fp32")) for role in roles},
         "saliency_accumulator_dtype_by_role": {role: ("float64" if site_index in {3, 4} else "float32") for role in roles},
         "phase_ema_abs_max": torch.ones(shape), "phase_ema_updates": torch.ones(shape, dtype=torch.long),
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
@@ -416,3 +416,35 @@ def test_gif_identity_sites_skip_clip_while_phase_uses_it(tmp_path):
         phase_surrogate_slope=1.0,
     )
     assert not torch.equal(phase.apply(0, 8, x), x)
+
+
+def _corrupt_site2_gif_and_rehash(root, field, value):
+    import json
+    from snn2.artifacts import sha256_file
+
+    state_path = root / site_key(0, 2) / "gif_state.pt"
+    state = torch.load(state_path, weights_only=False)
+    state[field] = value
+    torch.save(state, state_path)
+    manifest_path = root / "calibration_state_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sites"][site_key(0, 2)]["state_sha256"]["gif"] = sha256_file(state_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_corrupted_site2_all_low_state_fails_ann_gif_loading(tmp_path):
+    _write_bundle(tmp_path)
+    _corrupt_site2_gif_and_rehash(tmp_path, "low_qmax", 14)
+    controller = SiteController(mode="gif", site_root=tmp_path)
+    with pytest.raises(ValueError, match="Invalid all-low GIF state"):
+        controller.apply(0, 2, torch.zeros(1, 1, 2, 3))
+
+
+def test_corrupted_site2_all_low_state_fails_deploy_gif_loading(tmp_path):
+    _write_bundle(tmp_path)
+    _corrupt_site2_gif_and_rehash(
+        tmp_path, "high_scale", torch.ones(1, 1)
+    )
+    controller = SiteController(site_root=tmp_path)
+    with pytest.raises(ValueError, match="Invalid gif state|Invalid all-low GIF state"):
+        controller.set_deployment("gif", clip_bundle_policy="forbid_all")

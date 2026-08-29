@@ -572,8 +572,39 @@ class AllLowStaticGIF(StaticGIF):
     def __init__(self, state: dict[str, Any]):
         nn.Module.__init__(self)
         _validate_state_header(state, "gif")
-        if state.get("gif_policy") != GIF_ALL_LOW_POLICY:
-            raise ValueError("Invalid all-low GIF policy")
+        expected = {
+            "gif_policy": GIF_ALL_LOW_POLICY,
+            "base_bits": GIF_BASE_BITS,
+            "add_bits": GIF_ADD_BITS,
+            "low_qmin": 0,
+            "low_qmax": GIF_LOW_QMAX,
+            "temporal_steps": GIF_LOCAL_STEPS,
+            "per_step_qmin": 0,
+            "per_step_qmax": GIF_STEP_QMAX,
+            "quantization_path": "low_only",
+            "quantization_applied": True,
+            "saliency_enabled": False,
+            "temporal_policy": "low_at_t0_zero_at_t1",
+        }
+        mismatched = {
+            key: (value, state.get(key))
+            for key, value in expected.items()
+            if key not in state
+            or type(state[key]) is not type(value)
+            or state[key] != value
+        }
+        forbidden_names = {
+            "mask_low", "mask_low_by_role", "mask_roles",
+            "saliency_score", "saliency_score_by_role",
+            "high_scale", "high_zero", "high_qmin", "high_qmax",
+            "integer_decomposition",
+        }
+        forbidden = sorted(forbidden_names & state.keys())
+        if mismatched or forbidden:
+            raise ValueError(
+                "Invalid all-low GIF state: "
+                f"mismatched={mismatched}, forbidden={forbidden}"
+            )
         self.layout = _state_layout(state)
         self.register_buffer("low_scale", state["low_scale"].float())
         self.register_buffer("low_zero", state["low_zero"].float())

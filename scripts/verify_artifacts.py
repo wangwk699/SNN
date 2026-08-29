@@ -43,7 +43,7 @@ def _verify_final_ann_forward_metadata(cfg, layout, path):
     expected = {
         "identity": ("identity_ann", False, None),
         "phase": ("phase_surrogate_ann", True, "PhaseSurrogate.forward"),
-        "gif": ("gif_surrogate_ann", True, "StaticGIF/SoftmaxIdentityGIF.forward"),
+        "gif": ("gif_surrogate_ann", True, "StaticGIF/AllLowStaticGIF/IdentityGIF/SoftmaxIdentityGIF.forward"),
     }[mode]
     required = {
         "evaluation_forward_kind": expected[0],

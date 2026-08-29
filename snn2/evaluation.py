@@ -15,10 +15,17 @@ from .config import (
 from .controller import SiteController
 from .model_integration import temporal_forward
 from .prefix_cache import install_prefix_kv_forward
-from .sites import GIF_ACTIVE_SITE_IDS, GIF_MULTI_MASK_ROLES, SITE_COUNT
+from .sites import (
+    GIF_ACTIVE_SITE_IDS, GIF_ALL_LOW_SITE_IDS, GIF_IDENTITY_SITE_IDS,
+    GIF_MULTI_MASK_ROLES, GIF_SALIENT_SITE_IDS, SITE_COUNT,
+)
 from .state_validation import validate_site_state_bundle
 from .temporal_ops import (
     CALIBRATION_GROUPING_POLICY,
+    GIF_LINEAR_SALIENCY_DTYPE,
+    GIF_MATMUL_SALIENCY_DTYPE,
+    GIF_SALIENCY_SELECTION_POLICY,
+    GIF_SALIENCY_TIE_POLICY,
     SOFTMAX_SITE5_CLIP_POLICY,
     SOFTMAX_SITE5_GIF_POLICY,
     temporal_policy_metadata,
@@ -159,7 +166,7 @@ def evaluation_forward_metadata(
             implementation, root = "PhaseSurrogate.forward", str(layout.ann_training_site_dir)
         elif controller.mode == "gif":
             kind, enabled = "gif_surrogate_ann", True
-            implementation, root = "StaticGIF/SoftmaxIdentityGIF.forward", str(layout.ann_training_site_dir)
+            implementation, root = "StaticGIF/AllLowStaticGIF/IdentityGIF/SoftmaxIdentityGIF.forward", str(layout.ann_training_site_dir)
         else:
             raise ValueError(f"Invalid final ANN controller mode: {controller.mode}")
         temporal = False
@@ -183,6 +190,17 @@ def evaluation_forward_metadata(
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
         "softmax_site5_clip_applied": False,
         "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
+        "gif_salient_site_ids": sorted(GIF_SALIENT_SITE_IDS),
+        "gif_all_low_site_ids": sorted(GIF_ALL_LOW_SITE_IDS),
+        "gif_identity_site_ids": sorted(GIF_IDENTITY_SITE_IDS),
+        "gif_multi_mask_roles": {
+            str(site): list(roles)
+            for site, roles in sorted(GIF_MULTI_MASK_ROLES.items())
+        },
+        "gif_saliency_selection_policy": GIF_SALIENCY_SELECTION_POLICY,
+        "gif_saliency_tie_policy": GIF_SALIENCY_TIE_POLICY,
+        "gif_linear_saliency_dtype": GIF_LINEAR_SALIENCY_DTYPE,
+        "gif_matmul_saliency_dtype": GIF_MATMUL_SALIENCY_DTYPE,
     }
 
 

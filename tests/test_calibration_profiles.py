@@ -32,7 +32,7 @@ def _statistics(site_index=1):
         "value_max": torch.full(shape, 1.0),
         "saliency_row_count_by_role": {role: torch.ones(saliency_shape, dtype=torch.long) for role in roles},
         "saliency_sum_by_role": {role: torch.zeros(saliency_shape, dtype=torch.float64 if site_index in {3, 4} else torch.float32) for role in roles},
-        "saliency_rule_by_role": {role: ("spikellm_matmul_fp64" if site_index in {3, 4} else "spikellm_linear_fp32") for role in roles},
+        "saliency_rule_by_role": {role: ("spikellm_qk_k_fp64" if site_index == 3 else ("spikellm_pv_v_fp64" if site_index == 4 else "spikellm_linear_fp32")) for role in roles},
         "saliency_accumulator_dtype_by_role": {role: ("float64" if site_index in {3, 4} else "float32") for role in roles},
         "phase_ema_abs_max": torch.ones(shape), "phase_ema_updates": torch.ones(shape, dtype=torch.long),
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
@@ -201,3 +201,66 @@ def test_ann_training_calibration_is_identical_for_common_clip_switch(tmp_path):
                     torch.testing.assert_close(left_value, right_value)
             else:
                 assert left[key] == right[key]
+
+
+def test_site2_all_low_state_has_strict_low_only_contract():
+    state = build_site_states(_statistics(2), _cfg(), include_clip=False)["gif"]
+    assert state["gif_policy"] == "all_low_static_qmax15"
+    assert state["base_bits"] == 4
+    assert state["add_bits"] == 1
+    assert state["low_qmin"] == 0
+    assert state["low_qmax"] == 15
+    assert state["temporal_steps"] == 2
+    assert state["per_step_qmin"] == 0
+    assert state["per_step_qmax"] == 15
+    assert state["quantization_path"] == "low_only"
+    assert state["quantization_applied"] is True
+    assert state["saliency_enabled"] is False
+    assert state["temporal_policy"] == "low_at_t0_zero_at_t1"
+    assert state["parameter_layout"] == "attention_head_grouped"
+    forbidden = {
+        "high_qmin", "high_qmax", "high_scale", "high_zero",
+        "mask_low", "mask_low_by_role", "mask_roles", "integer_decomposition",
+    }
+    assert not forbidden.intersection(state)
+
+
+def test_calibration_manifest_records_saliency_and_mask_provenance(tmp_path):
+    _write_statistics(tmp_path)
+    manifest = materialize_calibration_states(
+        tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1
+    )
+    assert manifest["gif_saliency_selection_policy"] == "spikellm_global_per_channel_threshold_leq"
+    assert manifest["gif_saliency_tie_policy"] == "mask_low_equals_score_le_threshold"
+    assert manifest["gif_linear_saliency_dtype"] == "float32"
+    assert manifest["gif_matmul_saliency_dtype"] == "float64"
+
+    sites = manifest["sites"]
+    by_index = {entry["site_index"]: entry for entry in sites.values()}
+    assert by_index[1]["saliency_roles"] == ["q", "k", "v"]
+    assert by_index[1]["saliency_rule_by_role"] == {
+        "q": "spikellm_linear_fp32", "k": "spikellm_linear_fp32",
+        "v": "spikellm_linear_fp32",
+    }
+    assert by_index[1]["saliency_accumulator_dtype_by_role"] == {
+        "q": "float32", "k": "float32", "v": "float32",
+    }
+    assert by_index[1]["gif_mask_policy"] == "multi_role"
+    assert by_index[1]["gif_mask_roles"] == ["q", "k", "v"]
+
+    assert by_index[3]["saliency_rule_by_role"] == {"default": "spikellm_qk_k_fp64"}
+    assert by_index[3]["saliency_accumulator_dtype_by_role"] == {"default": "float64"}
+    assert by_index[3]["gif_mask_policy"] == "single"
+    assert by_index[3]["gif_mask_roles"] == []
+    assert by_index[4]["saliency_rule_by_role"] == {"default": "spikellm_pv_v_fp64"}
+    assert by_index[6]["saliency_accumulator_dtype_by_role"] == {"default": "float32"}
+    assert by_index[7]["saliency_roles"] == ["gate", "up"]
+    assert by_index[7]["gif_mask_roles"] == ["gate", "up"]
+
+    for site in (2, 5, 8, 9):
+        assert by_index[site]["saliency_enabled"] is False
+        assert by_index[site]["saliency_roles"] == []
+        assert by_index[site]["saliency_rule_by_role"] == {}
+        assert by_index[site]["saliency_accumulator_dtype_by_role"] == {}
+        assert by_index[site]["gif_mask_policy"] is None
+        assert by_index[site]["gif_mask_roles"] == []

@@ -549,6 +549,19 @@ def materialize_calibration_states(
                 else list(gif_state["low_scale"].shape)
             ),
             "gif_temporal_steps": gif_state["temporal_steps"],
+            "saliency_enabled": bool(gif_state.get("saliency_enabled", False)),
+            "saliency_roles": (
+                list(gif_state.get("saliency_rule_by_role", {}).keys())
+                if gif_state.get("saliency_enabled", False) else []
+            ),
+            "saliency_rule_by_role": dict(
+                gif_state.get("saliency_rule_by_role", {})
+            ),
+            "saliency_accumulator_dtype_by_role": dict(
+                gif_state.get("saliency_accumulator_dtype_by_role", {})
+            ),
+            "gif_mask_policy": gif_state.get("mask_policy"),
+            "gif_mask_roles": list(gif_state.get("mask_roles", [])),
             "clip_policy": "eligible_common_intersection" if "clip" in states else "disabled",
             "clip_state_present": "clip" in states,
             "phase_tau_calibration": states["phase"]["tau_calibration"],

@@ -26,8 +26,8 @@ SOFTMAX_PREFIX_NEURON_POLICY = "full_softmax_tensor_including_prefix"
 PHASE_FINAL_NORM_POLICY = "phase_neuron_after_final_temporal_rmsnorm"
 SITE_STATE_FORMAT_VERSION = 8
 STATISTICS_FORMAT_VERSION = 3
-CALIBRATION_MANIFEST_FORMAT_VERSION = 9
-CONVERSION_METADATA_FORMAT_VERSION = 10
+CALIBRATION_MANIFEST_FORMAT_VERSION = 10
+CONVERSION_METADATA_FORMAT_VERSION = 11
 
 CALIBRATION_GROUPING_POLICY = "site234_logical_per_head_site6_merged_last_dim_v2"
 SOFTMAX_SITE5_GROUPING_POLICY = "per_head_full_variable_key_axis"
@@ -36,6 +36,10 @@ SOFTMAX_SITE5_CLIP_POLICY = "disabled"
 GIF_SALIENT_POLICY = "ordinary_salient_static_qmax30"
 GIF_ALL_LOW_POLICY = "all_low_static_qmax15"
 GIF_IDENTITY_POLICY = "identity"
+GIF_SALIENCY_SELECTION_POLICY = "spikellm_global_per_channel_threshold_leq"
+GIF_SALIENCY_TIE_POLICY = "mask_low_equals_score_le_threshold"
+GIF_LINEAR_SALIENCY_DTYPE = "float32"
+GIF_MATMUL_SALIENCY_DTYPE = "float64"
 
 GIF_BASE_BITS = 4
 GIF_ADD_BITS = 1
@@ -70,6 +74,10 @@ def temporal_policy_metadata() -> dict[str, Any]:
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
         "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
+        "gif_saliency_selection_policy": GIF_SALIENCY_SELECTION_POLICY,
+        "gif_saliency_tie_policy": GIF_SALIENCY_TIE_POLICY,
+        "gif_linear_saliency_dtype": GIF_LINEAR_SALIENCY_DTYPE,
+        "gif_matmul_saliency_dtype": GIF_MATMUL_SALIENCY_DTYPE,
         "ordinary_gif_high_qmax": GIF_HIGH_QMAX,
         "ordinary_gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         "ordinary_gif_per_step_qmax": GIF_STEP_QMAX,

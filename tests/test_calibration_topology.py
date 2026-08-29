@@ -35,7 +35,7 @@ def _statistics(site_index=1):
         "value_max": torch.full(shape, 1.0),
         "saliency_row_count_by_role": {role: torch.ones(saliency_shape, dtype=torch.long) for role in roles},
         "saliency_sum_by_role": {role: torch.zeros(saliency_shape, dtype=torch.float64 if site_index in {3, 4} else torch.float32) for role in roles},
-        "saliency_rule_by_role": {role: ("spikellm_matmul_fp64" if site_index in {3, 4} else "spikellm_linear_fp32") for role in roles},
+        "saliency_rule_by_role": {role: ("spikellm_qk_k_fp64" if site_index == 3 else ("spikellm_pv_v_fp64" if site_index == 4 else "spikellm_linear_fp32")) for role in roles},
         "saliency_accumulator_dtype_by_role": {role: ("float64" if site_index in {3, 4} else "float32") for role in roles},
         "phase_ema_abs_max": torch.ones(shape), "phase_ema_updates": torch.ones(shape, dtype=torch.long),
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
@@ -192,4 +192,33 @@ def test_validate_rejects_manifest_layer_name_mismatch(tmp_path):
     manifest["expected_layer_names"] = ["layer_001"]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="expected_layer_names"):
+        validate_calibration(tmp_path, clip_policy="forbid_all")
+
+
+@pytest.mark.parametrize(
+    ("site_index", "field", "value"),
+    [
+        (3, "saliency_accumulator_dtype_by_role", {"default": "float32"}),
+        (1, "gif_mask_roles", ["q", "k"]),
+        (2, "saliency_enabled", True),
+        (7, "gif_mask_policy", "single"),
+    ],
+)
+def test_validate_rejects_manifest_saliency_provenance_mismatch(
+    tmp_path, site_index, field, value
+):
+    for index in SITE_IDS:
+        _write_site(tmp_path, index, SITE_NAMES[index])
+    materialize_calibration_states(
+        tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1
+    )
+    path = tmp_path / "calibration_state_manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    key = next(
+        key for key, entry in manifest["sites"].items()
+        if entry["site_index"] == site_index
+    )
+    manifest["sites"][key][field] = value
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="saliency provenance mismatch"):
         validate_calibration(tmp_path, clip_policy="forbid_all")

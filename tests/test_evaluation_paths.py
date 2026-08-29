@@ -324,5 +324,19 @@ def test_evaluation_forward_metadata(monkeypatch, ann_mode, neuron, kind):
         neuron == "ann" and ann_mode in {"phase_aware", "gif_aware"}
     )
     assert metadata["calibration_group_size"] == -1
+    assert metadata["gif_salient_site_ids"] == [1, 3, 4, 6, 7, 10]
+    assert metadata["gif_all_low_site_ids"] == [2]
+    assert metadata["gif_identity_site_ids"] == [5, 8, 9]
+    assert metadata["gif_multi_mask_roles"] == {
+        "1": ["q", "k", "v"], "7": ["gate", "up"]
+    }
+    assert metadata["gif_saliency_selection_policy"] == "spikellm_global_per_channel_threshold_leq"
+    assert metadata["gif_saliency_tie_policy"] == "mask_low_equals_score_le_threshold"
+    assert metadata["gif_linear_saliency_dtype"] == "float32"
+    assert metadata["gif_matmul_saliency_dtype"] == "float64"
+    if neuron == "ann" and ann_mode == "gif_aware":
+        assert metadata["static_replacement_impl"] == (
+            "StaticGIF/AllLowStaticGIF/IdentityGIF/SoftmaxIdentityGIF.forward"
+        )
     assert metadata["calibration_grouping_policy"] == "site234_logical_per_head_site6_merged_last_dim_v2"
     assert metadata["softmax_site5_clip_applied"] is False

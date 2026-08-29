@@ -63,7 +63,7 @@ def _statistics(site_index=1):
         "value_max": torch.full(shape, 1.0),
         "saliency_row_count_by_role": {role: torch.ones(saliency_shape, dtype=torch.long) for role in roles},
         "saliency_sum_by_role": {role: torch.zeros(saliency_shape, dtype=torch.float64 if site_index in {3, 4} else torch.float32) for role in roles},
-        "saliency_rule_by_role": {role: ("spikellm_matmul_fp64" if site_index in {3, 4} else "spikellm_linear_fp32") for role in roles},
+        "saliency_rule_by_role": {role: ("spikellm_qk_k_fp64" if site_index == 3 else ("spikellm_pv_v_fp64" if site_index == 4 else "spikellm_linear_fp32")) for role in roles},
         "saliency_accumulator_dtype_by_role": {role: ("float64" if site_index in {3, 4} else "float32") for role in roles},
         "phase_ema_abs_max": torch.ones(shape), "phase_ema_updates": torch.ones(shape, dtype=torch.long),
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
@@ -161,12 +161,16 @@ def _prepare(tmp_path, *, rotation_enabled=False):
     return layout, path
 
 
-def test_conversion_metadata_v9_is_accepted(tmp_path):
+def test_conversion_metadata_v11_is_accepted(tmp_path):
     layout, _ = _prepare(tmp_path)
     metadata = validate_conversion_metadata(_cfg(), layout, "gif")
     assert metadata["ordinary_gif_high_qmax"] == 30
     assert metadata["source_ann_common_clip_enabled"] is False
     assert metadata["snn_clip_applied"] is False
+    assert metadata["gif_saliency_selection_policy"] == "spikellm_global_per_channel_threshold_leq"
+    assert metadata["gif_saliency_tie_policy"] == "mask_low_equals_score_le_threshold"
+    assert metadata["gif_linear_saliency_dtype"] == "float32"
+    assert metadata["gif_matmul_saliency_dtype"] == "float64"
 
 
 def test_conversion_rejects_source_ann_common_clip_mismatch(monkeypatch, tmp_path):

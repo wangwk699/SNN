@@ -15,7 +15,10 @@ from .sites import (
 )
 from .temporal_ops import (
     CALIBRATION_MANIFEST_FORMAT_VERSION,
+    GIF_BASE_BITS,
+    GIF_ADD_BITS,
     GIF_HIGH_QMAX,
+    GIF_LOW_QMAX,
     GIF_LOCAL_STEPS,
     GIF_SALIENT_POLICY,
     GIF_ALL_LOW_POLICY,
@@ -175,16 +178,44 @@ def validate_site_state_bundle(
                         if policy != GIF_IDENTITY_POLICY or forbidden:
                             raise ValueError(f"Invalid identity GIF state at {state_path}")
                     elif site_index in GIF_ALL_LOW_SITE_IDS:
-                        forbidden = {
-                            "mask_low", "mask_low_by_role", "high_scale",
-                            "high_zero", "high_qmax",
-                        } & state.keys()
+                        expected_all_low = {
+                            "gif_policy": GIF_ALL_LOW_POLICY,
+                            "base_bits": GIF_BASE_BITS,
+                            "add_bits": GIF_ADD_BITS,
+                            "low_qmin": 0,
+                            "low_qmax": GIF_LOW_QMAX,
+                            "temporal_steps": GIF_LOCAL_STEPS,
+                            "per_step_qmin": 0,
+                            "per_step_qmax": GIF_STEP_QMAX,
+                            "quantization_path": "low_only",
+                            "quantization_applied": True,
+                            "saliency_enabled": False,
+                            "temporal_policy": "low_at_t0_zero_at_t1",
+                        }
+                        mismatched_all_low = {
+                            key: (value, state.get(key))
+                            for key, value in expected_all_low.items()
+                            if key not in state
+                            or type(state[key]) is not type(value)
+                            or state[key] != value
+                        }
+                        forbidden_names = {
+                            "mask_low", "mask_low_by_role", "mask_roles",
+                            "saliency_score", "saliency_score_by_role",
+                            "high_scale", "high_zero", "high_qmin", "high_qmax",
+                            "integer_decomposition",
+                        }
+                        forbidden = sorted(forbidden_names & state.keys())
                         if (
-                            policy != GIF_ALL_LOW_POLICY
-                            or state.get("saliency_enabled") is not False
-                            or forbidden
+                            mismatched_all_low or forbidden
+                            or state.get("parameter_layout") != "attention_head_grouped"
+                            or not isinstance(state.get("num_heads"), int)
+                            or not isinstance(state.get("channels_per_head"), int)
                         ):
-                            raise ValueError(f"Invalid all-low GIF state at {state_path}")
+                            raise ValueError(
+                                f"Invalid all-low GIF state at {state_path}: "
+                                f"mismatched={mismatched_all_low}, forbidden={forbidden}"
+                            )
                     elif site_index in GIF_SALIENT_SITE_IDS:
                         if (
                             policy != GIF_SALIENT_POLICY
@@ -197,9 +228,51 @@ def validate_site_state_bundle(
                         if roles is not None and tuple(state.get("mask_roles", ())) != roles:
                             raise ValueError(f"Invalid GIF mask roles at {state_path}")
                         expected_dtype = "float64" if site_index in {3, 4} else "float32"
+                        expected_rule = (
+                            "spikellm_qk_k_fp64" if site_index == 3 else
+                            ("spikellm_pv_v_fp64" if site_index == 4 else
+                             "spikellm_linear_fp32")
+                        )
+                        saved_rules = state.get("saliency_rule_by_role")
+                        if not isinstance(saved_rules, dict) or set(saved_rules.values()) != {expected_rule}:
+                            raise ValueError(f"Invalid GIF saliency rule at {state_path}")
                         saved_dtypes = state.get("saliency_accumulator_dtype_by_role")
                         if not isinstance(saved_dtypes, dict) or set(saved_dtypes.values()) != {expected_dtype}:
                             raise ValueError(f"Invalid GIF saliency precision at {state_path}")
+
+                    saliency_enabled = site_index in GIF_SALIENT_SITE_IDS
+                    state_rules = dict(state.get("saliency_rule_by_role", {}))
+                    state_dtypes = dict(state.get("saliency_accumulator_dtype_by_role", {}))
+                    expected_roles = list(state_rules) if saliency_enabled else []
+                    expected_mask_roles = list(state.get("mask_roles", []))
+                    expected_mask_policy = state.get("mask_policy")
+                    expected_manifest = {
+                        "saliency_enabled": saliency_enabled,
+                        "saliency_roles": expected_roles,
+                        "saliency_rule_by_role": state_rules if saliency_enabled else {},
+                        "saliency_accumulator_dtype_by_role": state_dtypes if saliency_enabled else {},
+                        "gif_mask_policy": expected_mask_policy if saliency_enabled else None,
+                        "gif_mask_roles": expected_mask_roles if saliency_enabled else [],
+                    }
+                    manifest_mismatch = {
+                        key: (value, site_manifest.get(key))
+                        for key, value in expected_manifest.items()
+                        if site_manifest.get(key) != value
+                    }
+                    if manifest_mismatch:
+                        raise ValueError(
+                            f"GIF saliency provenance mismatch at {state_path}: "
+                            f"{manifest_mismatch}"
+                        )
+                    if site_index in GIF_MULTI_MASK_ROLES and (
+                        expected_mask_policy != "multi_role"
+                        or tuple(expected_mask_roles) != GIF_MULTI_MASK_ROLES[site_index]
+                    ):
+                        raise ValueError(f"Invalid multi-role GIF provenance at {state_path}")
+                    if site_index in {3, 4, 6, 10} and (
+                        expected_mask_policy != "single" or expected_mask_roles
+                    ):
+                        raise ValueError(f"Invalid single-mask GIF provenance at {state_path}")
                 if site_index == 6 and kind in {"phase", "gif", "mtn", "clip"}:
                     if state.get("parameter_layout") != "last_dim_grouped" or state.get("num_heads") is not None:
                         raise ValueError(f"Site 6 must use merged last-dim state: {state_path}")

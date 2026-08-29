@@ -216,6 +216,11 @@ def test_all_low_and_identity_gif_temporal_policies():
     all_low = {
         **_header("gif"), **_layout(),
         "gif_policy": "all_low_static_qmax15",
+        "base_bits": 4, "add_bits": 1,
+        "low_qmin": 0, "low_qmax": 15, "temporal_steps": 2,
+        "per_step_qmin": 0, "per_step_qmax": 15,
+        "quantization_path": "low_only", "quantization_applied": True,
+        "saliency_enabled": False, "temporal_policy": "low_at_t0_zero_at_t1",
         "low_scale": torch.full((2,), 0.1),
         "low_zero": torch.zeros(2),
     }
@@ -235,3 +240,60 @@ def test_all_low_and_identity_gif_temporal_policies():
     frame = x[0]
     assert module(frame) is frame
     assert torch.equal(module(frame), frame)
+
+
+def _all_low_state():
+    return {
+        **_header("gif"), **_layout("attention_head_grouped"),
+        "gif_policy": "all_low_static_qmax15",
+        "base_bits": 4, "add_bits": 1,
+        "low_qmin": 0, "low_qmax": 15, "temporal_steps": 2,
+        "per_step_qmin": 0, "per_step_qmax": 15,
+        "quantization_path": "low_only", "quantization_applied": True,
+        "saliency_enabled": False, "temporal_policy": "low_at_t0_zero_at_t1",
+        "low_scale": torch.full((2, 2), 0.1),
+        "low_zero": torch.zeros(2, 2),
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("low_qmax", 14),
+        ("temporal_steps", 4),
+        ("per_step_qmax", 14),
+        ("low_qmin", 1),
+        ("per_step_qmin", 1),
+        ("base_bits", 3),
+        ("add_bits", 2),
+        ("quantization_path", "low_high"),
+        ("quantization_applied", False),
+        ("saliency_enabled", True),
+        ("temporal_policy", "ordinary"),
+    ],
+)
+def test_all_low_gif_rejects_corrupted_policy(field, value):
+    state = _all_low_state()
+    state[field] = value
+    with pytest.raises(ValueError, match="Invalid all-low GIF state"):
+        gif_module_from_state(state)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("high_scale", torch.ones(2, 2)),
+        ("high_zero", torch.zeros(2, 2)),
+        ("high_qmax", 30),
+        ("integer_decomposition", GIF_INTEGER_DECOMPOSITION),
+        ("mask_low", torch.ones(2, 4, dtype=torch.bool)),
+        ("mask_low_by_role", {"default": torch.ones(2, 4, dtype=torch.bool)}),
+        ("mask_roles", ["default"]),
+        ("saliency_score", torch.ones(2, 4)),
+    ],
+)
+def test_all_low_gif_rejects_high_or_mask_fields(field, value):
+    state = _all_low_state()
+    state[field] = value
+    with pytest.raises(ValueError, match="Invalid all-low GIF state"):
+        gif_module_from_state(state)
