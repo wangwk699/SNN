@@ -21,6 +21,21 @@ from .temporal_ops import (
 )
 
 
+def _record_saliency(
+    controller: SiteController, layer_index: int, site_index: int,
+    score: torch.Tensor, *, role: str = "default", source: str
+) -> None:
+    if getattr(controller, "mode", None) != "collect":
+        return
+    try:
+        controller.record_saliency(
+            layer_index, site_index, score, role=role, source=source
+        )
+    except TypeError:
+        # Lightweight third-party/test controllers may expose the legacy sink.
+        controller.record_saliency(layer_index, site_index, score)
+
+
 def _record_regression(
     controller: SiteController, name: str, value: torch.Tensor
 ) -> None:
@@ -37,6 +52,21 @@ def repeat_kv(hidden_states: torch.Tensor, groups: int) -> torch.Tensor:
         batch, kv_heads, groups, length, head_dim
     )
     return hidden_states.reshape(batch, kv_heads * groups, length, head_dim)
+
+
+def merge_attention_heads(x: torch.Tensor) -> torch.Tensor:
+    if x.ndim != 4:
+        raise ValueError(f"Expected [B,H,L,D], got {tuple(x.shape)}")
+    batch, heads, length, head_dim = x.shape
+    return x.transpose(1, 2).contiguous().reshape(batch, length, heads * head_dim)
+
+
+def restore_attention_heads(x: torch.Tensor, *, num_heads: int, head_dim: int) -> torch.Tensor:
+    if x.ndim != 3 or x.shape[-1] != num_heads * head_dim:
+        raise ValueError(
+            f"Expected [B,L,{num_heads * head_dim}], got {tuple(x.shape)}"
+        )
+    return x.reshape(x.shape[0], x.shape[1], num_heads, head_dim).transpose(1, 2).contiguous()
 
 
 def snn2_eager_attention_forward(
@@ -85,32 +115,37 @@ def snn2_eager_attention_forward(
     query = controller.apply(layer_index, 2, query)
 
     groups = int(getattr(module, "num_key_value_groups", 1))
+    key = repeat_kv(key, groups)
+    value = repeat_kv(value, groups)
+    num_heads, head_dim = int(key.shape[1]), int(key.shape[-1])
+
     if controller.mode == "collect":
         statistics_key = key[..., past_length:, :] if past_length else key
         statistics_value = value[..., past_length:, :] if past_length else value
         controller.record_activation(layer_index, 3, statistics_key)
         controller.record_activation(layer_index, 4, statistics_value)
     else:
-        key = controller.apply(layer_index, 3, key)
-        value = controller.apply(layer_index, 4, value)
+        key = restore_attention_heads(
+            controller.apply(layer_index, 3, merge_attention_heads(key)),
+            num_heads=num_heads, head_dim=head_dim,
+        )
+        value = restore_attention_heads(
+            controller.apply(layer_index, 4, merge_attention_heads(value)),
+            num_heads=num_heads, head_dim=head_dim,
+        )
 
-    key = repeat_kv(key, groups)
-    value = repeat_kv(value, groups)
-    qk = torch.matmul(query, key.transpose(2, 3))
     if controller.mode == "collect":
-        controller.record_saliency(layer_index, 2, query * torch.matmul(qk, key))
-        key_score = key * torch.matmul(qk.transpose(2, 3), query)
+        q64 = query.detach().to(torch.float64)
+        k64 = key.detach().to(torch.float64)
+        qk64 = torch.matmul(q64, k64.transpose(-2, -1))
+        key_score = k64 * torch.matmul(qk64.transpose(-2, -1), q64)
         if past_length:
             key_score = key_score[..., past_length:, :]
-        if groups > 1:
-            key_score = key_score.reshape(
-                key_score.shape[0],
-                key_score.shape[1] // groups,
-                groups,
-                key_score.shape[2],
-                key_score.shape[3],
-            ).sum(dim=2)
-        controller.record_saliency(layer_index, 3, key_score)
+        _record_saliency(
+            controller, layer_index, 3, key_score, source="spikellm_qk_k_fp64"
+        )
+
+    qk = torch.matmul(query, key.transpose(2, 3))
     scale = float(scaling if scaling is not None else getattr(module, "scaling", 1.0 / math.sqrt(query.shape[-1])))
     weights = qk * scale
     _record_regression(controller, f"layer_{layer_index:03d}/attn/qk_scaled", weights)
@@ -120,36 +155,31 @@ def snn2_eager_attention_forward(
         cap = float(kwargs["softcap"])
         weights = torch.tanh(weights / cap) * cap
     weights = F.softmax(weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    _record_regression(
-        controller,
-        f"layer_{layer_index:03d}/attn/softmax_before_site5",
-        weights,
-    )
+    _record_regression(controller, f"layer_{layer_index:03d}/attn/softmax_before_site5", weights)
     if controller.mode == "collect":
         statistics_weights = weights[..., past_length:] if past_length else weights
         controller.record_activation(layer_index, 5, statistics_weights)
     else:
         weights = controller.apply(layer_index, 5, weights)
     weights = F.dropout(weights, p=dropout, training=module.training)
-    output = torch.matmul(weights, value)
-    _record_regression(
-        controller, f"layer_{layer_index:03d}/attn/pv_before_site6", output
-    )
+
     if controller.mode == "collect":
-        value_score = value * torch.matmul(weights.transpose(2, 3), output)
+        p64 = weights.detach().to(torch.float64)
+        v64 = value.detach().to(torch.float64)
+        pv64 = torch.matmul(p64, v64)
+        value_score = v64 * torch.matmul(p64.transpose(-2, -1), pv64)
         if past_length:
             value_score = value_score[..., past_length:, :]
-        if groups > 1:
-            value_score = value_score.reshape(
-                value_score.shape[0],
-                value_score.shape[1] // groups,
-                groups,
-                value_score.shape[2],
-                value_score.shape[3],
-            ).sum(dim=2)
-        controller.record_saliency(layer_index, 4, value_score)
+        _record_saliency(
+            controller, layer_index, 4, value_score, source="spikellm_pv_v_fp64"
+        )
+
+    output_heads = torch.matmul(weights, value)
+    _record_regression(controller, f"layer_{layer_index:03d}/attn/pv_head_output_before_merge", output_heads)
+    output = merge_attention_heads(output_heads)
+    _record_regression(controller, f"layer_{layer_index:03d}/attn/pv_merged_before_site6", output)
     output = controller.apply(layer_index, 6, output)
-    return output.transpose(1, 2).contiguous(), weights
+    return output, weights
 
 
 def register_attention_backend() -> None:
@@ -209,10 +239,6 @@ def _make_mlp_forward(controller: SiteController, layer_index: int, r4: Hadamard
             gate = controller.apply(layer_index, 8, gate)
             up = up_projection
             up = controller.apply(layer_index, 9, up)
-            if controller.mode == "collect":
-                product_saliency = gate.square() * up.square()
-                controller.record_saliency(layer_index, 8, product_saliency)
-                controller.record_saliency(layer_index, 9, product_saliency)
             product = gate * up
         if r4 is not None:
             product_dtype = product.dtype
@@ -233,9 +259,14 @@ def _make_mlp_forward(controller: SiteController, layer_index: int, r4: Hadamard
 
 
 def _linear_score(
-    inputs: torch.Tensor, output: torch.Tensor, weight: torch.Tensor
+    inputs: torch.Tensor, output_or_weight: torch.Tensor, weight: torch.Tensor | None = None
 ) -> torch.Tensor:
-    return inputs * torch.matmul(output, weight)
+    """SpikeLLM linear-consumer saliency, recomputed entirely in FP32."""
+    weight = output_or_weight if weight is None else weight
+    x32 = inputs.detach().to(torch.float32)
+    w32 = weight.detach().to(torch.float32)
+    projected = torch.matmul(x32, w32.transpose(-1, -2))
+    return torch.matmul(projected, w32) * x32
 
 
 def record_down_proj_saliency(
@@ -246,7 +277,10 @@ def record_down_proj_saliency(
     weight: torch.Tensor,
 ) -> None:
     """Record the R4 product consumer sensitivity at Site 10."""
-    controller.record_saliency(layer_index, 10, _linear_score(inputs[0], output, weight))
+    _record_saliency(
+        controller, layer_index, 10, _linear_score(inputs[0], weight),
+        source="spikellm_linear_fp32",
+    )
 
 
 def _install_temporal_rmsnorm(
@@ -383,25 +417,44 @@ def install_model_integration(
         handles.append(layer.register_forward_hook(layer_output_hook))
 
         def norm1_hook(_module, _inputs, output, index=layer_index):
+            if controller.mode in {"gif", "deploy_gif"}:
+                controller.record_activation(index, 1, output)
+                return output
             return controller.apply(index, 1, output)
 
         def norm2_hook(_module, _inputs, output, index=layer_index):
+            if controller.mode in {"gif", "deploy_gif"}:
+                controller.record_activation(index, 7, output)
+                return output
             return controller.apply(index, 7, output)
 
         handles.append(layer.input_layernorm.register_forward_hook(norm1_hook))
         handles.append(layer.post_attention_layernorm.register_forward_hook(norm2_hook))
+
+        def make_gif_branch_pre_hook(site_index, role, index=layer_index):
+            def hook(_module, inputs):
+                if controller.mode not in {"gif", "deploy_gif"}:
+                    return None
+                replaced = controller.apply(index, site_index, inputs[0], gif_role=role)
+                return (replaced, *inputs[1:])
+            return hook
 
         def make_branch_linear_hook(label, index=layer_index):
             def branch_linear_hook(_module, inputs, output):
                 _record_regression(
                     controller, f"layer_{index:03d}/attn/{label}_proj_output", output
                 )
-                controller.record_saliency(
-                    index, 1, _linear_score(inputs[0], output, _module.weight)
-                )
+                if controller.mode == "collect":
+                    _record_saliency(
+                        controller, index, 1, _linear_score(inputs[0], _module.weight),
+                        role=label, source="spikellm_linear_fp32",
+                    )
             return branch_linear_hook
 
         for label, projection in (("q", attention.q_proj), ("k", attention.k_proj), ("v", attention.v_proj)):
+            handles.append(projection.register_forward_pre_hook(
+                make_gif_branch_pre_hook(1, label)
+            ))
             handles.append(projection.register_forward_hook(make_branch_linear_hook(label)))
 
         def output_linear_hook(_module, inputs, output, index=layer_index, attn=attention):
@@ -415,25 +468,32 @@ def install_model_integration(
                     f"layer_{index:03d}/post_attention_residual",
                     residual + output,
                 )
-            score = _linear_score(inputs[0], output, _module.weight)
-            heads = getattr(attn, "num_heads", None)
-            if heads is None:
-                heads = getattr(attn, "num_attention_heads", None)
-                heads = attn.config.num_attention_heads
-            heads = int(heads)
-            score = score.reshape(score.shape[0], score.shape[1], heads, -1).transpose(1, 2)
-            controller.record_saliency(index, 6, score)
+            if controller.mode == "collect":
+                score = _linear_score(inputs[0], _module.weight)
+                _record_saliency(
+                    controller, index, 6, score, source="spikellm_linear_fp32"
+                )
 
         handles.append(attention.o_proj.register_forward_hook(output_linear_hook))
 
-        def mlp_input_hook(_module, inputs, output, index=layer_index):
-            controller.record_saliency(index, 7, _linear_score(inputs[0], output, _module.weight))
+        def make_mlp_input_hook(role, index=layer_index):
+            def hook(_module, inputs, output):
+                if controller.mode == "collect":
+                    _record_saliency(
+                        controller, index, 7, _linear_score(inputs[0], _module.weight),
+                        role=role, source="spikellm_linear_fp32",
+                    )
+            return hook
 
-        handles.append(layer.mlp.gate_proj.register_forward_hook(mlp_input_hook))
-        handles.append(layer.mlp.up_proj.register_forward_hook(mlp_input_hook))
+        for role, projection in (("gate", layer.mlp.gate_proj), ("up", layer.mlp.up_proj)):
+            handles.append(projection.register_forward_pre_hook(
+                make_gif_branch_pre_hook(7, role)
+            ))
+            handles.append(projection.register_forward_hook(make_mlp_input_hook(role)))
 
         def down_input_hook(_module, inputs, output, index=layer_index):
-            record_down_proj_saliency(controller, index, inputs, output, _module.weight)
+            if controller.mode == "collect":
+                record_down_proj_saliency(controller, index, inputs, output, _module.weight)
 
         handles.append(layer.mlp.down_proj.register_forward_hook(down_input_hook))
         layer.mlp.forward = types.MethodType(_make_mlp_forward(controller, layer_index, r4), layer.mlp)

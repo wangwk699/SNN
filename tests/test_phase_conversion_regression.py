@@ -184,7 +184,7 @@ def test_regression_rejects_training_provenance_mismatch(tmp_path, monkeypatch):
 
 
 def test_official_phase_ann_controller_matches_graph_p(monkeypatch):
-    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "per_head_within_head_groups_v1"}})
+    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2"}})
     layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
     cfg = {
         "experiment": {"ann_mode": "phase_aware"},

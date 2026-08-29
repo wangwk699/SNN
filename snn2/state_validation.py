@@ -8,11 +8,18 @@ import torch
 
 from .artifacts import sha256_file
 from .neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, gif_module_from_state
-from .sites import SITE_IDS, is_softmax_site, site_supports_clip, validate_site_topology
+from .sites import (
+    GIF_ALL_LOW_SITE_IDS, GIF_IDENTITY_SITE_IDS, GIF_MULTI_MASK_ROLES,
+    GIF_SALIENT_SITE_IDS, SITE_IDS, is_softmax_site, site_supports_clip,
+    validate_site_topology,
+)
 from .temporal_ops import (
     CALIBRATION_MANIFEST_FORMAT_VERSION,
     GIF_HIGH_QMAX,
     GIF_LOCAL_STEPS,
+    GIF_SALIENT_POLICY,
+    GIF_ALL_LOW_POLICY,
+    GIF_IDENTITY_POLICY,
     GIF_STEP_QMAX,
     CALIBRATION_GROUPING_POLICY,
     SOFTMAX_SITE5_CLIP_POLICY,
@@ -156,15 +163,46 @@ def validate_site_state_bundle(
                     steps_by_neuron[kind].add(int(module.T))
                 elif kind == "gif":
                     steps_by_neuron[kind].add(int(module.temporal_steps))
+                    policy = state.get("gif_policy")
                     if is_softmax_site(site_index):
-                        if state.get("gif_policy") != SOFTMAX_SITE5_GIF_POLICY:
+                        if policy != SOFTMAX_SITE5_GIF_POLICY:
                             raise ValueError(f"Invalid Site 5 GIF policy at {state_path}")
-                    elif (
-                        state.get("high_qmax") != GIF_HIGH_QMAX
-                        or state.get("temporal_steps") != GIF_LOCAL_STEPS
-                        or state.get("per_step_qmax") != GIF_STEP_QMAX
-                    ):
-                        raise ValueError(f"Invalid ordinary GIF qmax/chunk policy at {state_path}")
+                    elif site_index in {8, 9}:
+                        forbidden = {
+                            "mask_low", "mask_low_by_role", "low_scale", "low_zero",
+                            "high_scale", "high_zero",
+                        } & state.keys()
+                        if policy != GIF_IDENTITY_POLICY or forbidden:
+                            raise ValueError(f"Invalid identity GIF state at {state_path}")
+                    elif site_index in GIF_ALL_LOW_SITE_IDS:
+                        forbidden = {
+                            "mask_low", "mask_low_by_role", "high_scale",
+                            "high_zero", "high_qmax",
+                        } & state.keys()
+                        if (
+                            policy != GIF_ALL_LOW_POLICY
+                            or state.get("saliency_enabled") is not False
+                            or forbidden
+                        ):
+                            raise ValueError(f"Invalid all-low GIF state at {state_path}")
+                    elif site_index in GIF_SALIENT_SITE_IDS:
+                        if (
+                            policy != GIF_SALIENT_POLICY
+                            or state.get("high_qmax") != GIF_HIGH_QMAX
+                            or state.get("temporal_steps") != GIF_LOCAL_STEPS
+                            or state.get("per_step_qmax") != GIF_STEP_QMAX
+                        ):
+                            raise ValueError(f"Invalid salient GIF qmax/chunk policy at {state_path}")
+                        roles = GIF_MULTI_MASK_ROLES.get(site_index)
+                        if roles is not None and tuple(state.get("mask_roles", ())) != roles:
+                            raise ValueError(f"Invalid GIF mask roles at {state_path}")
+                        expected_dtype = "float64" if site_index in {3, 4} else "float32"
+                        saved_dtypes = state.get("saliency_accumulator_dtype_by_role")
+                        if not isinstance(saved_dtypes, dict) or set(saved_dtypes.values()) != {expected_dtype}:
+                            raise ValueError(f"Invalid GIF saliency precision at {state_path}")
+                if site_index == 6 and kind in {"phase", "gif", "mtn", "clip"}:
+                    if state.get("parameter_layout") != "last_dim_grouped" or state.get("num_heads") is not None:
+                        raise ValueError(f"Site 6 must use merged last-dim state: {state_path}")
 
     global_entry = manifest.get("global_states", {}).get("final_rmsnorm")
     if not isinstance(global_entry, dict):

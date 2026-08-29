@@ -53,7 +53,7 @@ experiments:
       expected_sites_per_layer: 10
       device_map: auto
     deployment:
-      temporal_implementation: sparse_llm_temporal_v5
+      temporal_implementation: sparse_llm_temporal_v6_post_repeat_kv_merged_sites
       temporal_layout: time_major_flattened_TB
       linear_bias_policy: first_timestep_once
       prefix_temporal_policy: uniform_kv_divide_by_T
@@ -215,7 +215,7 @@ experiments:
       expected_sites_per_layer: 10
       device_map: auto
     deployment:
-      temporal_implementation: sparse_llm_temporal_v5
+      temporal_implementation: sparse_llm_temporal_v6_post_repeat_kv_merged_sites
       temporal_layout: time_major_flattened_TB
       linear_bias_policy: first_timestep_once
       prefix_temporal_policy: uniform_kv_divide_by_T
@@ -379,7 +379,7 @@ experiments:
       expected_sites_per_layer: 10
       device_map: auto
     deployment:
-      temporal_implementation: sparse_llm_temporal_v5
+      temporal_implementation: sparse_llm_temporal_v6_post_repeat_kv_merged_sites
       temporal_layout: time_major_flattened_TB
       linear_bias_policy: first_timestep_once
       prefix_temporal_policy: uniform_kv_divide_by_T

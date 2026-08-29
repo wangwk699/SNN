@@ -13,20 +13,27 @@ from snn2.temporal_ops import SOFTMAX_SITE5_GIF_POLICY, STATISTICS_FORMAT_VERSIO
 
 
 def _statistics(site_index=1):
-    if site_index in {2, 3, 4, 6}:
+    if site_index in {2, 3, 4}:
         shape, layout, heads, width, channels = (1, 4), "attention_head", 1, 4, 4
     elif site_index == 5:
         shape, layout, heads, width, channels = (1,), "attention_softmax", 1, None, 1
     else:
         shape, layout, heads, width, channels = (4,), "last_dim", None, None, 4
-    saliency_shape = (0,) if site_index == 5 else shape
+    saliency_shape = shape
+    roles = (
+        ("q", "k", "v") if site_index == 1 else
+        (("gate", "up") if site_index == 7 else
+         (("default",) if site_index in {3, 4, 6, 10} else ()))
+    )
     return {
         "format_version": STATISTICS_FORMAT_VERSION, "site_index": site_index,
         "layout_kind": layout, "num_heads": heads, "channels_per_head": width,
         "channels": channels, "value_min": torch.full(shape, -1.0),
         "value_max": torch.full(shape, 1.0),
-        "saliency_row_count": torch.ones(saliency_shape, dtype=torch.long),
-        "saliency_sum": torch.arange(torch.tensor(saliency_shape).prod().item(), dtype=torch.float64).reshape(saliency_shape),
+        "saliency_row_count_by_role": {role: torch.ones(saliency_shape, dtype=torch.long) for role in roles},
+        "saliency_sum_by_role": {role: torch.zeros(saliency_shape, dtype=torch.float64 if site_index in {3, 4} else torch.float32) for role in roles},
+        "saliency_rule_by_role": {role: ("spikellm_matmul_fp64" if site_index in {3, 4} else "spikellm_linear_fp32") for role in roles},
+        "saliency_accumulator_dtype_by_role": {role: ("float64" if site_index in {3, 4} else "float32") for role in roles},
         "phase_ema_abs_max": torch.ones(shape), "phase_ema_updates": torch.ones(shape, dtype=torch.long),
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
         "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
@@ -182,6 +189,13 @@ def test_ann_training_calibration_is_identical_for_common_clip_switch(tmp_path):
         for key in left:
             if isinstance(left[key], torch.Tensor):
                 torch.testing.assert_close(left[key], right[key])
+            elif isinstance(left[key], dict):
+                assert left[key].keys() == right[key].keys()
+                for nested in left[key]:
+                    if isinstance(left[key][nested], torch.Tensor):
+                        torch.testing.assert_close(left[key][nested], right[key][nested])
+                    else:
+                        assert left[key][nested] == right[key][nested]
             elif isinstance(left[key], tuple):
                 for left_value, right_value in zip(left[key], right[key]):
                     torch.testing.assert_close(left_value, right_value)

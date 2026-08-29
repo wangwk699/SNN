@@ -20,7 +20,7 @@
 
 `vanilla` 和 `unaware` 不执行 activation replacement。
 
-`phase_aware` 与 `gif_aware` 在 ANN fine-tuning 阶段分别使用 Phase 或 GIF replacement。ANN-training calibration 为 9 个 clip-eligible sites 生成 `clip_state.pt`；Site 5 永久 no-Clip。`replacement.common_clip_enabled` 决定 ANN forward 是否在其余 sites 执行 Clip，SNN conversion/deployment 始终不执行 common Clip。
+`phase_aware` 与 `gif_aware` 在 ANN fine-tuning 阶段分别使用 Phase 或 GIF replacement。ANN-training calibration 为 9 个 clip-eligible sites 生成 `clip_state.pt`；Site 5 永久 no-Clip。`replacement.common_clip_enabled` 决定 ANN forward 是否执行 Clip，但 GIF identity Site 8/9 始终跳过 Clip；SNN conversion/deployment 始终不执行 common Clip。
 
 ## ANN Training / Final ANN Evaluation / SNN Evaluation Semantics
 
@@ -31,7 +31,7 @@
 | `vanilla` | identity | identity | temporal selected neuron |
 | `unaware` | identity | identity | temporal selected neuron |
 | `phase_aware` | `PhaseSurrogate.forward()` | 同一 ANN-training states 的 `PhaseSurrogate.forward()` | temporal selected neuron |
-| `gif_aware` | ordinary sites 使用 `StaticGIF`，Site 5 使用 SpikeLLM 16-bit sentinel identity `SoftmaxIdentityGIF` | 同一 ANN-training states 的 static GIF forward | temporal selected neuron |
+| `gif_aware` | Site 1/7 使用 role-aware `StaticGIF`，Site 2 使用 all-low 4-bit GIF，Site 5/8/9 为 identity，其余 salient sites 使用 `StaticGIF` | 同一 ANN-training states 的 static GIF forward | temporal selected neuron |
 
 Aware final ANN evaluation 同时镜像训练期 common Clip 开关；SNN evaluation 永远不执行 common Clip。`phase_aware`/`gif_aware` 的 site-local surrogate 会立即聚合回 static tensor，时间维度不跨层传播，因此仍是 ANN fine-tuning；只有 `deploy_phase/gif/mtn` 属于 full-temporal SNN。Base 与 rotated-pre-finetuning diagnostic 始终保持 identity semantics。
 
@@ -45,9 +45,9 @@ Aware ANN-training bundle 在 Site 1/2/3/4/6/7/8/9/10 保留 `clip_state.pt`，S
 
 Prefix K/V 在 ANN-aware replacement 与 SNN deployment runtime 中都经过 Site 3/4 neuron；calibration statistics 仍可排除 Prefix positions。Phase `surrogate_slope` 接受正有限值，phase-aware run 按 slope 和 `training.warmup_ratio` 联合隔离，但 shared calibration/state 与这两个训练参数无关；训练和 final ANN 评估从当前 YAML 显式注入 slope。Phase EMA 固定为 FP32、factor `0.99`。
 
-`calibration.group_size` 同时控制 ordinary Phase/GIF/MTN/Clip 和 final RMSNorm Phase。`G=-1` 对非 attention 表示整个最后维度一组，对 Site 2/3/4/6 表示每个 head 各自一组；`G>0` 只在每个 head 的 `D` 内分组，绝不跨 head。Site 2/6 使用 query heads，Site 3/4 保留 `repeat_kv()` 前的原生 KV heads，并把 repeat 后 saliency 累加回 KV heads。Site 5 忽略 G：Phase/MTN 为 per-head `[H,1]`，GIF 严格按 SpikeLLM `n_bits=16` sentinel 执行 identity，不做 GIF calibration、Q16 fake quantization 或 Site 5 temporal encoding，且永远 no-Clip。ordinary GIF 的 `high_qmax=30`、`per_step_qmax=15` 仅适用于其余九个 Site。完整 Softmax（含 Prefix columns）在 runtime 经过 Site 5；final RMSNorm Phase 也按 G 分组。
+`calibration.group_size` 同时控制 Phase/GIF/MTN/Clip 和 final RMSNorm Phase。Site 2/3/4 的参数保持 logical per-head grouping；Site 3/4 在 `repeat_kv()` 后以 query heads 统计并将 merged `[B,L,HD]` 输入 neuron。Site 6 在 PV head merge 后按普通 last-dim `HD` grouping，不再 per-head。Site 5 忽略 G 并保持 Softmax identity；Site 8/9 的 GIF 也严格 identity，Site 2 是 all-low 4-bit。salient GIF 保持 static `high_qmax=30`、`per_step_qmax=15`，并使用 SpikeLLM threshold tie 规则。
 
-所有 G-dependent calibration（包括 resolved config、logs、statistics、states、manifest）、aware ANN run 和 SNN conversion/evaluation 路径均包含且只包含一次 `calibration_group_size_<G>`，metadata 同时记录 G 与 `per_head_within_head_groups_v1` policy。aware ANN 将 G 写入学习率目录后缀（如 `lr5e-05_train_samples_2048_calibration_group_size_-1`），其 SNN 路径为该 run root 下的 `snn/<neuron>`；vanilla/unaware 为 `snn/calibration_group_size_<G>/<neuron>`。identity ANN checkpoint 可跨 G 共享，但改变 G 后仍必须重做其 post-finetuning calibration 与 SNN 工件；Rotation、数据和 Prefix 不随 G 复制。
+所有 G-dependent calibration（包括 resolved config、logs、statistics、states、manifest）、aware ANN run 和 SNN conversion/evaluation 路径均包含且只包含一次 `calibration_group_size_<G>`，metadata 同时记录 G 与 `site234_logical_per_head_site6_merged_last_dim_v2` policy。aware ANN 将 G 写入学习率目录后缀（如 `lr5e-05_train_samples_2048_calibration_group_size_-1`），其 SNN 路径为该 run root 下的 `snn/<neuron>`；vanilla/unaware 为 `snn/calibration_group_size_<G>/<neuron>`。identity ANN checkpoint 可跨 G 共享，但改变 G 后仍必须重做其 post-finetuning calibration 与 SNN 工件；Rotation、数据和 Prefix 不随 G 复制。
 
 ## 主要入口
 

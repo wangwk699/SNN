@@ -15,8 +15,10 @@ def test_gif_high_qparams_use_two_chunk_capacity():
         "channels_per_head": None, "channels": 4,
         "value_min": torch.full((4,), -1.0),
         "value_max": torch.full((4,), 1.0),
-        "saliency_row_count": torch.ones(4, dtype=torch.long),
-        "saliency_sum": torch.arange(4, dtype=torch.float64),
+        "saliency_row_count_by_role": {role: torch.ones(4, dtype=torch.long) for role in ("q", "k", "v")},
+        "saliency_sum_by_role": {role: torch.arange(4, dtype=torch.float32) for role in ("q", "k", "v")},
+        "saliency_rule_by_role": {role: "spikellm_linear_fp32" for role in ("q", "k", "v")},
+        "saliency_accumulator_dtype_by_role": {role: "float32" for role in ("q", "k", "v")},
         "phase_ema_abs_max": torch.ones(4),
         "phase_ema_updates": torch.ones(4, dtype=torch.long),
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
@@ -40,3 +42,17 @@ def test_gif_high_qparams_use_two_chunk_capacity():
     )
     torch.testing.assert_close(state["high_zero"], torch.tensor([15.0]))
     assert state["integer_decomposition"] == "two_unsigned_chunks_each_0_to_15_high_qmax_30"
+
+
+def test_spikellm_threshold_preserves_ties():
+    from snn2.calibration import spikellm_mask_low
+    score = torch.tensor([0.0, 1.0, 1.0, 2.0])
+    mask = spikellm_mask_low(score, 0.5)
+    assert torch.equal(mask, torch.tensor([True, True, True, False]))
+
+
+def test_site3_global_threshold_is_not_per_head():
+    from snn2.calibration import spikellm_mask_low
+    score = torch.tensor([[0.0, 1.0], [100.0, 101.0]])
+    mask = spikellm_mask_low(score, 0.5)
+    assert torch.equal(mask, torch.tensor([[True, True], [False, False]]))

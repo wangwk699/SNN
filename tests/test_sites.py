@@ -50,8 +50,8 @@ def test_site_topology_is_ten_sites():
     assert (SITE_NAMES[10], SITE_COORDINATES[10]) == ("post_mlp_product_r4", "R4")
     assert site_key(0, 9).endswith("site_09_post_mlp_up_proj")
     assert site_key(0, 10).endswith("site_10_post_mlp_product_r4")
-    assert GIF_IDENTITY_SITE_IDS == {5}
-    assert GIF_ACTIVE_SITE_IDS == {1, 2, 3, 4, 6, 7, 8, 9, 10}
+    assert GIF_IDENTITY_SITE_IDS == {5, 8, 9}
+    assert GIF_ACTIVE_SITE_IDS == {1, 2, 3, 4, 6, 7, 10}
 
 
 def test_mlp_places_new_up_site_before_product_and_preserves_identity_parity():
@@ -63,13 +63,12 @@ def test_mlp_places_new_up_site_before_product_and_preserves_identity_parity():
     assert controller.applied == [8, 9, 10]
 
 
-def test_mlp_collects_symmetric_product_saliency_for_gate_and_up_sites():
+def test_mlp_does_not_collect_product_saliency_for_gif_identity_sites():
     x = torch.tensor([[2.0]])
     controller = _Controller(mode="collect")
     _make_mlp_forward(controller, 0, None)(_MLP(), x)
-    expected = torch.tensor([[5.0]]) ** 2 * torch.tensor([[6.0]]) ** 2
-    torch.testing.assert_close(controller.saliency[8], expected)
-    torch.testing.assert_close(controller.saliency[9], expected)
+    assert 8 not in controller.saliency
+    assert 9 not in controller.saliency
 
 
 def test_mlp_applies_site_nine_before_r4_and_site_ten(monkeypatch):
@@ -160,3 +159,14 @@ def test_custom_attention_registers_eager_causal_mask():
     model_integration.register_attention_backend()
 
     assert ALL_MASK_ATTENTION_FUNCTIONS["snn2_eager"] is eager_mask
+
+
+def test_spikellm_linear_saliency_is_recomputed_in_fp32():
+    from snn2.model_integration import _linear_score
+    x = torch.tensor([[[1.25, -2.5, 0.75]]], dtype=torch.bfloat16)
+    weight = torch.tensor([[0.5, -1.0, 2.0], [1.5, 0.25, -0.5]], dtype=torch.bfloat16)
+    x32, w32 = x.float(), weight.float()
+    expected = ((x32 @ w32.T) @ w32) * x32
+    actual = _linear_score(x, weight)
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected)

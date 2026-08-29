@@ -63,7 +63,7 @@ def _provenance_fixture(tmp_path):
 
 
 def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
-    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "per_head_within_head_groups_v1", "statistics_format_version": 2}})
+    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": 3}})
     cfg, layout = _provenance_fixture(tmp_path)
     captured = capture_training_artifact_provenance(
         cfg, layout, prefix_ids=[7, 8]
@@ -86,7 +86,7 @@ def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
 def test_training_artifact_provenance_rejects_mid_training_changes(
     monkeypatch, tmp_path, relative_path, replacement
 ):
-    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "per_head_within_head_groups_v1", "statistics_format_version": 2}})
+    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": 3}})
     cfg, layout = _provenance_fixture(tmp_path)
     captured = capture_training_artifact_provenance(
         cfg, layout, prefix_ids=[7, 8]

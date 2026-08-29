@@ -61,7 +61,7 @@ def test_site5_statistics_are_per_head_and_allow_variable_qk():
     assert state["layout_kind"] == "attention_softmax"
     assert state["value_min"].shape == (2,)
     assert state["phase_ema_abs_max"].shape == (2,)
-    assert state["saliency_sum"].numel() == 0
+    assert state["saliency_sum_by_role"] == {}
     phase = build_phase_state(state, _cfg(3))
     assert phase["tau"].shape == (2, 1)
     assert phase["group_size"] == -1
@@ -80,3 +80,17 @@ def test_statistics_schema_and_manifest_are_versioned(tmp_path):
     assert state["phase_tau_accumulator_dtype"] == PHASE_TAU_ACCUMULATOR_DTYPE
     assert state["phase_tau_channel_policy"] == PHASE_TAU_CHANNEL_POLICY
     assert state["phase_tau_reduction_policy"] == PHASE_TAU_REDUCTION_POLICY
+
+
+def test_role_saliency_preserves_accumulator_precision():
+    store = StatisticsStore()
+    store.update(0, 1, torch.ones(1, 2, 4))
+    store.update_saliency(0, 1, torch.ones(1, 2, 4, dtype=torch.float32), role="q", source="spikellm_linear_fp32")
+    linear = next(iter(store.items.values()))
+    assert linear.saliency_sum_by_role["q"].dtype == torch.float32
+
+    store = StatisticsStore()
+    store.update(0, 3, torch.ones(1, 2, 3, 4))
+    store.update_saliency(0, 3, torch.ones(1, 2, 3, 4, dtype=torch.float64), source="spikellm_qk_k_fp64")
+    matmul = next(iter(store.items.values()))
+    assert matmul.saliency_sum_by_role["default"].dtype == torch.float64

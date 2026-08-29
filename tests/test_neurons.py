@@ -60,7 +60,7 @@ def _gif_state(kind="last_dim_grouped"):
     shape = (2,) if kind == "last_dim_grouped" else (2, 2)
     mask_shape = (4,) if kind == "last_dim_grouped" else (2, 4)
     return {
-        **_header("gif"), **layout, "gif_policy": "ordinary_grouped_qmax30",
+        **_header("gif"), **layout, "gif_policy": "ordinary_salient_static_qmax30",
         "base_bits": 4, "add_bits": 1, "low_qmin": 0, "low_qmax": 15,
         "high_qmin": 0, "high_qmax": 30, "temporal_steps": 2,
         "per_step_qmin": 0, "per_step_qmax": 15,
@@ -119,7 +119,7 @@ def test_ordinary_gif_grouped_forward_and_temporal(kind, shape):
 def test_gif_mask_shape_is_strict_without_padding_or_truncation():
     state = _gif_state()
     state["mask_low"] = torch.zeros(3, dtype=torch.bool)
-    with pytest.raises(ValueError, match="mask_low shape"):
+    with pytest.raises(ValueError, match="masks must have shape"):
         StaticGIF(state)
 
 
@@ -183,3 +183,55 @@ def test_legacy_state_versions_and_metadata_are_rejected():
     state["surrogate_slope"] = 1.0
     with pytest.raises(ValueError, match="surrogate_slope"):
         PhaseSurrogate(state)
+
+
+def test_attention_head_grouped_parameters_support_merged_runtime():
+    module = PhaseSurrogate(_phase_state("attention_head_grouped"))
+    x = torch.randn(2, 3, 8)
+    assert module(x).shape == x.shape
+
+
+def test_multi_role_gif_selects_role_and_fails_fast():
+    state = _gif_state()
+    state.pop("mask_low")
+    state.update({
+        "mask_policy": "multi_role",
+        "mask_roles": ["q", "k", "v"],
+        "mask_low_by_role": {
+            "q": torch.ones(4, dtype=torch.bool),
+            "k": torch.zeros(4, dtype=torch.bool),
+            "v": torch.tensor([True, False, True, False]),
+        },
+    })
+    module = StaticGIF(state)
+    x = torch.tensor([[[0.17, 0.17, 0.17, 0.17]]])
+    assert not torch.equal(module(x, role="q"), module(x, role="k"))
+    with pytest.raises(ValueError, match="role must be"):
+        module(x)
+    with pytest.raises(ValueError, match="role must be"):
+        module(x, role="invalid")
+
+
+def test_all_low_and_identity_gif_temporal_policies():
+    all_low = {
+        **_header("gif"), **_layout(),
+        "gif_policy": "all_low_static_qmax15",
+        "low_scale": torch.full((2,), 0.1),
+        "low_zero": torch.zeros(2),
+    }
+    module = gif_module_from_state(all_low)
+    incoming = torch.randn(2, 1, 3, 4)
+    temporal = module.temporal(incoming)
+    assert torch.count_nonzero(temporal[1]) == 0
+    torch.testing.assert_close(temporal.sum(0), module(incoming.sum(0)))
+
+    identity = {
+        **_header("gif"), "gif_policy": "identity",
+        "quantization_applied": False, "temporal_steps": 2,
+    }
+    module = gif_module_from_state(identity)
+    x = torch.randn(2, 1, 3, 4)
+    assert module.temporal(x) is x
+    frame = x[0]
+    assert module(frame) is frame
+    assert torch.equal(module(frame), frame)

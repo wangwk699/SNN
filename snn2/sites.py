@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-SITE_TOPOLOGY_VERSION = 2
+SITE_TOPOLOGY_VERSION = 3
 SITE_NAMES = {
     1: "post_input_rmsnorm", 2: "q_post_rope_r3", 3: "k_post_rope_r3",
     4: "v_projection_r2", 5: "post_spiking_softmax", 6: "post_attention_value_dot_r2",
@@ -16,13 +16,15 @@ SITE_COORDINATES = {
 }
 SITE_IDS = tuple(sorted(SITE_NAMES))
 SITE_COUNT = len(SITE_IDS)
-ATTENTION_HEAD_GROUPED_SITE_IDS = frozenset({2, 3, 4, 6})
+ATTENTION_HEAD_GROUPED_SITE_IDS = frozenset({2, 3, 4})
+PER_HEAD_GROUPED_SITE_IDS = ATTENTION_HEAD_GROUPED_SITE_IDS
 SOFTMAX_SITE_ID = 5
 CLIP_ELIGIBLE_SITE_IDS = frozenset({1, 2, 3, 4, 6, 7, 8, 9, 10})
-GIF_IDENTITY_SITE_IDS = frozenset({SOFTMAX_SITE_ID})
-GIF_ACTIVE_SITE_IDS = frozenset(
-    site for site in SITE_IDS if site not in GIF_IDENTITY_SITE_IDS
-)
+GIF_IDENTITY_SITE_IDS = frozenset({5, 8, 9})
+GIF_ALL_LOW_SITE_IDS = frozenset({2})
+GIF_SALIENT_SITE_IDS = frozenset({1, 3, 4, 6, 7, 10})
+GIF_MULTI_MASK_ROLES = {1: ("q", "k", "v"), 7: ("gate", "up")}
+GIF_ACTIVE_SITE_IDS = GIF_ALL_LOW_SITE_IDS | GIF_SALIENT_SITE_IDS
 
 
 def is_attention_head_grouped_site(site_index: int) -> bool:
@@ -35,6 +37,13 @@ def is_softmax_site(site_index: int) -> bool:
 
 def site_supports_clip(site_index: int) -> bool:
     return int(site_index) in CLIP_ELIGIBLE_SITE_IDS
+
+
+def site_supports_clip_for_mode(site_index: int, mode: str) -> bool:
+    site_index = int(site_index)
+    return site_supports_clip(site_index) and not (
+        mode in {"gif", "deploy_gif"} and site_index in GIF_IDENTITY_SITE_IDS
+    )
 
 
 def site_key(layer_index: int, site_index: int) -> str:
@@ -53,6 +62,10 @@ def topology_metadata() -> dict[str, Any]:
         "site_count": SITE_COUNT,
         "site_names": {str(index): name for index, name in SITE_NAMES.items()},
         "site_coordinates": {str(index): value for index, value in SITE_COORDINATES.items()},
+        "gif_identity_site_ids": sorted(GIF_IDENTITY_SITE_IDS),
+        "gif_all_low_site_ids": sorted(GIF_ALL_LOW_SITE_IDS),
+        "gif_salient_site_ids": sorted(GIF_SALIENT_SITE_IDS),
+        "gif_multi_mask_roles": {str(k): list(v) for k, v in GIF_MULTI_MASK_ROLES.items()},
     }
 
 

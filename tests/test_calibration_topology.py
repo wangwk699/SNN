@@ -16,20 +16,27 @@ from snn2.temporal_ops import STATISTICS_FORMAT_VERSION
 _REQUIRED = ("statistics.pt",)
 
 def _statistics(site_index=1):
-    if site_index in {2, 3, 4, 6}:
+    if site_index in {2, 3, 4}:
         shape, layout, heads, width, channels = (1, 4), "attention_head", 1, 4, 4
     elif site_index == 5:
         shape, layout, heads, width, channels = (1,), "attention_softmax", 1, None, 1
     else:
         shape, layout, heads, width, channels = (4,), "last_dim", None, None, 4
-    saliency_shape = (0,) if site_index == 5 else shape
+    saliency_shape = shape
+    roles = (
+        ("q", "k", "v") if site_index == 1 else
+        (("gate", "up") if site_index == 7 else
+         (("default",) if site_index in {3, 4, 6, 10} else ()))
+    )
     return {
         "format_version": STATISTICS_FORMAT_VERSION, "site_index": site_index,
         "layout_kind": layout, "num_heads": heads, "channels_per_head": width,
         "channels": channels, "value_min": torch.full(shape, -1.0),
         "value_max": torch.full(shape, 1.0),
-        "saliency_row_count": torch.ones(saliency_shape, dtype=torch.long),
-        "saliency_sum": torch.zeros(saliency_shape, dtype=torch.float64),
+        "saliency_row_count_by_role": {role: torch.ones(saliency_shape, dtype=torch.long) for role in roles},
+        "saliency_sum_by_role": {role: torch.zeros(saliency_shape, dtype=torch.float64 if site_index in {3, 4} else torch.float32) for role in roles},
+        "saliency_rule_by_role": {role: ("spikellm_matmul_fp64" if site_index in {3, 4} else "spikellm_linear_fp32") for role in roles},
+        "saliency_accumulator_dtype_by_role": {role: ("float64" if site_index in {3, 4} else "float32") for role in roles},
         "phase_ema_abs_max": torch.ones(shape), "phase_ema_updates": torch.ones(shape, dtype=torch.long),
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
         "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,

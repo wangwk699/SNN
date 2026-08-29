@@ -30,20 +30,27 @@ def _header(kind):
 
 
 def _statistics(site_index=1):
-    if site_index in {2, 3, 4, 6}:
+    if site_index in {2, 3, 4}:
         shape, layout, heads, width, channels = (1, 3), "attention_head", 1, 3, 3
     elif site_index == 5:
         shape, layout, heads, width, channels = (1,), "attention_softmax", 1, None, 1
     else:
         shape, layout, heads, width, channels = (3,), "last_dim", None, None, 3
-    saliency_shape = (0,) if site_index == 5 else shape
+    saliency_shape = shape
+    roles = (
+        ("q", "k", "v") if site_index == 1 else
+        (("gate", "up") if site_index == 7 else
+         (("default",) if site_index in {3, 4, 6, 10} else ()))
+    )
     return {
         "format_version": STATISTICS_FORMAT_VERSION, "site_index": site_index,
         "layout_kind": layout, "num_heads": heads, "channels_per_head": width,
         "channels": channels, "value_min": torch.full(shape, -1.0),
         "value_max": torch.full(shape, 1.0),
-        "saliency_row_count": torch.ones(saliency_shape, dtype=torch.long),
-        "saliency_sum": torch.zeros(saliency_shape, dtype=torch.float64),
+        "saliency_row_count_by_role": {role: torch.ones(saliency_shape, dtype=torch.long) for role in roles},
+        "saliency_sum_by_role": {role: torch.zeros(saliency_shape, dtype=torch.float64 if site_index in {3, 4} else torch.float32) for role in roles},
+        "saliency_rule_by_role": {role: ("spikellm_matmul_fp64" if site_index in {3, 4} else "spikellm_linear_fp32") for role in roles},
+        "saliency_accumulator_dtype_by_role": {role: ("float64" if site_index in {3, 4} else "float32") for role in roles},
         "phase_ema_abs_max": torch.ones(shape), "phase_ema_updates": torch.ones(shape, dtype=torch.long),
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
         "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
@@ -134,7 +141,7 @@ def _gif_state():
         "per_step_qmin": 0,
         "per_step_qmax": 15,
         "integer_decomposition": GIF_INTEGER_DECOMPOSITION,
-        "gif_policy": "ordinary_grouped_qmax30",
+        "gif_policy": "ordinary_salient_static_qmax30",
         "parameter_layout": "last_dim_grouped", "configured_group_size": -1,
         "group_size": 3, "num_heads": None, "channels_per_head": 3,
         "groups_per_head": 1,
@@ -192,7 +199,10 @@ def test_deployment_loads_only_selected_neuron_state(
     assert controller.set_deployment(
         neuron, clip_bundle_policy="allow_eligible"
     ) == expected_steps
-    output = controller.apply(0, 1, torch.zeros(expected_steps, 1, 3))
+    output = controller.apply(
+        0, 1, torch.zeros(expected_steps, 1, 3),
+        **({"gif_role": "q"} if neuron == "gif" else {}),
+    )
 
     assert output.shape == (expected_steps, 1, 3)
     assert set(controller._modules[site_key(0, 1)]) == {neuron}
@@ -392,3 +402,17 @@ def test_final_rmsnorm_phase_is_phase_only_and_not_part_of_sites(tmp_path):
         assert controller.apply_final_norm_phase(value) is value
         assert controller._final_norm_phase is None
     assert not (tmp_path / "_global" / "final_rmsnorm" / "clip_state.pt").exists()
+
+
+def test_gif_identity_sites_skip_clip_while_phase_uses_it(tmp_path):
+    _write_bundle(tmp_path, include_clip=True)
+    x = torch.full((1, 2, 3), 100.0)
+    gif = SiteController(mode="gif", site_root=tmp_path, common_clip_enabled=True)
+    assert torch.equal(gif.apply(0, 8, x), x)
+    assert torch.equal(gif.apply(0, 9, x), x)
+
+    phase = SiteController(
+        mode="phase", site_root=tmp_path, common_clip_enabled=True,
+        phase_surrogate_slope=1.0,
+    )
+    assert not torch.equal(phase.apply(0, 8, x), x)

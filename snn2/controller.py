@@ -6,7 +6,7 @@ from typing import Any
 import torch
 
 from .neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, gif_module_from_state
-from .sites import site_key, site_supports_clip
+from .sites import site_key, site_supports_clip, site_supports_clip_for_mode
 from .stats import StatisticsStore
 from .state_validation import ClipBundlePolicy, validate_site_state_bundle
 from .temporal_ops import from_temporal, to_temporal
@@ -57,7 +57,7 @@ class SiteController:
         if self.site_root is None:
             raise RuntimeError("A calibration site_root is required for replacement/deployment")
 
-        clip_enabled = self.common_clip_enabled and site_supports_clip(site_index)
+        clip_enabled = self.common_clip_enabled and site_supports_clip_for_mode(site_index, self.mode)
         if self.mode == "phase":
             required = ("phase", "clip") if clip_enabled else ("phase",)
         elif self.mode == "gif":
@@ -109,9 +109,14 @@ class SiteController:
         self._bundle_validation = validation
         return self.temporal_steps
 
-    def record_saliency(self, layer_index: int, site_index: int, score: torch.Tensor) -> None:
+    def record_saliency(
+        self, layer_index: int, site_index: int, score: torch.Tensor,
+        *, role: str = "default", source: str = "unspecified"
+    ) -> None:
         if self.mode == "collect":
-            self.statistics.update_saliency(layer_index, site_index, score)
+            self.statistics.update_saliency(
+                layer_index, site_index, score, role=role, source=source
+            )
 
     def record_activation(
         self,
@@ -128,9 +133,13 @@ class SiteController:
         layer_index: int,
         site_index: int,
         x: torch.Tensor,
+        *,
+        gif_role: str | None = None,
     ) -> torch.Tensor:
         recorder = self.regression_recorder
         checkpoint = f"layer_{layer_index:03d}/site_{site_index:02d}"
+        if gif_role is not None:
+            checkpoint += f"/gif_{gif_role}"
         if recorder is not None:
             self.record_regression(f"{checkpoint}/pre", x)
         if self.mode in {"identity", "none"}:
@@ -149,13 +158,13 @@ class SiteController:
                 module.to(x.device)
         if self.mode == "phase":
             output = modules["phase"](x)
-            output = modules["clip"](output) if self.common_clip_enabled and site_supports_clip(site_index) else output
+            output = modules["clip"](output) if self.common_clip_enabled and site_supports_clip_for_mode(site_index, self.mode) else output
             if recorder is not None:
                 self.record_regression(f"{checkpoint}/post", output)
             return output
         if self.mode == "gif":
-            output = modules["gif"](x)
-            output = modules["clip"](output) if self.common_clip_enabled and site_supports_clip(site_index) else output
+            output = modules["gif"](x, role=gif_role)
+            output = modules["clip"](output) if self.common_clip_enabled and site_supports_clip_for_mode(site_index, self.mode) else output
             if recorder is not None:
                 self.record_regression(f"{checkpoint}/post", output)
             return output
@@ -164,7 +173,10 @@ class SiteController:
                 raise RuntimeError("Call set_deployment before a temporal forward")
             temporal = to_temporal(x, self.temporal_steps)
             neuron = self.mode.removeprefix("deploy_")
-            output = modules[neuron].temporal(temporal)
+            output = (
+                modules[neuron].temporal(temporal, role=gif_role)
+                if neuron == "gif" else modules[neuron].temporal(temporal)
+            )
             if output.shape != temporal.shape:
                 raise ValueError(
                     f"{neuron} temporal output shape {output.shape} != input {temporal.shape}"

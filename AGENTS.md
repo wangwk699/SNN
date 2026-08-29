@@ -2,7 +2,7 @@
 
 1. `calibration.group_size` 必须为 `-1` 或正整数，并同时控制普通 Site 与 final RMSNorm 的 Phase/GIF/MTN/Clip grouping；改变 G 后必须重新 calibration，禁止复用另一 G 的 statistics/state/manifest/conversion/SNN 工件。
 
-2. Site 2/3/4/6 必须保留原生 `[B,H,L,D]` layout，只允许在每个 head 的 `D` 内 grouping，禁止 flatten heads 或重新引入跨 head global τ；其中 Site 2/6 使用 query heads，GQA/MQA Site 3/4 使用 `repeat_kv()` 前的原生 KV heads，repeat 后 saliency 必须按 query groups 求和回 KV heads。
+2. Site 2 保留原生 `[B,H,L,D]` layout，并只允许在每个 head 的 `D` 内 grouping；Site 3/4 必须在 `repeat_kv()` 后以 query heads 为逻辑 per-head 参数坐标，实际 replacement tensor 为 merged `[B,L,HD]`，saliency 不得折叠回原生 KV heads；Site 6 必须在 attention head merge 后以普通 `[B,L,HD]` last-dim layout replacement，不得保留 per-head 参数。
 
 3. Site 5 忽略全局 G：Phase `tau` 与 MTN `base_scale` 固定为 `[H,1]`；GIF 必须严格遵循 SpikeLLM `n_bits=16` sentinel 的真实行为，static 与 temporal 均 exact identity，不得执行 Q16、round/clamp、scale/zero-point calibration、qmax30/[0,15] chunk 或 cumulative-difference quantization；Site 5 永远不得生成、加载或执行 Clip。
 

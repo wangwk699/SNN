@@ -90,7 +90,7 @@ def test_temporal_attention_sum_matches_ann_with_gqa_mask_and_batch(with_prefix)
         torch.matmul(summed_query, summed_key.transpose(-2, -1)) * dim**-0.5 + mask,
         dim=-1,
     )
-    reference_output = torch.matmul(reference_weights, summed_value).transpose(1, 2)
+    reference_output = torch.matmul(reference_weights, summed_value).transpose(1, 2).contiguous().reshape(batch, query_len, heads * dim)
     torch.testing.assert_close(
         to_temporal(output, steps).sum(0), reference_output, rtol=1e-5, atol=1e-5
     )
@@ -144,17 +144,17 @@ def test_collect_attention_excludes_prefix_from_site_3_and_4_statistics():
     value_stats = controller.statistics.items[site_key(0, 4)]
     assert key_stats.row_count.item() == 2
     assert value_stats.row_count.item() == 2
-    assert key_stats.channels == 8
-    assert value_stats.channels == 8
-    assert key_stats.num_heads == 2
+    assert key_stats.channels == 16
+    assert value_stats.channels == 16
+    assert key_stats.num_heads == 4
     assert key_stats.channels_per_head == 4
-    expected_key = key[..., 3:, :].abs().amax(dim=(0, 2))
-    expected_value = value[..., 3:, :].abs().amax(dim=(0, 2))
+    expected_key = repeat_kv(key, 2)[..., 3:, :].abs().amax(dim=(0, 2))
+    expected_value = repeat_kv(value, 2)[..., 3:, :].abs().amax(dim=(0, 2))
     torch.testing.assert_close(key_stats.phase_ema_abs_max, expected_key)
     torch.testing.assert_close(value_stats.phase_ema_abs_max, expected_value)
 
 
-def test_collect_attention_without_prefix_preserves_native_kv_heads():
+def test_collect_attention_without_prefix_uses_repeated_query_heads():
     from snn2.controller import SiteController
 
     controller = SiteController(mode="collect")
@@ -171,22 +171,26 @@ def test_collect_attention_without_prefix_preserves_native_kv_heads():
     snn2_eager_attention_forward(module, query, key, value, None, dropout=0.0)
     for site in (3, 4):
         stats = controller.statistics.items[site_key(0, site)]
-        assert stats.channels == 8
-        assert stats.num_heads == 2
+        assert stats.channels == 16
+        assert stats.num_heads == 4
         assert stats.channels_per_head == 4
-        assert stats.phase_ema_abs_max.shape == (2, 4)
-        assert stats.saliency_sum.shape == (2, 4)
+        assert stats.phase_ema_abs_max.shape == (4, 4)
+        assert stats.saliency_sum_by_role["default"].shape == (4, 4)
     repeated_key = repeat_kv(key, 2)
     repeated_value = repeat_kv(value, 2)
-    qk = torch.matmul(query, repeated_key.transpose(2, 3))
-    key_score = repeated_key * torch.matmul(qk.transpose(2, 3), query)
-    expected_key = key_score.reshape(1, 2, 2, 2, 4).sum(dim=2).sum(dim=(0, 2))
-    weights = torch.softmax(qk * 0.5, dim=-1)
-    output = torch.matmul(weights, repeated_value)
-    value_score = repeated_value * torch.matmul(weights.transpose(2, 3), output)
-    expected_value = value_score.reshape(1, 2, 2, 2, 4).sum(dim=2).sum(dim=(0, 2))
-    torch.testing.assert_close(controller.statistics.items[site_key(0, 3)].saliency_sum, expected_key.double())
-    torch.testing.assert_close(controller.statistics.items[site_key(0, 4)].saliency_sum, expected_value.double())
+    q64, k64 = query.double(), repeated_key.double()
+    qk64 = torch.matmul(q64, k64.transpose(2, 3))
+    expected_key = (k64 * torch.matmul(qk64.transpose(2, 3), q64)).sum(dim=(0, 2))
+    weights = torch.softmax(torch.matmul(query, repeated_key.transpose(2, 3)) * 0.5, dim=-1)
+    p64, v64 = weights.double(), repeated_value.double()
+    pv64 = torch.matmul(p64, v64)
+    expected_value = (v64 * torch.matmul(p64.transpose(2, 3), pv64)).sum(dim=(0, 2))
+    key_stats = controller.statistics.items[site_key(0, 3)]
+    value_stats = controller.statistics.items[site_key(0, 4)]
+    torch.testing.assert_close(key_stats.saliency_sum_by_role["default"], expected_key)
+    torch.testing.assert_close(value_stats.saliency_sum_by_role["default"], expected_value)
+    assert key_stats.saliency_sum_by_role["default"].dtype == torch.float64
+    assert value_stats.saliency_sum_by_role["default"].dtype == torch.float64
 
 
 class _RMSNorm(torch.nn.Module):

@@ -62,8 +62,9 @@ class SiteStatistics:
     abs_max: torch.Tensor
     sum_abs: torch.Tensor
     sum_sq: torch.Tensor
-    saliency_sum: torch.Tensor
-    saliency_row_count: torch.Tensor
+    saliency_sum_by_role: dict[str, torch.Tensor]
+    saliency_row_count_by_role: dict[str, torch.Tensor]
+    saliency_rule_by_role: dict[str, str]
     row_count: torch.Tensor
     tensor_count: torch.Tensor
     phase_ema_abs_max: torch.Tensor
@@ -90,15 +91,18 @@ class SiteStatistics:
             abs_max=torch.zeros(shape, dtype=torch.float64),
             sum_abs=torch.zeros(shape, dtype=torch.float64),
             sum_sq=torch.zeros(shape, dtype=torch.float64),
-            saliency_sum=torch.zeros(saliency_shape, dtype=torch.float64),
-            saliency_row_count=torch.zeros(saliency_shape, dtype=torch.int64),
+            saliency_sum_by_role={},
+            saliency_row_count_by_role={},
+            saliency_rule_by_role={},
             row_count=torch.zeros((), dtype=torch.int64),
             tensor_count=torch.zeros((), dtype=torch.int64),
             phase_ema_abs_max=torch.zeros(shape, dtype=torch.float32),
             phase_ema_updates=torch.zeros(shape, dtype=torch.int64),
         )
 
-    def _reduced(self, activation: torch.Tensor) -> tuple[torch.Tensor, int]:
+    def _reduced(
+        self, activation: torch.Tensor, *, preserve_dtype: bool = False
+    ) -> tuple[torch.Tensor, int]:
         heads, width, channels = _shape_metadata(self.layout_kind, activation)
         if (heads, width, channels) != (self.num_heads, self.channels_per_head, self.channels):
             raise ValueError(
@@ -106,7 +110,7 @@ class SiteStatistics:
                 f"expected heads/width/channels={(self.num_heads, self.channels_per_head, self.channels)}, "
                 f"got={(heads, width, channels)}"
             )
-        work = activation.detach().float()
+        work = activation.detach() if preserve_dtype else activation.detach().float()
         if self.layout_kind == "last_dim":
             values = work.reshape(-1, work.shape[-1])
             return values, int(values.shape[0])
@@ -143,12 +147,30 @@ class SiteStatistics:
         self.tensor_count.add_(1)
 
     @torch.no_grad()
-    def update_saliency(self, score: torch.Tensor) -> None:
+    def update_saliency(
+        self, score: torch.Tensor, *, role: str = "default", source: str
+    ) -> None:
         if self.layout_kind == "attention_softmax":
             raise ValueError("Softmax Site 5 does not collect GIF saliency")
-        values, rows = self._reduced(score)
-        self.saliency_sum.add_(values.sum(dim=0).double().cpu())
-        self.saliency_row_count.add_(rows)
+        if score.dtype not in {torch.float32, torch.float64}:
+            raise ValueError("Saliency score must be computed in float32 or float64")
+        values, rows = self._reduced(score, preserve_dtype=True)
+        role = str(role)
+        if role in self.saliency_sum_by_role:
+            if self.saliency_sum_by_role[role].dtype != score.dtype:
+                raise ValueError("Saliency accumulator dtype changed")
+            if self.saliency_rule_by_role[role] != source:
+                raise ValueError("Saliency source changed")
+        else:
+            self.saliency_sum_by_role[role] = torch.zeros(
+                values.shape[1:], dtype=score.dtype
+            )
+            self.saliency_row_count_by_role[role] = torch.zeros(
+                values.shape[1:], dtype=torch.int64
+            )
+            self.saliency_rule_by_role[role] = source
+        self.saliency_sum_by_role[role].add_(values.sum(dim=0).cpu())
+        self.saliency_row_count_by_role[role].add_(rows)
 
     def distributed_reduce(self) -> None:
         if not torch.distributed.is_available() or not torch.distributed.is_initialized():
@@ -171,8 +193,13 @@ class SiteStatistics:
             "abs_max": self.abs_max,
             "sum_abs": self.sum_abs,
             "sum_sq": self.sum_sq,
-            "saliency_sum": self.saliency_sum,
-            "saliency_row_count": self.saliency_row_count,
+            "saliency_sum_by_role": self.saliency_sum_by_role,
+            "saliency_row_count_by_role": self.saliency_row_count_by_role,
+            "saliency_rule_by_role": self.saliency_rule_by_role,
+            "saliency_accumulator_dtype_by_role": {
+                role: str(value.dtype).removeprefix("torch.")
+                for role, value in self.saliency_sum_by_role.items()
+            },
             "row_count": self.row_count,
             "tensor_count": self.tensor_count,
             "phase_ema_abs_max": self.phase_ema_abs_max,
@@ -186,7 +213,10 @@ class SiteStatistics:
 
     def summary(self) -> dict[str, Any]:
         count = max(int(self.row_count.item()), 1)
-        observed = self.saliency_row_count > 0
+        observed = {
+            role: counts > 0
+            for role, counts in self.saliency_row_count_by_role.items()
+        }
         return {
             "format_version": STATISTICS_FORMAT_VERSION,
             "site_index": self.site_index,
@@ -202,7 +232,15 @@ class SiteStatistics:
             "global_abs_max": float(self.abs_max.max()),
             "mean_abs": float((self.sum_abs / count).mean()),
             "mean_square": float((self.sum_sq / count).mean()),
-            "saliency_observed_channels": int(observed.sum()),
+            "saliency_roles": sorted(observed),
+            "saliency_observed_channels_by_role": {
+                role: int(value.sum()) for role, value in observed.items()
+            },
+            "saliency_accumulator_dtype_by_role": {
+                role: str(value.dtype).removeprefix("torch.")
+                for role, value in self.saliency_sum_by_role.items()
+            },
+            "saliency_rule_by_role": dict(self.saliency_rule_by_role),
             "phase_tau_calibration": PHASE_TAU_CALIBRATION,
             "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
             "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
@@ -224,11 +262,14 @@ class StatisticsStore:
             self.items[key] = SiteStatistics.create(site_index, activation)
         self.items[key].update(activation)
 
-    def update_saliency(self, layer_index: int, site_index: int, score: torch.Tensor) -> None:
+    def update_saliency(
+        self, layer_index: int, site_index: int, score: torch.Tensor,
+        *, role: str = "default", source: str
+    ) -> None:
         key = site_key(layer_index, site_index)
         if key not in self.items:
             raise RuntimeError(f"Activation statistics must be recorded before saliency: {key}")
-        self.items[key].update_saliency(score)
+        self.items[key].update_saliency(score, role=role, source=source)
 
     def update_global(self, name: str, activation: torch.Tensor) -> None:
         if name not in self.global_items:
@@ -239,7 +280,7 @@ class StatisticsStore:
         root = Path(root)
         manifest: dict[str, Any] = {
             "format_version": STATISTICS_FORMAT_VERSION,
-            "statistics_layout_policy": "native_site_layout_v2",
+            "statistics_layout_policy": "post_repeat_kv_merged_site6_v3",
             **topology_metadata(),
             "sites": {},
         }

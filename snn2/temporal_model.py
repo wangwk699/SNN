@@ -40,12 +40,21 @@ def deployment_attention_forward(
         raise RuntimeError("Temporal deployment attention requires model.eval() and dropout=0")
 
     query = controller.apply(layer_index, 2, query)
-    key = controller.apply(layer_index, 3, key)
-    value = controller.apply(layer_index, 4, value)
 
     groups = int(getattr(module, "num_key_value_groups", 1))
     key = repeat_kv(key, groups)
     value = repeat_kv(value, groups)
+    num_heads, head_dim = int(key.shape[1]), int(key.shape[-1])
+    key = key.transpose(1, 2).contiguous().reshape(
+        key.shape[0], key.shape[2], num_heads * head_dim
+    )
+    value = value.transpose(1, 2).contiguous().reshape(
+        value.shape[0], value.shape[2], num_heads * head_dim
+    )
+    key = controller.apply(layer_index, 3, key)
+    value = controller.apply(layer_index, 4, value)
+    key = key.reshape(key.shape[0], key.shape[1], num_heads, head_dim).transpose(1, 2).contiguous()
+    value = value.reshape(value.shape[0], value.shape[1], num_heads, head_dim).transpose(1, 2).contiguous()
     temporal_query = to_temporal(query, steps)
     temporal_key_t = to_temporal(key.transpose(2, 3), steps)
     qk_increment = temporal_seq_matmul(temporal_query, temporal_key_t)
@@ -78,9 +87,16 @@ def deployment_attention_forward(
     output_increment = temporal_seq_matmul(
         weight_increment, to_temporal(value, steps)
     )
-    flat_output = from_temporal(output_increment)
+    flat_output_heads = from_temporal(output_increment)
     _record_regression(
-        controller, f"layer_{layer_index:03d}/attn/pv_before_site6", flat_output
+        controller, f"layer_{layer_index:03d}/attn/pv_head_output_before_merge", flat_output_heads
+    )
+    flat_output = flat_output_heads.transpose(1, 2).contiguous().reshape(
+        flat_output_heads.shape[0], flat_output_heads.shape[2],
+        flat_output_heads.shape[1] * flat_output_heads.shape[3],
+    )
+    _record_regression(
+        controller, f"layer_{layer_index:03d}/attn/pv_merged_before_site6", flat_output
     )
     output = controller.apply(layer_index, 6, flat_output)
-    return output.transpose(1, 2).contiguous(), flat_weights
+    return output, flat_weights

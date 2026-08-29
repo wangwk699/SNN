@@ -15,8 +15,8 @@ from .phase_statistics import (
 )
 
 
-TEMPORAL_IMPLEMENTATION_VERSION = 5
-TEMPORAL_IMPLEMENTATION = "sparse_llm_temporal_v5"
+TEMPORAL_IMPLEMENTATION_VERSION = 6
+TEMPORAL_IMPLEMENTATION = "sparse_llm_temporal_v6_post_repeat_kv_merged_sites"
 TEMPORAL_LAYOUT = "time_major_flattened_TB"
 TEMPORAL_LINEAR_BIAS_POLICY = "first_timestep_once"
 PREFIX_TEMPORAL_POLICY = "uniform_kv_divide_by_T"
@@ -24,15 +24,18 @@ PREFIX_TEMPORAL_POLICY = "uniform_kv_divide_by_T"
 EMBEDDING_TEMPORAL_POLICY = "uniform_embedding_divide_by_T"
 SOFTMAX_PREFIX_NEURON_POLICY = "full_softmax_tensor_including_prefix"
 PHASE_FINAL_NORM_POLICY = "phase_neuron_after_final_temporal_rmsnorm"
-SITE_STATE_FORMAT_VERSION = 7
-STATISTICS_FORMAT_VERSION = 2
-CALIBRATION_MANIFEST_FORMAT_VERSION = 8
-CONVERSION_METADATA_FORMAT_VERSION = 9
+SITE_STATE_FORMAT_VERSION = 8
+STATISTICS_FORMAT_VERSION = 3
+CALIBRATION_MANIFEST_FORMAT_VERSION = 9
+CONVERSION_METADATA_FORMAT_VERSION = 10
 
-CALIBRATION_GROUPING_POLICY = "per_head_within_head_groups_v1"
+CALIBRATION_GROUPING_POLICY = "site234_logical_per_head_site6_merged_last_dim_v2"
 SOFTMAX_SITE5_GROUPING_POLICY = "per_head_full_variable_key_axis"
 SOFTMAX_SITE5_GIF_POLICY = "spikellm_nbits16_sentinel_identity"
 SOFTMAX_SITE5_CLIP_POLICY = "disabled"
+GIF_SALIENT_POLICY = "ordinary_salient_static_qmax30"
+GIF_ALL_LOW_POLICY = "all_low_static_qmax15"
+GIF_IDENTITY_POLICY = "identity"
 
 GIF_BASE_BITS = 4
 GIF_ADD_BITS = 1

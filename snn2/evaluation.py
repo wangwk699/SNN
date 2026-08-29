@@ -15,7 +15,7 @@ from .config import (
 from .controller import SiteController
 from .model_integration import temporal_forward
 from .prefix_cache import install_prefix_kv_forward
-from .sites import GIF_ACTIVE_SITE_IDS, SITE_COUNT
+from .sites import GIF_ACTIVE_SITE_IDS, GIF_MULTI_MASK_ROLES, SITE_COUNT
 from .state_validation import validate_site_state_bundle
 from .temporal_ops import (
     CALIBRATION_GROUPING_POLICY,
@@ -52,7 +52,11 @@ def activation_neuron_operators_per_temporal_forward(
     if neuron == "phase":
         return base + 1
     if neuron == "gif":
-        return int(num_hidden_layers) * len(GIF_ACTIVE_SITE_IDS)
+        per_layer = sum(
+            len(GIF_MULTI_MASK_ROLES.get(site, ("default",)))
+            for site in GIF_ACTIVE_SITE_IDS
+        )
+        return int(num_hidden_layers) * per_layer
     if neuron == "mtn":
         return base
     raise ValueError(f"Unknown neuron: {neuron}")

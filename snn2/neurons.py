@@ -21,6 +21,9 @@ from .temporal_ops import (
     GIF_INTEGER_DECOMPOSITION,
     GIF_LOCAL_STEPS,
     GIF_LOW_QMAX,
+    GIF_SALIENT_POLICY,
+    GIF_ALL_LOW_POLICY,
+    GIF_IDENTITY_POLICY,
     GIF_STEP_QMAX,
     SITE_STATE_FORMAT_VERSION,
     SOFTMAX_SITE5_GIF_POLICY,
@@ -112,14 +115,20 @@ def _parameter_values(x: torch.Tensor, values: torch.Tensor, layout: dict[str, A
     if kind == "attention_head_grouped":
         heads = int(layout["num_heads"])
         width = int(layout["channels_per_head"])
-        if x.ndim != 4 or x.shape[1] != heads or x.shape[-1] != width:
+        native = x.ndim == 4 and x.shape[1] == heads and x.shape[-1] == width
+        merged = x.ndim == 3 and x.shape[-1] == heads * width
+        if not native and not merged:
             raise ValueError(
                 f"attention_head_grouped runtime shape mismatch: got {tuple(x.shape)}, "
-                f"expected [B,{heads},L,{width}]"
+                f"expected [B,{heads},L,{width}] or [B,L,{heads * width}]"
             )
         if values.shape != (heads, groups):
             raise ValueError(f"Expected grouped parameter shape {(heads, groups)}, got {tuple(values.shape)}")
-        return values.repeat_interleave(group_size, dim=-1).to(x).view(1, heads, 1, width)
+        expanded = values.repeat_interleave(group_size, dim=-1).to(x)
+        return (
+            expanded.view(1, heads, 1, width)
+            if native else expanded.reshape(1, 1, heads * width)
+        )
     if kind == "attention_head_scalar":
         heads = int(layout["num_heads"])
         if x.ndim != 4 or x.shape[1] != heads or values.shape != (heads, 1):
@@ -140,9 +149,15 @@ def _mask_values(x: torch.Tensor, mask: torch.Tensor, layout: dict[str, Any]) ->
         return mask.to(device=x.device).view(*([1] * (x.ndim - 1)), expected[0])
     if kind == "attention_head_grouped":
         expected = (int(layout["num_heads"]), int(layout["channels_per_head"]))
-        if x.ndim != 4 or mask.shape != expected or (x.shape[1], x.shape[-1]) != expected:
+        native = x.ndim == 4 and (x.shape[1], x.shape[-1]) == expected
+        merged = x.ndim == 3 and x.shape[-1] == expected[0] * expected[1]
+        if mask.shape != expected or (not native and not merged):
             raise ValueError(f"GIF attention mask shape mismatch: expected {expected}, got {tuple(mask.shape)}")
-        return mask.to(device=x.device).view(1, expected[0], 1, expected[1])
+        mask = mask.to(device=x.device)
+        return (
+            mask.view(1, expected[0], 1, expected[1])
+            if native else mask.reshape(1, 1, expected[0] * expected[1])
+        )
     raise ValueError(f"GIF mask does not support parameter_layout={kind!r}")
 
 
@@ -244,7 +259,7 @@ class StaticGIF(nn.Module):
         _validate_state_header(state, "gif")
         self.base_bits = int(state["base_bits"])
         self.add_bits = int(state["add_bits"])
-        if state.get("gif_policy") != "ordinary_grouped_qmax30":
+        if state.get("gif_policy") != GIF_SALIENT_POLICY:
             raise ValueError("StaticGIF only accepts ordinary grouped GIF states")
         self.layout = _state_layout(state)
         self.high_qmax = gif_high_qmax(self.base_bits, self.add_bits)
@@ -272,7 +287,19 @@ class StaticGIF(nn.Module):
         self.register_buffer("low_zero", state["low_zero"].float())
         self.register_buffer("high_scale", state["high_scale"].float())
         self.register_buffer("high_zero", state["high_zero"].float())
-        self.register_buffer("mask_low", state["mask_low"].bool())
+        self.mask_policy = state.get("mask_policy", "single")
+        self.mask_roles = tuple(state.get("mask_roles", ()))
+        if self.mask_policy == "multi_role":
+            masks = state.get("mask_low_by_role")
+            if not isinstance(masks, dict) or set(masks) != set(self.mask_roles):
+                raise ValueError("Invalid multi-role GIF mask state")
+            self._mask_buffer_names = {}
+            for role, mask in masks.items():
+                name = f"mask_low_role_{role}"
+                self.register_buffer(name, mask.bool())
+                self._mask_buffer_names[role] = name
+        else:
+            self.register_buffer("mask_low", state["mask_low"].bool())
         for name in ("low_scale", "low_zero", "high_scale", "high_zero"):
             _require_parameter_shape(f"GIF {name}", getattr(self, name), self.layout)
         expected_mask = (
@@ -280,8 +307,12 @@ class StaticGIF(nn.Module):
             if self.layout["parameter_layout"] == "last_dim_grouped"
             else (int(self.layout["num_heads"]), int(self.layout["channels_per_head"]))
         )
-        if tuple(self.mask_low.shape) != expected_mask:
-            raise ValueError(f"GIF mask_low shape must be {expected_mask}, got {tuple(self.mask_low.shape)}")
+        masks = (
+            [getattr(self, name) for name in self._mask_buffer_names.values()]
+            if self.mask_policy == "multi_role" else [self.mask_low]
+        )
+        if any(tuple(mask.shape) != expected_mask for mask in masks):
+            raise ValueError(f"GIF masks must have shape {expected_mask}")
 
     @staticmethod
     def round_ste(x: torch.Tensor) -> torch.Tensor:
@@ -307,7 +338,16 @@ class StaticGIF(nn.Module):
         dequantized = (q - zero.float()) * scale.float()
         return dequantized.to(x.dtype), q, zero.float()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _mask(self, role: str | None) -> torch.Tensor:
+        if self.mask_policy == "multi_role":
+            if role not in self._mask_buffer_names:
+                raise ValueError(f"GIF role must be one of {self.mask_roles}, got {role!r}")
+            return getattr(self, self._mask_buffer_names[role])
+        if role is not None:
+            raise ValueError("Single-mask GIF does not accept a role")
+        return self.mask_low
+
+    def forward(self, x: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
         low, _, _ = self._quantize(
             x, self.low_scale, self.low_zero, qmin=0, qmax=GIF_LOW_QMAX
         )
@@ -318,7 +358,7 @@ class StaticGIF(nn.Module):
             qmin=0,
             qmax=self.high_qmax,
         )
-        mask = _mask_values(x, self.mask_low, self.layout)
+        mask = _mask_values(x, self._mask(role), self.layout)
         return torch.where(mask, low, high)
 
     @property
@@ -341,7 +381,7 @@ class StaticGIF(nn.Module):
             raise RuntimeError("GIF two-step integer decomposition invariant failed")
         return chunk0, chunk1
 
-    def temporal(self, incoming: torch.Tensor) -> torch.Tensor:
+    def temporal(self, incoming: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
         if incoming.shape[0] != self.temporal_steps:
             raise ValueError(
                 f"GIF expects T={self.temporal_steps}, got {incoming.shape[0]}"
@@ -357,7 +397,7 @@ class StaticGIF(nn.Module):
             qmin=0,
             qmax=self.high_qmax,
         )
-        mask = _mask_values(x, self.mask_low, self.layout)
+        mask = _mask_values(x, self._mask(role), self.layout)
         scale_low = _parameter_values(x, self.low_scale, self.layout)
         scale_high = _parameter_values(x, self.high_scale, self.layout)
         high_chunks = self.integer_chunks(high_q)
@@ -432,31 +472,31 @@ class Clipper(nn.Module):
         self.register_buffer("upper", state["upper"].float())
         _require_parameter_shape("Clip lower", self.lower, self.layout)
         _require_parameter_shape("Clip upper", self.upper, self.layout)
-        gif_ranges = {}
-        for range_name in ("gif_low_range", "gif_high_range"):
+        policy = state.get("gif_constraint_policy")
+        ranges = []
+        required_ranges = (
+            () if policy == GIF_IDENTITY_POLICY else
+            (("gif_low_range",) if policy == GIF_ALL_LOW_POLICY else
+             ("gif_low_range", "gif_high_range"))
+        )
+        for range_name in required_ranges:
             raw_range = state.get(range_name)
             if not isinstance(raw_range, (tuple, list)) or len(raw_range) != 2:
                 raise ValueError(f"Clip state is missing valid {range_name} metadata")
-            range_lower = raw_range[0].float()
-            range_upper = raw_range[1].float()
-            if (
-                range_lower.shape != self.lower.shape
-                or range_upper.shape != self.upper.shape
-                or torch.any(range_lower >= range_upper)
+            range_lower, range_upper = raw_range[0].float(), raw_range[1].float()
+            if range_lower.shape != self.lower.shape or range_upper.shape != self.upper.shape:
+                raise ValueError(f"Clip state has invalid {range_name} shape")
+            ranges.append((range_lower, range_upper))
+        if ranges:
+            gif_lower, gif_upper = ranges[0]
+            for range_lower, range_upper in ranges[1:]:
+                gif_lower = torch.maximum(gif_lower, range_lower)
+                gif_upper = torch.minimum(gif_upper, range_upper)
+            tolerance = 1e-6
+            if torch.any(self.lower < gif_lower - tolerance) or torch.any(
+                self.upper > gif_upper + tolerance
             ):
-                raise ValueError(f"Clip state has invalid {range_name} metadata")
-            gif_ranges[range_name] = (range_lower, range_upper)
-        gif_lower = torch.maximum(
-            gif_ranges["gif_low_range"][0], gif_ranges["gif_high_range"][0]
-        )
-        gif_upper = torch.minimum(
-            gif_ranges["gif_low_range"][1], gif_ranges["gif_high_range"][1]
-        )
-        tolerance = 1e-6
-        if torch.any(self.lower < gif_lower - tolerance) or torch.any(
-            self.upper > gif_upper + tolerance
-        ):
-            raise ValueError("Clip interval is inconsistent with saved GIF ranges")
+                raise ValueError("Clip interval is inconsistent with saved GIF ranges")
         if torch.any(self.lower >= self.upper):
             raise ValueError("Every clipping interval must satisfy lower < upper")
 
@@ -510,11 +550,15 @@ class SoftmaxIdentityGIF(nn.Module):
                 f"SoftmaxIdentityGIF expects [B,{self.num_heads},Q,K], got {tuple(x.shape)}"
             )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
+        if role is not None:
+            raise ValueError("Site 5 GIF does not accept a role")
         self._validate_input(x)
         return x
 
-    def temporal(self, incoming: torch.Tensor) -> torch.Tensor:
+    def temporal(self, incoming: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
+        if role is not None:
+            raise ValueError("Site 5 GIF does not accept a role")
         if incoming.ndim != 5 or incoming.shape[0] != self.temporal_steps:
             raise ValueError(
                 f"SoftmaxIdentityGIF expects [T,B,H,Q,K] with T={self.temporal_steps}, "
@@ -524,7 +568,65 @@ class SoftmaxIdentityGIF(nn.Module):
         return incoming
 
 
+class AllLowStaticGIF(StaticGIF):
+    def __init__(self, state: dict[str, Any]):
+        nn.Module.__init__(self)
+        _validate_state_header(state, "gif")
+        if state.get("gif_policy") != GIF_ALL_LOW_POLICY:
+            raise ValueError("Invalid all-low GIF policy")
+        self.layout = _state_layout(state)
+        self.register_buffer("low_scale", state["low_scale"].float())
+        self.register_buffer("low_zero", state["low_zero"].float())
+        _require_parameter_shape("GIF low_scale", self.low_scale, self.layout)
+        _require_parameter_shape("GIF low_zero", self.low_zero, self.layout)
+
+    @property
+    def temporal_steps(self) -> int:
+        return GIF_LOCAL_STEPS
+
+    def forward(self, x: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
+        if role is not None:
+            raise ValueError("All-low GIF does not accept a role")
+        return self._quantize(x, self.low_scale, self.low_zero, qmin=0, qmax=GIF_LOW_QMAX)[0]
+
+    def temporal(self, incoming: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
+        if incoming.shape[0] != self.temporal_steps:
+            raise ValueError(f"GIF expects T={self.temporal_steps}")
+        quantized = self.forward(incoming.sum(dim=0), role=role)
+        return torch.stack((quantized, torch.zeros_like(quantized)), dim=0)
+
+
+class IdentityGIF(nn.Module):
+    def __init__(self, state: dict[str, Any]):
+        super().__init__()
+        _validate_state_header(state, "gif")
+        if state.get("gif_policy") != GIF_IDENTITY_POLICY:
+            raise ValueError("Invalid identity GIF policy")
+        if state.get("quantization_applied") is not False:
+            raise ValueError("Identity GIF must disable quantization")
+        self._temporal_steps = int(state["temporal_steps"])
+
+    @property
+    def temporal_steps(self) -> int:
+        return self._temporal_steps
+
+    def forward(self, x: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
+        if role is not None:
+            raise ValueError("Identity GIF does not accept a role")
+        return x
+
+    def temporal(self, incoming: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
+        if incoming.shape[0] != self.temporal_steps:
+            raise ValueError(f"Identity GIF expects T={self.temporal_steps}")
+        return incoming
+
+
 def gif_module_from_state(state: dict[str, Any]) -> nn.Module:
-    if state.get("gif_policy") == SOFTMAX_SITE5_GIF_POLICY:
+    policy = state.get("gif_policy")
+    if policy == SOFTMAX_SITE5_GIF_POLICY:
         return SoftmaxIdentityGIF(state)
+    if policy == GIF_ALL_LOW_POLICY:
+        return AllLowStaticGIF(state)
+    if policy == GIF_IDENTITY_POLICY:
+        return IdentityGIF(state)
     return StaticGIF(state)

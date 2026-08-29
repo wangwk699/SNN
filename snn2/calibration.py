@@ -14,6 +14,10 @@ from .data import CausalLMCollator, tokenize_dataset
 from .neurons import gif_high_qmax
 from .sites import (
     CLIP_ELIGIBLE_SITE_IDS,
+    GIF_ALL_LOW_SITE_IDS,
+    GIF_IDENTITY_SITE_IDS,
+    GIF_MULTI_MASK_ROLES,
+    GIF_SALIENT_SITE_IDS,
     SOFTMAX_SITE_ID,
     SITE_COUNT,
     SITE_TOPOLOGY_VERSION,
@@ -31,6 +35,9 @@ from .temporal_ops import (
     GIF_INTEGER_DECOMPOSITION,
     GIF_LOCAL_STEPS,
     GIF_LOW_QMAX,
+    GIF_SALIENT_POLICY,
+    GIF_ALL_LOW_POLICY,
+    GIF_IDENTITY_POLICY,
     GIF_STEP_QMAX,
     SITE_STATE_FORMAT_VERSION,
     STATISTICS_FORMAT_VERSION,
@@ -153,6 +160,15 @@ def group_reduce_last_dim(values: torch.Tensor, group_size: int, reduction: str)
     if reduction == "sum":
         return grouped.sum(dim=-1)
     raise ValueError(reduction)
+
+
+def spikellm_mask_low(score: torch.Tensor, low_p: float) -> torch.Tensor:
+    flat = score.flatten()
+    low_quota = int(float(low_p) * flat.numel())
+    if low_quota <= 0 or low_quota > flat.numel():
+        raise ValueError(f"Invalid SpikeLLM low quota {low_quota} for width {flat.numel()}")
+    threshold = torch.sort(flat)[0][low_quota - 1]
+    return score <= threshold
 
 
 def _qparams(
@@ -285,6 +301,11 @@ def build_site_states(
     phase_tau = phase_state["tau"]
 
     gif_cfg = cfg["gif"]
+    base_bits = int(gif_cfg["base_bits"])
+    add_bits = int(gif_cfg["add_bits"])
+    gif_high_qmax(base_bits, add_bits)
+    low_ratio = float(gif_cfg["low_ratio"])
+
     if is_site5:
         gif_state = {
             "state_kind": "gif",
@@ -301,63 +322,104 @@ def build_site_states(
             "reference_n_bits": 16,
             "reference_metric": "fix0to1",
             "quantization_applied": False,
+            "saliency_enabled": False,
+            "temporal_steps": GIF_LOCAL_STEPS,
+            "temporal_policy": "identity",
+        }
+    elif site_index in GIF_IDENTITY_SITE_IDS:
+        gif_state = {
+            "state_kind": "gif",
+            "format_version": SITE_STATE_FORMAT_VERSION,
+            "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
+            "site_index": site_index,
+            "channels": int(statistics["channels"]),
+            "configured_group_size": configured_group,
+            "gif_policy": GIF_IDENTITY_POLICY,
+            "quantization_applied": False,
+            "saliency_enabled": False,
             "temporal_steps": GIF_LOCAL_STEPS,
             "temporal_policy": "identity",
         }
     else:
-        saliency_counts = statistics.get("saliency_row_count")
-        if not isinstance(saliency_counts, torch.Tensor) or saliency_counts.shape != statistics["value_min"].shape:
-            raise ValueError("Operator-aware GIF saliency statistics are missing or have the wrong shape")
-        observed = saliency_counts.long() > 0
-        if not torch.all(observed):
-            raise ValueError("Every ordinary GIF channel must have operator-aware saliency")
-        operator_saliency = statistics["saliency_sum"].double() / saliency_counts.double()
-    base_bits = int(gif_cfg["base_bits"])
-    add_bits = int(gif_cfg["add_bits"])
-    gif_high_qmax(base_bits, add_bits)
-    if not is_site5:
-        low_scale, low_zero, low_min, low_max = _qparams(minimum, maximum, qmin=0, qmax=GIF_LOW_QMAX)
-        high_scale, high_zero, high_min, high_max = _qparams(minimum, maximum, qmin=0, qmax=GIF_HIGH_QMAX)
-        low_ratio = float(gif_cfg["low_ratio"])
-        mask_low = torch.zeros_like(statistics["value_min"], dtype=torch.bool)
-        if statistics["layout_kind"] == "attention_head":
-            low_channels = int(math.floor(low_ratio * mask_low.shape[-1]))
-            for head in range(mask_low.shape[0]):
-                ordering = torch.argsort(operator_saliency[head], descending=False)
-                mask_low[head, ordering[:low_channels]] = True
-        else:
-            low_channels = int(math.floor(low_ratio * mask_low.shape[-1]))
-            ordering = torch.argsort(operator_saliency, descending=False)
-            mask_low[ordering[:low_channels]] = True
-        gif_state = {
-        "state_kind": "gif",
-        "format_version": SITE_STATE_FORMAT_VERSION,
-        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
-        "base_bits": base_bits,
-        "add_bits": int(gif_cfg["add_bits"]),
-        "low_qmin": 0,
-        "low_qmax": GIF_LOW_QMAX,
-        "high_qmin": 0,
-        "high_qmax": GIF_HIGH_QMAX,
-        "temporal_steps": GIF_LOCAL_STEPS,
-        "per_step_qmin": 0,
-        "per_step_qmax": GIF_STEP_QMAX,
-        "low_ratio": low_ratio,
-        **layout,
-        "gif_policy": "ordinary_grouped_qmax30",
-        "low_scale": low_scale.float(),
-        "low_zero": low_zero.float(),
-        "high_scale": high_scale.float(),
-        "high_zero": high_zero.float(),
-        "mask_low": mask_low,
-        "saliency_rule": "operator_aware_spikellm_extension",
-        "saliency_score": operator_saliency.float(),
-        "saliency_observed": observed,
-        "integer_decomposition": GIF_INTEGER_DECOMPOSITION,
-        "scale_initialization": "direct_min_max",
-        "mse_refinement": False,
-        "original_spikellm_dynamic_quantization": False,
+        low_scale, low_zero, low_min, low_max = _qparams(
+            minimum, maximum, qmin=0, qmax=GIF_LOW_QMAX
+        )
+        common = {
+            "state_kind": "gif",
+            "format_version": SITE_STATE_FORMAT_VERSION,
+            "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
+            "base_bits": base_bits,
+            "add_bits": add_bits,
+            "low_qmin": 0,
+            "low_qmax": GIF_LOW_QMAX,
+            "temporal_steps": GIF_LOCAL_STEPS,
+            "per_step_qmin": 0,
+            "per_step_qmax": GIF_STEP_QMAX,
+            **layout,
+            "low_scale": low_scale.float(),
+            "low_zero": low_zero.float(),
+            "scale_initialization": "direct_min_max",
+            "mse_refinement": False,
+            "original_spikellm_dynamic_quantization": False,
         }
+        if site_index in GIF_ALL_LOW_SITE_IDS:
+            gif_state = {
+                **common,
+                "gif_policy": GIF_ALL_LOW_POLICY,
+                "quantization_path": "low_only",
+                "quantization_applied": True,
+                "saliency_enabled": False,
+                "temporal_policy": "low_at_t0_zero_at_t1",
+            }
+        else:
+            if site_index not in GIF_SALIENT_SITE_IDS:
+                raise ValueError(f"No GIF policy for site {site_index}")
+            sums = statistics.get("saliency_sum_by_role")
+            counts = statistics.get("saliency_row_count_by_role")
+            rules = statistics.get("saliency_rule_by_role")
+            expected_roles = GIF_MULTI_MASK_ROLES.get(site_index, ("default",))
+            if not isinstance(sums, dict) or set(sums) != set(expected_roles):
+                raise ValueError(f"GIF saliency roles must be {expected_roles}")
+            scores = {}
+            masks = {}
+            for role in expected_roles:
+                count = counts.get(role) if isinstance(counts, dict) else None
+                if not isinstance(count, torch.Tensor) or not torch.all(count > 0):
+                    raise ValueError(f"Missing GIF saliency observations for role {role}")
+                score = sums[role] / count.to(sums[role].dtype)
+                scores[role] = score
+                masks[role] = spikellm_mask_low(score, low_ratio)
+            high_scale, high_zero, high_min, high_max = _qparams(
+                minimum, maximum, qmin=0, qmax=GIF_HIGH_QMAX
+            )
+            gif_state = {
+                **common,
+                "gif_policy": GIF_SALIENT_POLICY,
+                "high_qmin": 0,
+                "high_qmax": GIF_HIGH_QMAX,
+                "integer_decomposition": GIF_INTEGER_DECOMPOSITION,
+                "low_ratio": low_ratio,
+                "high_scale": high_scale.float(),
+                "high_zero": high_zero.float(),
+                "saliency_enabled": True,
+                "saliency_rule_by_role": rules,
+                "saliency_accumulator_dtype_by_role": statistics.get(
+                    "saliency_accumulator_dtype_by_role"
+                ),
+            }
+            if site_index in GIF_MULTI_MASK_ROLES:
+                gif_state.update({
+                    "mask_policy": "multi_role",
+                    "mask_roles": list(expected_roles),
+                    "mask_low_by_role": masks,
+                    "saliency_score_by_role": scores,
+                })
+            else:
+                gif_state.update({
+                    "mask_policy": "single",
+                    "mask_low": masks["default"],
+                    "saliency_score": scores["default"],
+                })
 
     mtn_cfg = cfg["mtn"]
     mtn_state = {
@@ -379,10 +441,27 @@ def build_site_states(
         for step in range(int(phase_cfg["T"]))
     )
     mtn_bound = 2.0 * int(mtn_cfg["T"]) * absolute
-    gif_lower = torch.maximum(low_min, high_min)
-    gif_upper = torch.minimum(low_max, high_max)
-    lower = torch.maximum(torch.maximum(-phase_bound, -mtn_bound), gif_lower)
-    upper = torch.minimum(torch.minimum(phase_bound, mtn_bound), gif_upper)
+    base_lower = torch.maximum(-phase_bound, -mtn_bound)
+    base_upper = torch.minimum(phase_bound, mtn_bound)
+    if site_index in GIF_IDENTITY_SITE_IDS:
+        gif_ranges = {}
+        lower, upper = base_lower, base_upper
+        clip_rule = "intersection(phase, mtn)"
+    elif site_index in GIF_ALL_LOW_SITE_IDS:
+        gif_ranges = {"gif_low_range": (low_min.float(), low_max.float())}
+        lower = torch.maximum(base_lower, low_min)
+        upper = torch.minimum(base_upper, low_max)
+        clip_rule = "intersection(phase, mtn, gif_low)"
+    else:
+        gif_lower = torch.maximum(low_min, high_min)
+        gif_upper = torch.minimum(low_max, high_max)
+        gif_ranges = {
+            "gif_low_range": (low_min.float(), low_max.float()),
+            "gif_high_range": (high_min.float(), high_max.float()),
+        }
+        lower = torch.maximum(base_lower, gif_lower)
+        upper = torch.minimum(base_upper, gif_upper)
+        clip_rule = "intersection(phase, mtn, gif_low, gif_high)"
     if torch.any(lower >= upper):
         bad = torch.nonzero(lower >= upper, as_tuple=False).flatten().tolist()
         raise ValueError(f"Invalid common clipping interval in groups {bad}")
@@ -396,9 +475,9 @@ def build_site_states(
         **layout,
         "lower": lower.float(),
         "upper": upper.float(),
-        "gif_low_range": (low_min.float(), low_max.float()),
-        "gif_high_range": (high_min.float(), high_max.float()),
-        "rule": "intersection(phase, mtn, intersection(gif_low, gif_high))",
+        **gif_ranges,
+        "gif_constraint_policy": gif_state["gif_policy"],
+        "rule": clip_rule,
     }
     states["clip"] = clip_state
     return states
@@ -466,7 +545,7 @@ def materialize_calibration_states(
             "mtn_parameter_shape": list(states["mtn"]["base_scale"].shape),
             "gif_policy": gif_state["gif_policy"],
             "gif_parameter_shape": (
-                None if is_softmax_site(int(statistics["site_index"]))
+                None if "low_scale" not in gif_state
                 else list(gif_state["low_scale"].shape)
             ),
             "gif_temporal_steps": gif_state["temporal_steps"],

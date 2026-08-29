@@ -59,8 +59,9 @@ echo
 # Helper functions
 # ---------------------------------------------------------------------------
 validate_group_size() {
-  if [[ ! "$1" =~ ^[1-9][0-9]*$ ]]; then
-    echo "GROUP_SIZE must be a positive integer: $1" >&2
+  # -1 is the supported sentinel for disabling fixed-size grouping.
+  if [[ "$1" != "-1" && ! "$1" =~ ^[1-9][0-9]*$ ]]; then
+    echo "GROUP_SIZE must be a positive integer or -1: $1" >&2
     return 1
   fi
 

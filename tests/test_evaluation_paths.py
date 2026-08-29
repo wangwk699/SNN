@@ -18,7 +18,7 @@ from snn2.evaluation import (
 
 @pytest.mark.parametrize(
     ("neuron", "expected"),
-    [("phase", 281), ("gif", 252), ("mtn", 280), ("ann", 0)],
+    [("phase", 281), ("gif", 280), ("mtn", 280), ("ann", 0)],
 )
 def test_activation_neuron_operator_count_includes_global_phase(neuron, expected):
     assert activation_neuron_operators_per_temporal_forward(
@@ -43,7 +43,7 @@ def test_identity_final_ann_evaluation_has_no_calibration_metadata(mode):
         "post_finetuning_recalibration": False,
         "calibration_root": None,
         "calibration_group_size": -1,
-        "calibration_grouping_policy": "per_head_within_head_groups_v1",
+        "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2",
     }
 
 
@@ -57,7 +57,7 @@ def test_aware_final_ann_evaluation_uses_training_calibration_metadata(mode):
         "post_finetuning_recalibration": False,
         "calibration_root": "training",
         "calibration_group_size": -1,
-        "calibration_grouping_policy": "per_head_within_head_groups_v1",
+        "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2",
     }
 
 
@@ -260,7 +260,7 @@ def _evaluation_cfg(ann_mode, clip=False):
      ("gif_aware", False, "gif"), ("gif_aware", True, "gif")],
 )
 def test_build_final_ann_controller(monkeypatch, ann_mode, clip, expected_mode):
-    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "per_head_within_head_groups_v1"}})
+    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2"}})
     layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
     controller, steps = build_evaluation_controller(
         _evaluation_cfg(ann_mode, clip), layout, neuron="ann"
@@ -310,7 +310,7 @@ def test_all_ann_modes_use_temporal_snn_controller(monkeypatch, ann_mode, neuron
      ("phase_aware", "mtn", "temporal_mtn_snn")],
 )
 def test_evaluation_forward_metadata(monkeypatch, ann_mode, neuron, kind):
-    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "per_head_within_head_groups_v1"}})
+    monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2"}})
     monkeypatch.setattr("snn2.controller.validate_site_state_bundle", lambda *_a, **_k: {"temporal_steps": {"phase": 4, "gif": 2, "mtn": 4}})
     cfg = _evaluation_cfg(ann_mode, True)
     layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
@@ -324,5 +324,5 @@ def test_evaluation_forward_metadata(monkeypatch, ann_mode, neuron, kind):
         neuron == "ann" and ann_mode in {"phase_aware", "gif_aware"}
     )
     assert metadata["calibration_group_size"] == -1
-    assert metadata["calibration_grouping_policy"] == "per_head_within_head_groups_v1"
+    assert metadata["calibration_grouping_policy"] == "site234_logical_per_head_site6_merged_last_dim_v2"
     assert metadata["softmax_site5_clip_applied"] is False
