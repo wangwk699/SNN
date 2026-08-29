@@ -448,3 +448,46 @@ def test_corrupted_site2_all_low_state_fails_deploy_gif_loading(tmp_path):
     controller = SiteController(site_root=tmp_path)
     with pytest.raises(ValueError, match="Invalid gif state|Invalid all-low GIF state"):
         controller.set_deployment("gif", clip_bundle_policy="forbid_all")
+
+
+def _corrupt_gif_and_rehash(root, site_index, field, value):
+    import json
+    from snn2.artifacts import sha256_file
+
+    key = site_key(0, site_index)
+    state_path = root / key / "gif_state.pt"
+    state = torch.load(state_path, weights_only=False)
+    state[field] = value
+    torch.save(state, state_path)
+    manifest_path = root / "calibration_state_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sites"][key]["state_sha256"]["gif"] = sha256_file(state_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("site_index", "field", "value"),
+    [
+        (1, "saliency_rule_by_role", {
+            "q": "spikellm_linear_fp32", "k": "spikellm_linear_fp32"
+        }),
+        (1, "saliency_accumulator_dtype_by_role", {
+            "q": "float32", "k": "float32"
+        }),
+        (7, "saliency_accumulator_dtype_by_role", {
+            "gate": "float32", "up": "float32", "extra": "float32"
+        }),
+        (6, "saliency_rule_by_role", {"o": "spikellm_linear_fp32"}),
+        (1, "mask_low_by_role", {
+            "q": torch.ones(3, dtype=torch.bool),
+            "k": torch.ones(3, dtype=torch.bool),
+        }),
+    ],
+)
+def test_validate_rejects_corrupted_saliency_role_maps(
+    tmp_path, site_index, field, value
+):
+    _write_bundle(tmp_path)
+    _corrupt_gif_and_rehash(tmp_path, site_index, field, value)
+    with pytest.raises(ValueError, match="saliency|role|Invalid gif state"):
+        validate_site_state_bundle(tmp_path, clip_policy="forbid_all")

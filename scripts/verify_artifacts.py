@@ -19,12 +19,24 @@ from snn2.conversion import (
     validate_conversion_metadata,
     validate_conversion_prefix,
 )
-from snn2.sites import CLIP_ELIGIBLE_SITE_IDS, SOFTMAX_SITE_ID, topology_metadata
+from snn2.sites import (
+    CLIP_ELIGIBLE_SITE_IDS,
+    GIF_ALL_LOW_SITE_IDS,
+    GIF_IDENTITY_SITE_IDS,
+    GIF_MULTI_MASK_ROLES,
+    GIF_SALIENT_SITE_IDS,
+    SOFTMAX_SITE_ID,
+    topology_metadata,
+)
 from snn2.evaluation import final_ann_replacement_mode, resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
 from snn2.state_validation import validate_site_state_bundle
 from snn2.temporal_ops import (
     CALIBRATION_GROUPING_POLICY,
+    GIF_LINEAR_SALIENCY_DTYPE,
+    GIF_MATMUL_SALIENCY_DTYPE,
+    GIF_SALIENCY_SELECTION_POLICY,
+    GIF_SALIENCY_TIE_POLICY,
     SOFTMAX_SITE5_CLIP_POLICY,
     SOFTMAX_SITE5_GIF_POLICY,
     STATISTICS_FORMAT_VERSION,
@@ -64,6 +76,25 @@ def _verify_final_ann_forward_metadata(cfg, layout, path):
                 f"Final ANN evaluation has stale/incompatible {key}: {path}. "
                 "Re-run final ANN evaluation."
             )
+    gif_provenance = {
+        "gif_salient_site_ids": sorted(GIF_SALIENT_SITE_IDS),
+        "gif_all_low_site_ids": sorted(GIF_ALL_LOW_SITE_IDS),
+        "gif_identity_site_ids": sorted(GIF_IDENTITY_SITE_IDS),
+        "gif_multi_mask_roles": {
+            str(site): list(roles)
+            for site, roles in sorted(GIF_MULTI_MASK_ROLES.items())
+        },
+        "gif_saliency_selection_policy": GIF_SALIENCY_SELECTION_POLICY,
+        "gif_saliency_tie_policy": GIF_SALIENCY_TIE_POLICY,
+        "gif_linear_saliency_dtype": GIF_LINEAR_SALIENCY_DTYPE,
+        "gif_matmul_saliency_dtype": GIF_MATMUL_SALIENCY_DTYPE,
+    }
+    for key, value in gif_provenance.items():
+        if metadata.get(key) != value:
+            raise ValueError(
+                "Final ANN evaluation has stale/incompatible GIF provenance "
+                f"{key}: {path}. Re-run final ANN evaluation."
+            )
     expected_root = layout.ann_training_site_dir if expected[1] else None
     actual_root = metadata.get("replacement_state_root")
     if expected_root is None:
@@ -91,24 +122,112 @@ def _verify_grouped_calibration(cfg, layout, manifest, calibration):
         "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
         "clip_eligible_site_ids": sorted(CLIP_ELIGIBLE_SITE_IDS),
         "clip_excluded_site_ids": [SOFTMAX_SITE_ID],
+        "gif_salient_site_ids": sorted(GIF_SALIENT_SITE_IDS),
+        "gif_all_low_site_ids": sorted(GIF_ALL_LOW_SITE_IDS),
+        "gif_identity_site_ids": sorted(GIF_IDENTITY_SITE_IDS),
+        "gif_multi_mask_roles": {
+            str(site): list(roles)
+            for site, roles in sorted(GIF_MULTI_MASK_ROLES.items())
+        },
     }
     _require_manifest_flags(manifest, expected, "Grouped calibration")
     ann_config = read_json(layout.ann_checkpoint_dir / "config.json")
     query_heads = int(ann_config["num_attention_heads"])
-    kv_heads = int(ann_config.get("num_key_value_heads", query_heads))
+    hidden_size = int(ann_config["hidden_size"])
+    head_dim = int(ann_config.get("head_dim", hidden_size // query_heads))
+    if query_heads <= 0 or head_dim <= 0 or query_heads * head_dim != hidden_size:
+        raise ValueError("ANN config attention-head geometry is inconsistent")
     clip_count = 0
     for statistics_path in sorted(layout.conversion_site_dir.glob("layer_*/site_*/statistics.pt")):
         statistics = torch.load(statistics_path, map_location="cpu", weights_only=False)
         if statistics.get("format_version") != STATISTICS_FORMAT_VERSION:
             raise ValueError(f"Legacy statistics state: {statistics_path}")
         site = int(statistics["site_index"])
-        if site in {2, 6} and int(statistics["num_heads"]) != query_heads:
-            raise ValueError(f"Site {site} must use query heads: {statistics_path}")
-        if site in {3, 4} and int(statistics["num_heads"]) != kv_heads:
-            raise ValueError(f"Site {site} must use native KV heads: {statistics_path}")
+        if site in {2, 3, 4}:
+            if statistics.get("layout_kind") != "attention_head":
+                raise ValueError(
+                    f"Site {site} must use attention_head statistics: {statistics_path}"
+                )
+            if type(statistics.get("num_heads")) is not int:
+                raise ValueError(
+                    f"Site {site} must record integer num_heads: {statistics_path}"
+                )
+            if statistics["num_heads"] != query_heads:
+                raise ValueError(
+                    f"Site {site} must use repeated/query attention heads "
+                    f"({query_heads}): {statistics_path}"
+                )
+            channels_per_head = statistics.get("channels_per_head")
+            if type(channels_per_head) is not int or channels_per_head != head_dim:
+                raise ValueError(
+                    f"Site {site} channels_per_head must equal head_dim={head_dim}: "
+                    f"{statistics_path}"
+                )
+            if statistics.get("channels") != query_heads * head_dim:
+                raise ValueError(
+                    f"Site {site} channel count must equal num_attention_heads * "
+                    f"head_dim: {statistics_path}"
+                )
+        elif site == 6:
+            if statistics.get("layout_kind") != "last_dim":
+                raise ValueError(
+                    f"Site 6 must use merged last_dim statistics: {statistics_path}"
+                )
+            if statistics.get("num_heads") is not None:
+                raise ValueError(
+                    f"Site 6 must not preserve a per-head layout: {statistics_path}"
+                )
+            if statistics.get("channels_per_head") is not None:
+                raise ValueError(
+                    f"Site 6 must not save channels_per_head: {statistics_path}"
+                )
+            if statistics.get("channels") != hidden_size:
+                raise ValueError(
+                    f"Site 6 merged width must equal hidden_size={hidden_size}: "
+                    f"{statistics_path}"
+                )
         directory = statistics_path.parent
         clip_present = (directory / "clip_state.pt").exists()
         clip_count += int(clip_present)
+        if site in {2, 3, 4, 6}:
+            state_names = ["phase_state.pt", "gif_state.pt", "mtn_state.pt"]
+            if clip_present:
+                state_names.append("clip_state.pt")
+            for state_name in state_names:
+                state_path = directory / state_name
+                state = torch.load(state_path, map_location="cpu", weights_only=False)
+                if site in {2, 3, 4}:
+                    if (
+                        state.get("parameter_layout") != "attention_head_grouped"
+                        or state.get("num_heads") != query_heads
+                        or state.get("channels_per_head") != head_dim
+                    ):
+                        raise ValueError(
+                            f"Site {site} must use post-repeat attention-head state: "
+                            f"{state_path}"
+                        )
+                    logical_width = head_dim
+                else:
+                    if (
+                        state.get("parameter_layout") != "last_dim_grouped"
+                        or state.get("num_heads") is not None
+                        or state.get("channels_per_head") != hidden_size
+                    ):
+                        raise ValueError(
+                            f"Site 6 must use merged last-dim state: {state_path}"
+                        )
+                    logical_width = hidden_size
+                group_size = state.get("group_size")
+                groups = state.get("groups_per_head")
+                if (
+                    type(group_size) is not int
+                    or group_size <= 0
+                    or logical_width % group_size != 0
+                    or groups != logical_width // group_size
+                ):
+                    raise ValueError(
+                        f"Site {site} has invalid grouped state width: {state_path}"
+                    )
         if site == SOFTMAX_SITE_ID:
             gif = torch.load(directory / "gif_state.pt", map_location="cpu", weights_only=False)
             if gif.get("gif_policy") != SOFTMAX_SITE5_GIF_POLICY or clip_present:

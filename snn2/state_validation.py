@@ -224,9 +224,25 @@ def validate_site_state_bundle(
                             or state.get("per_step_qmax") != GIF_STEP_QMAX
                         ):
                             raise ValueError(f"Invalid salient GIF qmax/chunk policy at {state_path}")
-                        roles = GIF_MULTI_MASK_ROLES.get(site_index)
-                        if roles is not None and tuple(state.get("mask_roles", ())) != roles:
+                        expected_roles = GIF_MULTI_MASK_ROLES.get(
+                            site_index, ("default",)
+                        )
+                        if site_index in GIF_MULTI_MASK_ROLES and tuple(
+                            state.get("mask_roles", ())
+                        ) != expected_roles:
                             raise ValueError(f"Invalid GIF mask roles at {state_path}")
+                        if site_index in GIF_MULTI_MASK_ROLES:
+                            masks = state.get("mask_low_by_role")
+                            scores = state.get("saliency_score_by_role")
+                            if (
+                                not isinstance(masks, dict)
+                                or set(masks) != set(expected_roles)
+                                or not isinstance(scores, dict)
+                                or set(scores) != set(expected_roles)
+                            ):
+                                raise ValueError(
+                                    f"Invalid GIF role mask/score maps at {state_path}"
+                                )
                         expected_dtype = "float64" if site_index in {3, 4} else "float32"
                         expected_rule = (
                             "spikellm_qk_k_fp64" if site_index == 3 else
@@ -234,11 +250,29 @@ def validate_site_state_bundle(
                              "spikellm_linear_fp32")
                         )
                         saved_rules = state.get("saliency_rule_by_role")
-                        if not isinstance(saved_rules, dict) or set(saved_rules.values()) != {expected_rule}:
-                            raise ValueError(f"Invalid GIF saliency rule at {state_path}")
+                        if (
+                            not isinstance(saved_rules, dict)
+                            or set(saved_rules) != set(expected_roles)
+                            or any(
+                                saved_rules.get(role) != expected_rule
+                                for role in expected_roles
+                            )
+                        ):
+                            raise ValueError(
+                                f"Invalid GIF saliency rule/role map at {state_path}"
+                            )
                         saved_dtypes = state.get("saliency_accumulator_dtype_by_role")
-                        if not isinstance(saved_dtypes, dict) or set(saved_dtypes.values()) != {expected_dtype}:
-                            raise ValueError(f"Invalid GIF saliency precision at {state_path}")
+                        if (
+                            not isinstance(saved_dtypes, dict)
+                            or set(saved_dtypes) != set(expected_roles)
+                            or any(
+                                saved_dtypes.get(role) != expected_dtype
+                                for role in expected_roles
+                            )
+                        ):
+                            raise ValueError(
+                                f"Invalid GIF saliency precision/role map at {state_path}"
+                            )
 
                     saliency_enabled = site_index in GIF_SALIENT_SITE_IDS
                     state_rules = dict(state.get("saliency_rule_by_role", {}))
