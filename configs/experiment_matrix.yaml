@@ -49,7 +49,7 @@ experiments:
       num_samples: 128
       with_replacement: false
       batch_size: 1
-      group_size: -1
+      group_size: 128
       expected_sites_per_layer: 10
       device_map: auto
     deployment:
@@ -65,14 +65,14 @@ experiments:
       phase_tau_ema_factor: 0.99
       phase_tau_accumulator_dtype: float32
     phase:
-      T: 4
+      T: 6
       base: 2.0
       surrogate_slope: 1.0
       timestep_indexing: t_0_to_T_minus_1
       threshold_rule: "tau * base ** (-(t + 1))"
     mtn:
-      T: 4
-      K: 6
+      T: 6
+      K: 8
       threshold_factor: 0.75
     gif:
       base_bits: 4
@@ -210,7 +210,7 @@ experiments:
       num_samples: 128
       with_replacement: false
       batch_size: 1
-      group_size: -1
+      group_size: 128
       expected_sites_per_layer: 10
       device_map: auto
     deployment:
@@ -226,14 +226,14 @@ experiments:
       phase_tau_ema_factor: 0.99
       phase_tau_accumulator_dtype: float32
     phase:
-      T: 4
+      T: 6
       base: 2.0
       surrogate_slope: 1.0
       timestep_indexing: t_0_to_T_minus_1
       threshold_rule: "tau * base ** (-(t + 1))"
     mtn:
-      T: 4
-      K: 6
+      T: 6
+      K: 8
       threshold_factor: 0.75
     gif:
       base_bits: 4
@@ -373,7 +373,7 @@ experiments:
       num_samples: 128
       with_replacement: false
       batch_size: 1
-      group_size: -1
+      group_size: 128
       expected_sites_per_layer: 10
       device_map: auto
     deployment:
@@ -389,14 +389,14 @@ experiments:
       phase_tau_ema_factor: 0.99
       phase_tau_accumulator_dtype: float32
     phase:
-      T: 4
+      T: 6
       base: 2.0
       surrogate_slope: 1.0
       timestep_indexing: t_0_to_T_minus_1
       threshold_rule: "tau * base ** (-(t + 1))"
     mtn:
-      T: 4
-      K: 6
+      T: 6
+      K: 8
       threshold_factor: 0.75
     gif:
       base_bits: 4
