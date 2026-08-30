@@ -122,7 +122,7 @@ experiments:
       tldr_train_seed: 42
     evaluation:
       prefix_enabled: true
-      batch_size: 32
+      batch_size: 8
       max_new_tokens: 32
       tldr_input_length: 512
       tldr_test_samples: 256
