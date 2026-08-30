@@ -121,6 +121,25 @@ def test_phase_site1_shared_apply_does_not_clip_then_branch_clips(tmp_path):
     assert torch.all(clipped <= 1.0)
 
 
+@pytest.mark.parametrize(
+    ("site_index", "roles", "role"),
+    [(1, ("q", "k", "v"), "q"), (7, ("gate", "up"), "gate")],
+)
+def test_phase_multirole_shared_apply_never_reuses_role_clip(tmp_path, site_index, roles, role):
+    stage_a, stage_b = tmp_path / "sites", tmp_path / "profile"
+    _write(stage_a, site_index, "phase", _phase_state())
+    _write(stage_b, site_index, "clip", _clip_state(roles=roles), clip=True)
+    controller = SiteController(
+        mode="phase", site_root=stage_a, clip_root=stage_b,
+        common_clip_enabled=True, phase_T=4, phase_surrogate_slope=1.0,
+    )
+    x = torch.full((1, 1, 4), 3.0)
+    shared_before = controller.apply(0, site_index, x)
+    controller.apply_role_clip(0, site_index, shared_before, role=role)
+    assert "clip" in controller._modules[site_key(0, site_index)]
+    shared_after = controller.apply(0, site_index, x)
+    torch.testing.assert_close(shared_after, shared_before)
+
 def test_deployment_uses_explicit_runtime_parameters(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "snn2.controller.validate_site_state_bundle",

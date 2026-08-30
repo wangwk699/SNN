@@ -195,7 +195,10 @@ class SiteController:
                 module.to(x.device)
         if self.mode == "phase":
             output = modules["phase"](x)
-            output = modules["clip"](output) if "clip" in modules else output
+            # Site 1/7 use role-specific Clip only in branch pre-hooks;
+            # never apply a cached role Clipper to shared RMSNorm output.
+            if site_index not in {1, 7} and "clip" in modules:
+                output = modules["clip"](output)
             if recorder is not None:
                 self.record_regression(f"{checkpoint}/post", output)
             return output
