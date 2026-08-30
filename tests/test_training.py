@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from snn2.artifacts import sha256_file
 
 from snn2.training import (
     capture_training_artifact_provenance,
@@ -38,33 +39,26 @@ def test_ann_training_common_clip_metadata(mode, enabled):
 
 
 def _provenance_fixture(tmp_path):
-    prefix_dir = tmp_path / "prefix"
-    site_dir = tmp_path / "sites"
-    clip_dir = tmp_path / "clip_profile"
-    prefix_dir.mkdir()
-    site_dir.mkdir()
-    clip_dir.mkdir()
-    (prefix_dir / "prefix_state.json").write_text(
-        json.dumps({"prefix_token_ids": [7, 8]}), encoding="utf-8"
-    )
+    prefix_dir = tmp_path / "pre_finetuning_prefix" / "num_samples_128"
+    site_dir, clip_dir = tmp_path / "sites", tmp_path / "clip_profile"
+    manifest = tmp_path / "calibration_manifest.json"
+    prefix_dir.mkdir(parents=True); site_dir.mkdir(); clip_dir.mkdir()
+    manifest.write_text(json.dumps({"num_samples": 128}), encoding="utf-8")
+    (prefix_dir / "prefix_state.json").write_text(json.dumps({
+        "prefix_token_ids": [7, 8], "discovery_num_samples": 128,
+        "discovery_data_source": "stage_a_calibration_selection",
+        "discovery_manifest_path": str(manifest.resolve()),
+        "discovery_manifest_sha256": sha256_file(manifest),
+    }), encoding="utf-8")
     (prefix_dir / "prefixed_key_values.pt").write_bytes(b"kv-v1")
-    (site_dir / "calibration_state_manifest.json").write_text(
-        json.dumps({"format_version": 11}), encoding="utf-8"
-    )
+    (site_dir / "calibration_state_manifest.json").write_text(json.dumps({"format_version": 11}), encoding="utf-8")
     (clip_dir / "clip_profile_manifest.json").write_text(json.dumps({"format_version": 1}), encoding="utf-8")
-    cfg = {
-        "experiment": {"ann_mode": "phase_aware"},
-        "ann_training": {"prefix_enabled": True},
-        "prefix": {"enabled": True},
-        "calibration": {"group_size": -1, "num_samples": 128},
-        "phase": {"T": 4},
-        "mtn": {"T": 4},
-    }
-    layout = SimpleNamespace(
-        ann_training_prefix_dir=prefix_dir,
-        ann_training_site_dir=site_dir,
-        ann_training_clip_profile_dir=clip_dir,
-    )
+    cfg = {"experiment": {"ann_mode": "phase_aware"}, "ann_training": {"prefix_enabled": True},
+           "prefix": {"enabled": True}, "calibration": {"group_size": -1, "num_samples": 128},
+           "phase": {"T": 4}, "mtn": {"T": 4}}
+    layout = SimpleNamespace(ann_training_prefix_dir=prefix_dir, ann_training_site_dir=site_dir,
+                             ann_training_clip_profile_dir=clip_dir,
+                             calibration_data_manifest_path=manifest)
     return cfg, layout
 
 
@@ -79,14 +73,12 @@ def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
     assert captured["ann_training_prefix_token_ids"] == [7, 8]
     assert captured["ann_training_prefix_state_sha256"]
     assert captured["ann_training_prefix_kv_sha256"]
-    assert captured["ann_training_calibration_manifest_sha256"]
-
 
 @pytest.mark.parametrize(
     ("relative_path", "replacement"),
     [
-        ("prefix/prefix_state.json", b"{\"prefix_token_ids\": [7, 8], \"changed\": true}"),
-        ("prefix/prefixed_key_values.pt", b"kv-v2"),
+        ("pre_finetuning_prefix/num_samples_128/prefix_state.json", b"{\"prefix_token_ids\": [7, 8], \"changed\": true}"),
+        ("pre_finetuning_prefix/num_samples_128/prefixed_key_values.pt", b"kv-v2"),
         ("sites/calibration_state_manifest.json", b"{\"format_version\": 6, \"changed\": true}"),
     ],
 )

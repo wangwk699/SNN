@@ -34,7 +34,7 @@ def test_gif_high_qparams_use_two_chunk_capacity():
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
     }
 
-    state = build_site_states(statistics, cfg, include_clip=False)["gif"]
+    state = build_site_states(statistics, cfg)["gif"]
 
     assert state["high_qmax"] == 30
     torch.testing.assert_close(

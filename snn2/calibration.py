@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 
 from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
 from .config import post_finetuning_prefix_enabled, training_prefix_enabled
-from .data import CausalLMCollator, tokenize_dataset
+from .data import CausalLMCollator, tokenize_dataset, validate_prefix_discovery_state
 from .neurons import gif_high_qmax
 from .sites import (
     CLIP_ELIGIBLE_SITE_IDS,
@@ -79,13 +79,14 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         if stage == "ann_training" and prefix_enabled
         else (layout.post_finetuning_prefix_dir if stage == "post_finetuning" and prefix_enabled else None)
     )
-    prefix_state = prefix_dir / "prefix_state.json" if prefix_dir else None
-    if prefix_state and not prefix_state.exists():
-        raise FileNotFoundError(f"Prefix state required for {stage} calibration: {prefix_state}")
-    prefix_ids = [] if prefix_state is None else [int(value) for value in read_json(prefix_state).get("prefix_token_ids", [])]
-    prefix_kv = prefix_dir / "prefixed_key_values.pt" if prefix_dir and prefix_ids else None
-    if prefix_kv and not prefix_kv.exists():
-        raise FileNotFoundError(f"Non-empty Prefix requires fixed KV cache: {prefix_kv}")
+    prefix_info = (
+        validate_prefix_discovery_state(cfg, layout, prefix_dir)
+        if prefix_dir is not None
+        else None
+    )
+    prefix_state = None if prefix_info is None else prefix_info["state_path"]
+    prefix_ids = [] if prefix_info is None else prefix_info["token_ids"]
+    prefix_kv = None if prefix_info is None else prefix_info["kv_path"]
     rotation_path = layout.rotation_dir / "rotation_state.pt" if cfg["rotation"]["enabled"] else None
     if rotation_path and not rotation_path.exists():
         raise FileNotFoundError(f"Rotation state required for rotated calibration: {rotation_path}")
@@ -128,6 +129,15 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "prefix_state_path": str(prefix_state.resolve()) if prefix_state else None,
         "prefix_state_sha256": sha256_file(prefix_state) if prefix_state else None,
         "prefix_kv_path": str(prefix_kv.resolve()) if prefix_kv else None,
+        "prefix_discovery_num_samples": (
+            None if prefix_info is None else prefix_info["state"]["discovery_num_samples"]
+        ),
+        "prefix_discovery_manifest_path": (
+            None if prefix_info is None else prefix_info["state"]["discovery_manifest_path"]
+        ),
+        "prefix_discovery_manifest_sha256": (
+            None if prefix_info is None else prefix_info["state"]["discovery_manifest_sha256"]
+        ),
         "prefix_kv_sha256": sha256_file(prefix_kv) if prefix_kv else None,
         "rotation_enabled": rotation_path is not None,
         "rotation_state_path": str(rotation_path.resolve()) if rotation_path else None,
@@ -408,8 +418,6 @@ def build_clip_state(
 def build_site_states(
     statistics: dict[str, Any],
     cfg: dict[str, Any],
-    *,
-    include_clip: bool,
 ) -> dict[str, dict[str, Any]]:
     _validate_statistics(statistics)
     site_index = statistics.get("site_index")
@@ -556,18 +564,7 @@ def build_site_states(
         **layout,
         "base_scale": (2.0 * absolute).float(),
     }
-    states = {"phase": phase_state, "gif": gif_state, "mtn": mtn_state}
-    if not include_clip or not site_supports_clip(site_index):
-        return states
-
-    states["clip"] = build_clip_state(
-        phase_state,
-        gif_state,
-        mtn_state,
-        phase_T=int(cfg["phase"]["T"]),
-        mtn_T=int(cfg["mtn"]["T"]),
-    )
-    return states
+    return {"phase": phase_state, "gif": gif_state, "mtn": mtn_state}
 
 
 def materialize_calibration_states(
@@ -575,7 +572,6 @@ def materialize_calibration_states(
     cfg: dict[str, Any],
     metadata: dict[str, Any] | None = None,
     *,
-    include_clip: bool,
     expected_num_hidden_layers: int,
 ) -> dict[str, Any]:
     if (
@@ -613,7 +609,7 @@ def materialize_calibration_states(
         key = directory.relative_to(root).as_posix()
         statistics = torch.load(statistics_path, map_location="cpu", weights_only=False)
         _validate_statistics(statistics)
-        states = build_site_states(statistics, cfg, include_clip=False)
+        states = build_site_states(statistics, cfg)
         for name, state in states.items():
             torch.save(state, directory / f"{name}_state.pt")
         (directory / "clip_state.pt").unlink(missing_ok=True)
@@ -969,7 +965,6 @@ def collect_site_statistics(
             site_root,
             cfg,
             metadata,
-            include_clip=False,
             expected_num_hidden_layers=expected_num_hidden_layers,
         )
         if materialize_states

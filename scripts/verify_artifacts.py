@@ -5,6 +5,7 @@ import torch
 from _common import apply_deployment_overrides, parser, setup
 
 from snn2.artifacts import prefix_enabled_dirname, read_json, sha256_file, write_json
+from snn2.data import validate_prefix_discovery_state
 from snn2.config import (
     conversion_prefix_enabled,
     conversion_reuses_ann_training_artifacts,
@@ -663,6 +664,11 @@ def main():
                 "Missing required artifacts:\n"
                 + "\n".join(missing)
             )
+        if requires_pre_finetuning_prefix(cfg) and training_prefix_enabled(cfg):
+            validate_prefix_discovery_state(cfg, layout, layout.ann_training_prefix_dir)
+        if conversion_prefix_enabled(cfg) or evaluation_prefix_enabled(cfg):
+            validate_prefix_discovery_state(cfg, layout, layout.conversion_prefix_dir)
+
 
         if requires_pre_finetuning_prefix(cfg) and training_prefix_enabled(cfg):
             training_prefix_state_path = layout.ann_training_prefix_dir / "prefix_state.json"
@@ -688,7 +694,7 @@ def main():
                 or int(summary.get("rotation_regression_format_version", -1)) != 4
             ):
                 raise ValueError("Rotation summary metadata is incompatible with regression v4")
-            calibration_manifest = layout.calibration_data_manifest_path
+            calibration_manifest = layout.canonical_preprocessing_calibration_manifest_path
             recorded_manifest = regression.get("calibration_manifest_path")
             if (
                 not recorded_manifest

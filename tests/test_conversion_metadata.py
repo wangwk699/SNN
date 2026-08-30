@@ -111,7 +111,6 @@ def _prepare(tmp_path, *, rotation_enabled=False):
             "common_clip_application_control": "replacement.common_clip_enabled",
             "prefix_enabled": False,
         },
-        include_clip=False,
         expected_num_hidden_layers=1,
     )
     layout.ann_checkpoint_dir.mkdir(parents=True)

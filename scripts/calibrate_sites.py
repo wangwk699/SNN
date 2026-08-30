@@ -28,10 +28,14 @@ def main():
     arg_parser.add_argument("--calibration-phase", required=True, choices=("A", "B"))
     args = arg_parser.parse_args()
     scope = {
-        "ann_training": "ann_training_calibration",
-        "vanilla_analysis": "vanilla_analysis_calibration",
-        "post_finetuning": "post_finetuning_calibration",
-    }[args.stage]
+        ("ann_training", "A"): "ann_training_calibration",
+        ("ann_training", "B"): "ann_training_clip_profile",
+        ("vanilla_analysis", "A"): "vanilla_analysis_calibration",
+        ("post_finetuning", "A"): "post_finetuning_calibration",
+        ("post_finetuning", "B"): "post_finetuning_clip_profile",
+    }.get((args.stage, args.calibration_phase))
+    if scope is None:
+        raise ValueError("vanilla_analysis does not materialize Stage B Clip profiles")
     cfg, layout = setup(args.config, config_scope=scope)
     if args.stage == "ann_training" and not requires_ann_training_calibration(cfg):
         raise ValueError("ANN-training calibration is only used by phase_aware/gif_aware modes")
@@ -51,10 +55,12 @@ def main():
         "post_finetuning": layout.post_finetuning_clip_profile_dir,
     }.get(args.stage)
     logs_dir = {
-        "ann_training": layout.ann_training_calibration_logs_dir,
-        "vanilla_analysis": layout.vanilla_analysis_calibration_logs_dir,
-        "post_finetuning": layout.post_finetuning_conversion_calibration_logs_dir,
-    }[args.stage]
+        ("ann_training", "A"): layout.ann_training_calibration_logs_dir,
+        ("ann_training", "B"): layout.ann_training_clip_profile_logs_dir,
+        ("vanilla_analysis", "A"): layout.vanilla_analysis_calibration_logs_dir,
+        ("post_finetuning", "A"): layout.post_finetuning_conversion_calibration_logs_dir,
+        ("post_finetuning", "B"): layout.post_finetuning_clip_profile_logs_dir,
+    }[(args.stage, args.calibration_phase)]
     with StageRun(
         f"calibrate_sites_{args.stage}_phase_{args.calibration_phase}",
         logs_dir,

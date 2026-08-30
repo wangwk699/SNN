@@ -120,7 +120,7 @@ class _Dataset(list):
 
 
 def test_tulu_full_training_uses_all_rows_except_fixed_validation(monkeypatch, tmp_path):
-    raw = {"train": _Dataset({"value": index} for index in range(20))}
+    raw = {"train": _Dataset({"value": index} for index in range(200))}
     monkeypatch.setattr("snn2.data._load_raw", lambda cfg: raw)
     cfg = {
         "experiment": {"task": "tulu3", "seed": 7},
@@ -134,19 +134,19 @@ def test_tulu_full_training_uses_all_rows_except_fixed_validation(monkeypatch, t
         "calibration": {"seed": 42, "num_samples": 4, "with_replacement": False},
     }
     manifests = prepare_manifests(cfg, SimpleNamespace(data_dir=tmp_path))
-    assert len(manifests["train"]["indices"]) == 15
+    assert len(manifests["train"]["indices"]) == 195
     assert len(manifests["validation"]["indices"]) == 5
     assert set(manifests["train"]["indices"]).isdisjoint(
         manifests["validation"]["indices"]
     )
     assert set(manifests["train"]["indices"]) | set(
         manifests["validation"]["indices"]
-    ) == set(range(20))
+    ) == set(range(200))
 
 
 def test_tldr_train_subset_is_fixed_random_without_replacement(monkeypatch, tmp_path):
     raw = {
-        "train": _Dataset({} for _ in range(20)),
+        "train": _Dataset({} for _ in range(200)),
         "validation": _Dataset({} for _ in range(5)),
         "test": _Dataset({} for _ in range(6)),
     }
@@ -163,7 +163,7 @@ def test_tldr_train_subset_is_fixed_random_without_replacement(monkeypatch, tmp_
         "calibration": {"seed": 42, "num_samples": 4, "with_replacement": False},
     }
     manifests = prepare_manifests(cfg, SimpleNamespace(data_dir=tmp_path))
-    expected = random.Random(42).sample(range(20), k=8)
+    expected = random.Random(42).sample(range(200), k=8)
     expected.sort()
 
     assert manifests["train"]["indices"] == expected
@@ -177,7 +177,7 @@ def test_ann_training_subset_uses_current_config_even_when_shared_manifest_is_fu
     monkeypatch, tmp_path
 ):
     raw = {
-        "train": _Dataset({"value": index} for index in range(20)),
+        "train": _Dataset({"value": index} for index in range(200)),
         "validation": _Dataset({"value": index} for index in range(5)),
         "test": _Dataset({"value": index} for index in range(6)),
     }
@@ -195,11 +195,11 @@ def test_ann_training_subset_uses_current_config_even_when_shared_manifest_is_fu
     }
     layout = SimpleNamespace(data_dir=tmp_path)
     prepare_manifests(cfg, layout)
-    assert len(load_selected_raw(cfg, layout).train) == 20
+    assert len(load_selected_raw(cfg, layout).train) == 200
 
     cfg["training"]["tldr_train_samples"] = 8
     bundle = load_selected_raw(cfg, layout, use_configured_train_subset=True)
-    expected = random.Random(42).sample(range(20), k=8)
+    expected = random.Random(42).sample(range(200), k=8)
     expected.sort()
 
     assert len(bundle.train) == 8
@@ -211,7 +211,7 @@ def test_ann_training_subset_uses_current_config_even_when_shared_manifest_is_fu
 
 def test_ann_training_subset_rejects_more_rows_than_raw_split(monkeypatch, tmp_path):
     raw = {
-        "train": _Dataset({"value": index} for index in range(5)),
+        "train": _Dataset({"value": index} for index in range(130)),
         "validation": _Dataset({"value": index} for index in range(2)),
         "test": _Dataset({"value": index} for index in range(2)),
     }
@@ -229,9 +229,9 @@ def test_ann_training_subset_rejects_more_rows_than_raw_split(monkeypatch, tmp_p
     }
     layout = SimpleNamespace(data_dir=tmp_path)
     prepare_manifests(cfg, layout)
-    cfg["training"]["tldr_train_samples"] = 6
+    cfg["training"]["tldr_train_samples"] = 131
 
-    with pytest.raises(ValueError, match="contains only 5 rows"):
+    with pytest.raises(ValueError, match="contains only 130 rows"):
         load_selected_raw(cfg, layout, use_configured_train_subset=True)
 
 

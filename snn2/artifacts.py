@@ -171,6 +171,13 @@ class ArtifactLayout:
         return self.calibration_data_dir / "calibration_manifest.json"
 
     @property
+    def canonical_preprocessing_calibration_dir(self) -> Path:
+        return self.data_dir / "canonical_preprocessing" / "num_samples_128"
+
+    @property
+    def canonical_preprocessing_calibration_manifest_path(self) -> Path:
+        return self.canonical_preprocessing_calibration_dir / "calibration_manifest.json"
+    @property
     def shared_task_logs_dir(self) -> Path:
         return self.shared_task_root / "logs"
 
@@ -191,9 +198,12 @@ class ArtifactLayout:
         return self.shared_model_root / "rotated_prefix" / "rotation"
 
     @property
-    def ann_training_prefix_dir(self) -> Path:
+    def ann_training_prefix_base_dir(self) -> Path:
         return self.policy_root / "pre_finetuning_prefix"
 
+    @property
+    def ann_training_prefix_dir(self) -> Path:
+        return self.ann_training_prefix_base_dir / f'num_samples_{int(self._cfg["calibration"]["num_samples"])}'
     @property
     def rotated_pre_finetuning_dir(self) -> Path:
         """Shared artifacts for evaluating the rotated Base before ANN fine-tuning."""
@@ -228,7 +238,10 @@ class ArtifactLayout:
             / "rotated_prefix"
             / "ann_training_calibration"
             / prefix_enabled_dirname(enabled)
-            / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
+            / calibration_variant_dirname(
+                self._cfg["calibration"]["group_size"],
+                self._cfg["calibration"]["num_samples"],
+            )
         )
 
     @property
@@ -241,7 +254,17 @@ class ArtifactLayout:
 
     @property
     def ann_training_clip_profile_dir(self) -> Path:
-        return self.ann_training_clip_profiles_dir / clip_profile_dirname(self._cfg["phase"]["T"], self._cfg["mtn"]["T"])
+        return self.ann_training_clip_profiles_dir / clip_profile_dirname(
+            self._cfg["phase"]["T"], self._cfg["mtn"]["T"]
+        )
+
+    @property
+    def ann_training_clip_profile_config_dir(self) -> Path:
+        return self.ann_training_clip_profile_dir / "config"
+
+    @property
+    def ann_training_clip_profile_logs_dir(self) -> Path:
+        return self.ann_training_clip_profile_dir / "logs"
 
     @property
     def ann_training_calibration_config_dir(self) -> Path:
@@ -274,12 +297,10 @@ class ArtifactLayout:
 
     @property
     def prefix_dir(self) -> Path:
-        """Legacy alias; new code must select an explicit prefix stage."""
         return self.ann_training_prefix_dir
 
     @property
     def calibration_dir(self) -> Path:
-        """Legacy alias; new code must select an explicit calibration stage."""
         return self.ann_training_calibration_dir
 
     @property
@@ -292,7 +313,6 @@ class ArtifactLayout:
 
     @property
     def ann_checkpoint_dir(self) -> Path:
-        """Canonical final fine-tuned ANN checkpoint for all downstream stages."""
         return self.ann_dir / "final"
 
     @property
@@ -300,9 +320,12 @@ class ArtifactLayout:
         return self.root / "post_finetuning"
 
     @property
-    def post_finetuning_prefix_dir(self) -> Path:
+    def post_finetuning_prefix_base_dir(self) -> Path:
         return self.post_finetuning_dir / "prefix"
 
+    @property
+    def post_finetuning_prefix_dir(self) -> Path:
+        return self.post_finetuning_prefix_base_dir / f'num_samples_{int(self._cfg["calibration"]["num_samples"])}'
     @property
     def post_finetuning_conversion_calibration_dir(self) -> Path:
         enabled = bool(
@@ -326,6 +349,14 @@ class ArtifactLayout:
     @property
     def post_finetuning_clip_profile_dir(self) -> Path:
         return self.post_finetuning_clip_profiles_dir / clip_profile_dirname(self._cfg["phase"]["T"], self._cfg["mtn"]["T"])
+
+    @property
+    def post_finetuning_clip_profile_config_dir(self) -> Path:
+        return self.post_finetuning_clip_profile_dir / "config"
+
+    @property
+    def post_finetuning_clip_profile_logs_dir(self) -> Path:
+        return self.post_finetuning_clip_profile_dir / "logs"
 
     @property
     def post_finetuning_conversion_calibration_config_dir(self) -> Path:
@@ -382,6 +413,7 @@ class ArtifactLayout:
         for path in (
             self.config_dir,
             self.data_dir,
+            self.canonical_preprocessing_calibration_dir,
             self.shared_task_logs_dir,
             self.rotation_dir,
             self.ann_training_prefix_dir,
@@ -392,6 +424,8 @@ class ArtifactLayout:
             self.ann_training_calibration_dir,
             self.ann_training_calibration_config_dir,
             self.ann_training_calibration_logs_dir,
+            self.ann_training_clip_profile_config_dir,
+            self.ann_training_clip_profile_logs_dir,
             self.ann_training_site_dir,
             self.vanilla_analysis_calibration_dir,
             self.vanilla_analysis_calibration_config_dir,
@@ -399,6 +433,8 @@ class ArtifactLayout:
             self.vanilla_analysis_site_dir,
             self.post_finetuning_prefix_dir,
             self.post_finetuning_conversion_calibration_dir,
+            self.post_finetuning_clip_profile_config_dir,
+            self.post_finetuning_clip_profile_logs_dir,
             self.post_finetuning_conversion_calibration_config_dir,
             self.post_finetuning_conversion_calibration_logs_dir,
             self.post_finetuning_site_dir,

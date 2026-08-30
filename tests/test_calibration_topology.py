@@ -75,7 +75,7 @@ def test_validate_calibration_rejects_legacy_site_nine(tmp_path):
 def test_validate_calibration_requires_exact_current_topology(tmp_path):
     for index in SITE_IDS:
         _write_site(tmp_path, index, SITE_NAMES[index])
-    materialize_calibration_states(tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1)
+    materialize_calibration_states(tmp_path, _cfg(), expected_num_hidden_layers=1)
     metadata = validate_calibration(tmp_path, clip_policy="forbid_all")
     assert metadata["site_count"] == 10
     assert metadata["sites"] == 10
@@ -85,7 +85,7 @@ def test_validate_conversion_calibration_does_not_require_clip(tmp_path):
     for index in SITE_IDS:
         _write_site(tmp_path, index, SITE_NAMES[index])
     materialize_calibration_states(
-        tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1
+        tmp_path, _cfg(), expected_num_hidden_layers=1
     )
 
     metadata = validate_calibration(tmp_path, clip_policy="forbid_all")
@@ -97,7 +97,7 @@ def test_validate_conversion_calibration_rejects_stale_clip_state(tmp_path):
         _write_site(tmp_path, index, SITE_NAMES[index]) for index in SITE_IDS
     ]
     materialize_calibration_states(
-        tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1
+        tmp_path, _cfg(), expected_num_hidden_layers=1
     )
     torch.save(_statistics(), directories[0] / "clip_state.pt")
 
@@ -107,7 +107,7 @@ def test_validate_conversion_calibration_rejects_stale_clip_state(tmp_path):
 def test_validate_calibration_rejects_legacy_manifest(tmp_path):
     for index in SITE_IDS:
         _write_site(tmp_path, index, SITE_NAMES[index])
-    materialize_calibration_states(tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1)
+    materialize_calibration_states(tmp_path, _cfg(), expected_num_hidden_layers=1)
     manifest = tmp_path / "calibration_state_manifest.json"
     data = json.loads(manifest.read_text(encoding="utf-8"))
     data["format_version"] = 1
@@ -129,7 +129,6 @@ def test_materialize_requires_all_expected_layers(tmp_path):
         materialize_calibration_states(
             tmp_path,
             _cfg(),
-            include_clip=False,
             expected_num_hidden_layers=2,
         )
 
@@ -141,7 +140,6 @@ def test_materialize_rejects_non_contiguous_layers(tmp_path):
         materialize_calibration_states(
             tmp_path,
             _cfg(),
-            include_clip=False,
             expected_num_hidden_layers=2,
         )
 
@@ -152,7 +150,6 @@ def test_materialize_and_validate_complete_two_layer_bundle(tmp_path):
     manifest = materialize_calibration_states(
         tmp_path,
         _cfg(),
-        include_clip=False,
         expected_num_hidden_layers=2,
     )
     assert manifest["expected_num_hidden_layers"] == 2
@@ -170,7 +167,6 @@ def test_validate_rejects_ann_config_layer_count_mismatch(tmp_path):
     materialize_calibration_states(
         tmp_path,
         _cfg(),
-        include_clip=False,
         expected_num_hidden_layers=2,
     )
     with pytest.raises(ValueError, match="ANN config num_hidden_layers"):
@@ -184,7 +180,6 @@ def test_validate_rejects_manifest_layer_name_mismatch(tmp_path):
     materialize_calibration_states(
         tmp_path,
         _cfg(),
-        include_clip=False,
         expected_num_hidden_layers=1,
     )
     manifest_path = tmp_path / "calibration_state_manifest.json"
@@ -210,7 +205,7 @@ def test_validate_rejects_manifest_saliency_provenance_mismatch(
     for index in SITE_IDS:
         _write_site(tmp_path, index, SITE_NAMES[index])
     materialize_calibration_states(
-        tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1
+        tmp_path, _cfg(), expected_num_hidden_layers=1
     )
     path = tmp_path / "calibration_state_manifest.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))

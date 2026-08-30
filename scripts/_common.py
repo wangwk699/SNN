@@ -72,10 +72,14 @@ def setup(config_path: str, config_scope: str = "run"):
         config_dir = layout.rotated_pre_finetuning_config_dir
     elif config_scope == "ann_training_calibration":
         config_dir = layout.ann_training_calibration_config_dir
+    elif config_scope == "ann_training_clip_profile":
+        config_dir = layout.ann_training_clip_profile_config_dir
     elif config_scope == "vanilla_analysis_calibration":
         config_dir = layout.vanilla_analysis_calibration_config_dir
     elif config_scope == "post_finetuning_calibration":
         config_dir = layout.post_finetuning_conversion_calibration_config_dir
+    elif config_scope == "post_finetuning_clip_profile":
+        config_dir = layout.post_finetuning_clip_profile_config_dir
     elif config_scope == "run":
         config_dir = layout.config_dir
     elif config_scope == "base":

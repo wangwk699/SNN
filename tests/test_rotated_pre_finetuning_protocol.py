@@ -54,8 +54,8 @@ def test_rotated_pre_finetuning_paths_are_model_shared(mode, learning_rate):
     assert layout.rotated_pre_finetuning_config_dir.parent == layout.rotated_pre_finetuning_dir
     assert layout.rotated_pre_finetuning_logs_dir.parent == layout.rotated_pre_finetuning_dir
     assert layout.rotated_pre_finetuning_prefix_dir == layout.ann_training_prefix_dir
-    assert layout.ann_training_prefix_dir.parts[-2:] == (
-        "rotated_prefix", "pre_finetuning_prefix"
+    assert layout.ann_training_prefix_dir.parts[-3:] == (
+        "rotated_prefix", "pre_finetuning_prefix", "num_samples_128"
     )
 
 

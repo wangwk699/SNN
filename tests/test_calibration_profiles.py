@@ -69,14 +69,13 @@ def _write_statistics(root):
     return directories
 
 
-def test_build_site_states_with_common_clip():
-    states = build_site_states(_statistics(), _cfg(), include_clip=True)
+def test_build_site_states_is_always_stage_a_only():
+    states = build_site_states(_statistics(), _cfg())
 
-    assert set(states) == {"phase", "gif", "mtn", "clip"}
-
+    assert set(states) == {"phase", "gif", "mtn"}
 
 def test_build_site_states_without_common_clip():
-    states = build_site_states(_statistics(), _cfg(), include_clip=False)
+    states = build_site_states(_statistics(), _cfg())
 
     assert set(states) == {"phase", "gif", "mtn"}
     assert states["phase"]["tau"].dtype == torch.float32
@@ -90,9 +89,8 @@ def test_non_divisible_ordinary_group_fails_but_site5_ignores_global_group():
     cfg = _cfg()
     cfg["calibration"]["group_size"] = 3
     with pytest.raises(ValueError, match="not divisible|divisible"):
-        build_site_states(_statistics(1), cfg, include_clip=False)
-    states = build_site_states(_statistics(5), cfg, include_clip=True)
-    assert set(states) == {"phase", "gif", "mtn"}
+        build_site_states(_statistics(1), cfg)
+    states = build_site_states(_statistics(5), cfg)
     assert states["phase"]["tau"].shape == (1, 1)
     assert states["mtn"]["base_scale"].shape == (1, 1)
     site5_gif = states["gif"]
@@ -111,11 +109,11 @@ def test_stage_a_materialization_is_clip_free_and_runtime_independent(tmp_path):
     cfg["phase"]["T"] = 2
     cfg["mtn"].update({"T": 2, "K": 4})
     manifest = materialize_calibration_states(
-        tmp_path, cfg, include_clip=True, expected_num_hidden_layers=1
+        tmp_path, cfg, expected_num_hidden_layers=1
     )
-    assert manifest["calibration_phase"] == "A"
     assert manifest["calibration_architecture"] == "two_stage_A_common_B_clip_profiles"
     assert all(not (directory / "clip_state.pt").exists() for directory in directories)
+    assert manifest["calibration_phase"] == "A"
     assert all(not (directory / "calibration_summary.json").exists() for directory in directories)
     phase = torch.load(directories[0] / "phase_state.pt", weights_only=False)
     mtn = torch.load(directories[0] / "mtn_state.pt", weights_only=False)
@@ -128,7 +126,7 @@ def test_two_stage_b_profiles_reuse_unchanged_stage_a(tmp_path):
     directories = _write_statistics(tmp_path / "sites")
     cfg = _cfg()
     materialize_calibration_states(
-        tmp_path / "sites", cfg, include_clip=False, expected_num_hidden_layers=1
+        tmp_path / "sites", cfg, expected_num_hidden_layers=1
     )
     stage_a_hashes = {
         path.relative_to(tmp_path / "sites").as_posix(): path.read_bytes()
@@ -155,7 +153,7 @@ def test_two_stage_b_profiles_reuse_unchanged_stage_a(tmp_path):
 def test_mask_aware_role_specific_clip_classifies_site1_roles():
     cfg = _cfg()
     cfg["calibration"]["group_size"] = -1
-    states = build_site_states(_statistics(1), cfg, include_clip=False)
+    states = build_site_states(_statistics(1), cfg)
     states["gif"]["mask_low_by_role"] = {
         "q": torch.ones(4, dtype=torch.bool),
         "k": torch.zeros(4, dtype=torch.bool),
@@ -172,7 +170,7 @@ def test_mask_aware_role_specific_clip_classifies_site1_roles():
 
 
 def test_site2_all_low_state_has_strict_low_only_contract():
-    state = build_site_states(_statistics(2), _cfg(), include_clip=False)["gif"]
+    state = build_site_states(_statistics(2), _cfg())["gif"]
     assert state["gif_policy"] == "all_low_static_qmax15"
     assert state["base_bits"] == 4
     assert state["add_bits"] == 1
@@ -196,7 +194,7 @@ def test_site2_all_low_state_has_strict_low_only_contract():
 def test_calibration_manifest_records_saliency_and_mask_provenance(tmp_path):
     _write_statistics(tmp_path)
     manifest = materialize_calibration_states(
-        tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1
+        tmp_path, _cfg(), expected_num_hidden_layers=1
     )
     assert manifest["gif_saliency_selection_policy"] == "spikellm_global_per_channel_threshold_leq"
     assert manifest["gif_saliency_tie_policy"] == "mask_low_equals_score_le_threshold"
@@ -237,7 +235,7 @@ def test_calibration_manifest_records_saliency_and_mask_provenance(tmp_path):
 def test_stage_a_validator_rejects_runtime_field_in_manifest(tmp_path):
     _write_statistics(tmp_path)
     materialize_calibration_states(
-        tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1
+        tmp_path, _cfg(), expected_num_hidden_layers=1
     )
     path = tmp_path / "calibration_state_manifest.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -252,7 +250,7 @@ def test_clip_profile_validator_rejects_tampered_site_summary(tmp_path):
     site_root = tmp_path / "sites"
     _write_statistics(site_root)
     materialize_calibration_states(
-        site_root, cfg, include_clip=False, expected_num_hidden_layers=1
+        site_root, cfg, expected_num_hidden_layers=1
     )
     profile_root = tmp_path / "phase_T_4_mtn_T_4"
     materialize_clip_profile(site_root, profile_root, cfg)

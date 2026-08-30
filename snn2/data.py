@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-from .artifacts import ArtifactLayout, read_json, write_json
+from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
 
 
 @dataclass
@@ -73,6 +73,30 @@ def _tldr_train_selection(
     return indices, "seeded_random_without_replacement"
 
 
+CANONICAL_PREPROCESSING_NUM_SAMPLES = 128
+
+
+def _calibration_selection(
+    train_indices: list[int],
+    *,
+    seed: int,
+    num_samples: int,
+    with_replacement: bool,
+) -> tuple[list[int], list[int]]:
+    if num_samples <= 0:
+        raise ValueError("Calibration sample count must be positive")
+    rng = random.Random(seed)
+    if with_replacement:
+        positions = [rng.randrange(len(train_indices)) for _ in range(num_samples)]
+    else:
+        if num_samples > len(train_indices):
+            raise ValueError(
+                f"Cannot sample {num_samples} calibration examples without replacement "
+                f"from only {len(train_indices)} training examples"
+            )
+        positions = rng.sample(range(len(train_indices)), k=num_samples)
+    return positions, [train_indices[position] for position in positions]
+
 def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, dict[str, Any]]:
     raw = _load_raw(cfg)
     data_cfg = cfg["data"]
@@ -103,46 +127,31 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
             train_indices = permutation[:train_size]
             validation_indices = permutation[train_size : train_size + validation_size]
         validation_split = train_split
+        train_sampling = "seeded_without_replacement"
     elif task == "tldr":
         train_indices, train_sampling = _tldr_train_selection(raw_train, cfg)
         validation_split = data_cfg.get("validation_split", "validation")
-        raw_validation = raw[validation_split]
-        validation_indices = list(range(len(raw_validation)))
+        validation_indices = list(range(len(raw[validation_split])))
     else:
         train_indices = list(range(len(raw_train)))
-
+        train_sampling = "full_split"
         validation_split = data_cfg.get("validation_split", "validation")
-        raw_validation = raw[validation_split]
-        validation_indices = list(range(len(raw_validation)))
-    # calibration_rng = random.Random(int(cfg["calibration"]["seed"]))
-    # draws = int(cfg["calibration"]["num_samples"])
-    # calibration_positions = [calibration_rng.randrange(len(train_indices)) for _ in range(draws)]
-    # calibration_indices = [train_indices[position] for position in calibration_positions]
+        validation_indices = list(range(len(raw[validation_split])))
 
-    calibration_rng = random.Random(int(cfg["calibration"]["seed"]))
-    draws = int(cfg["calibration"]["num_samples"])
+    calibration_num_samples = int(cfg["calibration"]["num_samples"])
     with_replacement = bool(cfg["calibration"].get("with_replacement", False))
-
-    if with_replacement:
-        calibration_positions = [
-            calibration_rng.randrange(len(train_indices))
-            for _ in range(draws)
-        ]
-    else:
-        if draws > len(train_indices):
-            raise ValueError(
-                f"Cannot sample {draws} calibration examples without replacement "
-                f"from only {len(train_indices)} training examples"
-            )
-        calibration_positions = calibration_rng.sample(
-            range(len(train_indices)),
-            k=draws,
-        )
-
-    calibration_indices = [
-        train_indices[position]
-        for position in calibration_positions
-    ]
+    calibration_positions, calibration_indices = _calibration_selection(
+        train_indices,
+        seed=int(cfg["calibration"]["seed"]),
+        num_samples=calibration_num_samples,
+        with_replacement=with_replacement,
+    )
+    canonical_positions, canonical_indices = _calibration_selection(
+        list(range(len(raw_train))),
+        seed=int(cfg["calibration"]["seed"]),
+        num_samples=CANONICAL_PREPROCESSING_NUM_SAMPLES,
+        with_replacement=False,
+    )
 
     common = {
         "dataset_name": data_cfg["dataset_name"],
@@ -154,11 +163,7 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         "train": {
             **common,
             "split": train_split,
-            "sampling": (
-                train_sampling
-                if task == "tldr"
-                else "seeded_without_replacement" if task == "tulu3" else "full_split"
-            ),
+            "sampling": train_sampling,
             **(
                 {
                     "tldr_train_samples": cfg["training"].get("tldr_train_samples"),
@@ -179,17 +184,28 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         },
         "calibration": {
             **common,
+            "manifest_role": "stage_a_calibration_selection",
             "split": train_split,
-            "sampling": (
-                "seeded_with_replacement"
-                if with_replacement
-                else "seeded_without_replacement"
-            ),
+            "sampling": "seeded_with_replacement" if with_replacement else "seeded_without_replacement",
             "calibration_seed": int(cfg["calibration"]["seed"]),
+            "num_samples": calibration_num_samples,
             "positions_in_selected_train": calibration_positions,
             "indices": calibration_indices,
             "record_ids": _record_ids(raw_train, calibration_indices),
             "duplicates_preserved": with_replacement,
+            "retained_in_training": True,
+        },
+        "canonical_preprocessing_calibration": {
+            **common,
+            "manifest_role": "canonical_preprocessing_calibration",
+            "split": train_split,
+            "sampling": "seeded_without_replacement",
+            "calibration_seed": int(cfg["calibration"]["seed"]),
+            "num_samples": CANONICAL_PREPROCESSING_NUM_SAMPLES,
+            "positions_in_selected_train": canonical_positions,
+            "indices": canonical_indices,
+            "record_ids": _record_ids(raw_train, canonical_indices),
+            "duplicates_preserved": False,
             "retained_in_training": True,
         },
     }
@@ -204,10 +220,21 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
             "indices": evaluation_indices,
             "record_ids": _record_ids(raw_evaluation, evaluation_indices),
         }
+
     layout.data_dir.mkdir(parents=True, exist_ok=True)
-    for name, manifest in manifests.items():
-        path = (Path(layout.data_dir) / "calibration" / f"num_samples_{int(cfg['calibration']['num_samples'])}" / "calibration_manifest.json") if name == "calibration" else Path(layout.data_dir) / f"{name}_manifest.json"
-        write_json(path, manifest)
+    for name in ("train", "validation", "evaluation"):
+        if name in manifests:
+            write_json(layout.data_dir / f"{name}_manifest.json", manifests[name])
+    stage_a_manifest_path = getattr(
+        layout, "calibration_data_manifest_path", layout.data_dir / "calibration_manifest.json"
+    )
+    canonical_manifest_path = getattr(
+        layout,
+        "canonical_preprocessing_calibration_manifest_path",
+        layout.data_dir / "canonical_preprocessing" / "num_samples_128" / "calibration_manifest.json",
+    )
+    write_json(stage_a_manifest_path, manifests["calibration"])
+    write_json(canonical_manifest_path, manifests["canonical_preprocessing_calibration"])
     return manifests
 
 
@@ -216,13 +243,76 @@ def load_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, dic
         name: read_json(layout.data_dir / f"{name}_manifest.json")
         for name in ("train", "validation")
     }
-    result["calibration"] = read_json(
-        Path(layout.data_dir) / "calibration" / f"num_samples_{int(cfg['calibration']['num_samples'])}" / "calibration_manifest.json"
+    calibration_path = getattr(
+        layout, "calibration_data_manifest_path", layout.data_dir / "calibration_manifest.json"
     )
+    result["calibration"] = read_json(calibration_path)
     evaluation = layout.data_dir / "evaluation_manifest.json"
     if evaluation.exists():
         result["evaluation"] = read_json(evaluation)
     return result
+
+def load_canonical_preprocessing_raw(cfg: dict[str, Any], layout: ArtifactLayout) -> Any:
+    """Load the fixed canonical 128-sample selection used only by preprocessing."""
+    manifest = read_json(layout.canonical_preprocessing_calibration_manifest_path)
+    expected = {
+        "manifest_role": "canonical_preprocessing_calibration",
+        "num_samples": CANONICAL_PREPROCESSING_NUM_SAMPLES,
+        "sampling": "seeded_without_replacement",
+        "duplicates_preserved": False,
+    }
+    mismatched = {
+        key: (value, manifest.get(key))
+        for key, value in expected.items()
+        if manifest.get(key) != value
+    }
+    if mismatched:
+        raise ValueError(
+            "Canonical preprocessing calibration manifest is invalid: "
+            f"{mismatched}"
+        )
+    raw = _load_raw(cfg)
+    return raw[manifest["split"]].select(manifest["indices"])
+
+
+def validate_prefix_discovery_state(
+    cfg: dict[str, Any],
+    layout: ArtifactLayout,
+    prefix_dir: str | Path,
+) -> dict[str, Any]:
+    """Validate that a Prefix artifact belongs to the current Stage A selection."""
+    root = Path(prefix_dir)
+    expected_dirname = f"num_samples_{int(cfg['calibration']['num_samples'])}"
+    if root.name != expected_dirname:
+        raise ValueError(f"Prefix root must be {expected_dirname}, got {root.name}")
+    path = root / "prefix_state.json"
+    if not path.exists():
+        raise FileNotFoundError(path)
+    state = read_json(path)
+    manifest_path = layout.calibration_data_manifest_path
+    expected = {
+        "discovery_num_samples": int(cfg["calibration"]["num_samples"]),
+        "discovery_data_source": "stage_a_calibration_selection",
+        "discovery_manifest_path": str(manifest_path.resolve()),
+        "discovery_manifest_sha256": sha256_file(manifest_path),
+    }
+    mismatched = {
+        key: (value, state.get(key))
+        for key, value in expected.items()
+        if state.get(key) != value
+    }
+    if mismatched:
+        raise ValueError(f"Prefix discovery provenance mismatch: {mismatched}")
+    token_ids = [int(value) for value in state.get("prefix_token_ids", [])]
+    kv_path = root / "prefixed_key_values.pt"
+    if token_ids and not kv_path.exists():
+        raise FileNotFoundError(f"Non-empty Prefix requires fixed KV cache: {kv_path}")
+    return {
+        "state": state,
+        "state_path": path,
+        "kv_path": kv_path if token_ids else None,
+        "token_ids": token_ids,
+    }
 
 
 def load_selected_raw(

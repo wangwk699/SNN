@@ -197,7 +197,6 @@ def _write_calibration_bundle(root: Path, cfg: dict) -> dict:
     return materialize_calibration_states(
         root,
         cfg,
-        include_clip=False,
         expected_num_hidden_layers=1,
     )
 

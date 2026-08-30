@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-
+from snn2.artifacts import ArtifactLayout, sha256_file
 from snn2.artifacts import ArtifactLayout
 from snn2.config import (
     conversion_calibration_stage,
@@ -208,12 +208,24 @@ def test_vanilla_tldr_path_records_no_pretraining_prefix(configured, suffix):
     assert ArtifactLayout(cfg).root.parts[-3:] == Path(suffix).parts[-3:]
 
 
+def _write_prefix_state(cfg, layout, directory, token_ids):
+    manifest = layout.calibration_data_manifest_path
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({"num_samples": cfg["calibration"]["num_samples"]}), encoding="utf-8")
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "prefix_state.json").write_text(json.dumps({
+        "prefix_token_ids": token_ids,
+        "discovery_num_samples": cfg["calibration"]["num_samples"],
+        "discovery_data_source": "stage_a_calibration_selection",
+        "discovery_manifest_path": str(manifest.resolve()),
+        "discovery_manifest_sha256": sha256_file(manifest),
+    }), encoding="utf-8")
+
+
 def test_conversion_prefix_validator_uses_aware_pre_finetuning_root(tmp_path):
     cfg = _cfg("phase_aware", tmp_path)
     layout = ArtifactLayout(cfg)
-    state = layout.ann_training_prefix_dir / "prefix_state.json"
-    state.parent.mkdir(parents=True)
-    state.write_text(json.dumps({"prefix_token_ids": []}), encoding="utf-8")
+    _write_prefix_state(cfg, layout, layout.ann_training_prefix_dir, [])
     metadata = validate_conversion_prefix(cfg, layout)
     assert metadata["prefix_source_stage"] == "pre_finetuning"
     assert metadata["prefix_root"] == str(layout.ann_training_prefix_dir.resolve())
@@ -222,9 +234,7 @@ def test_conversion_prefix_validator_uses_aware_pre_finetuning_root(tmp_path):
 def test_conversion_prefix_validator_uses_post_finetuning_root(tmp_path):
     cfg = _cfg("unaware", tmp_path)
     layout = ArtifactLayout(cfg)
-    state = layout.post_finetuning_prefix_dir / "prefix_state.json"
-    state.parent.mkdir(parents=True)
-    state.write_text(json.dumps({"prefix_token_ids": [123]}), encoding="utf-8")
+    _write_prefix_state(cfg, layout, layout.post_finetuning_prefix_dir, [123])
     with pytest.raises(FileNotFoundError, match="KV cache"):
         validate_conversion_prefix(cfg, layout)
 

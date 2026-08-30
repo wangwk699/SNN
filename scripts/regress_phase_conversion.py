@@ -185,7 +185,7 @@ def _locked_temporal_compare(cfg, layout, ids, mask, device, oracle_logits, toke
 
 
 def main() -> None:
-    regression_parser = parser("Regress static Phase ANN against temporal Phase SNN")
+    regression_parser = parser("Regress static Phase ANN against temporal Phase SNN", deployment_overrides=True)
     regression_parser.add_argument("--sample-index", type=int, default=0)
     regression_parser.add_argument("--max-input-tokens", type=int, default=64)
     regression_parser.add_argument("--decode-steps", type=int, default=16)
@@ -196,6 +196,8 @@ def main() -> None:
         raise ValueError("max-input-tokens must be positive and decode-steps non-negative")
 
     cfg, layout = setup(args.config)
+    source_phase_T, source_mtn_T = int(cfg["phase"]["T"]), int(cfg["mtn"]["T"])
+    cfg = apply_deployment_overrides(args, cfg)
     output_dir = layout.root / "analysis" / "phase_conversion_regression"
     output_dir.mkdir(parents=True, exist_ok=True)
     validation = validate_phase_conversion_artifacts(cfg, layout)
@@ -225,6 +227,10 @@ def main() -> None:
         "decode_steps": args.decode_steps,
         "batch_size": 1,
         "use_cache": False,
+        "source_phase_T": source_phase_T,
+        "source_mtn_T": source_mtn_T,
+        "deployment_phase_T": int(cfg["phase"]["T"]),
+        "deployment_mtn_T": int(cfg["mtn"]["T"]),
         "dropout": 0,
         "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()),
     }

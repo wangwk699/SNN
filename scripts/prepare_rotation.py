@@ -6,7 +6,7 @@ import torch
 
 from snn2.artifacts import sha256_file, write_json
 from snn2.controller import SiteController
-from snn2.data import load_selected_raw
+from snn2.data import load_canonical_preprocessing_raw
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
 from snn2.modeling import load_model, load_tokenizer
@@ -74,8 +74,8 @@ def main():
         controller_c = SiteController(mode="identity")
         install_model_integration(model_c, controller_c, state)
 
-        calibration = load_selected_raw(cfg, layout).calibration
-        manifest_path = layout.calibration_data_manifest_path
+        calibration = load_canonical_preprocessing_raw(cfg, layout)
+        manifest_path = layout.canonical_preprocessing_calibration_manifest_path
         try:
             regression = validate_rotation_regression_suite(
                 model_a,

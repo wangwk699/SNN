@@ -11,6 +11,7 @@ from .config import (
     training_common_clip_enabled,
 )
 from .controller import SiteController
+from .data import validate_prefix_discovery_state
 from .sites import topology_metadata
 from .state_validation import validate_site_state_bundle
 from .temporal_ops import (
@@ -120,24 +121,22 @@ def validate_conversion_prefix(
             "prefix_token_ids": [],
             "prefix_state_sha256": None,
             "prefix_kv_sha256": None,
+            "prefix_num_samples": None,
+            "prefix_discovery_manifest_sha256": None,
         }
-    state_path = root / "prefix_state.json"
-    if not state_path.exists():
-        command_stage = "pre_finetuning" if source_stage == "pre_finetuning" else "post_finetuning"
-        raise FileNotFoundError(
-            f"Conversion Prefix state is missing: {state_path}. Run "
-            f"scripts/discover_prefix.py --stage {command_stage}."
-        )
-    token_ids = [int(value) for value in read_json(state_path).get("prefix_token_ids", [])]
-    kv_path = root / "prefixed_key_values.pt"
-    if token_ids and not kv_path.exists():
-        raise FileNotFoundError(f"Non-empty conversion Prefix requires KV cache: {kv_path}")
+    prefix_info = validate_prefix_discovery_state(cfg, layout, root)
+    state_path = prefix_info["state_path"]
+    kv_path = prefix_info["kv_path"]
     return {
         "prefix_root": str(root.resolve()),
         "prefix_source_stage": source_stage,
-        "prefix_token_ids": token_ids,
+        "prefix_token_ids": prefix_info["token_ids"],
         "prefix_state_sha256": sha256_file(state_path),
-        "prefix_kv_sha256": sha256_file(kv_path) if token_ids else None,
+        "prefix_kv_sha256": sha256_file(kv_path) if kv_path else None,
+        "prefix_num_samples": int(prefix_info["state"]["discovery_num_samples"]),
+        "prefix_discovery_manifest_sha256": prefix_info["state"][
+            "discovery_manifest_sha256"
+        ],
     }
 
 
@@ -157,6 +156,10 @@ def _validate_aware_training_provenance(
         "ann_training_prefix_root": prefix["prefix_root"],
         "ann_training_prefix_state_sha256": prefix["prefix_state_sha256"],
         "ann_training_prefix_kv_sha256": prefix["prefix_kv_sha256"],
+        "ann_training_prefix_num_samples": prefix["prefix_num_samples"],
+        "ann_training_prefix_discovery_manifest_sha256": prefix[
+            "prefix_discovery_manifest_sha256"
+        ],
         "ann_training_prefix_token_ids": prefix["prefix_token_ids"],
         "ann_training_calibration_root": str(layout.ann_training_site_dir.resolve()),
         "ann_training_calibration_manifest_sha256": sha256_file(calibration_manifest),

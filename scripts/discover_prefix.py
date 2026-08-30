@@ -1,6 +1,6 @@
 from _common import parser, setup
 
-from snn2.artifacts import write_json
+from snn2.artifacts import sha256_file, write_json
 from snn2.controller import SiteController
 from snn2.data import load_selected_raw
 from snn2.logging_utils import StageRun
@@ -61,6 +61,14 @@ def main():
         tokenizer = load_tokenizer(cfg, source)
         install_model_integration(model, SiteController(mode="identity"), rotation_state(cfg, layout))
         state = discover_prefix_tokens(model, tokenizer, load_selected_raw(cfg, layout).calibration, cfg, output_dir / "prefix_state.json")
+        manifest_path = layout.calibration_data_manifest_path
+        state.update({
+            "discovery_num_samples": int(cfg["calibration"]["num_samples"]),
+            "discovery_data_source": "stage_a_calibration_selection",
+            "discovery_manifest_path": str(manifest_path.resolve()),
+            "discovery_manifest_sha256": sha256_file(manifest_path),
+        })
+        write_json(output_dir / "prefix_state.json", state)
         values = build_prefix_key_values(model, state["prefix_token_ids"])
         cache_path = output_dir / "prefixed_key_values.pt"
         if values is not None:

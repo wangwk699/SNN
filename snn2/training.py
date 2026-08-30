@@ -12,7 +12,7 @@ from .config import (
     training_prefix_enabled,
 )
 from .controller import SiteController
-from .data import CausalLMCollator, load_selected_raw, tokenize_dataset
+from .data import CausalLMCollator, load_selected_raw, tokenize_dataset, validate_prefix_discovery_state
 from .model_integration import install_model_integration
 from .modeling import load_model, load_tokenizer, model_source_for_stage, prefix_ids_for_stage, prefix_key_values_for_stage, rotation_state
 from .prefix_cache import install_prefix_kv_forward
@@ -47,28 +47,28 @@ def capture_training_artifact_provenance(
 ) -> dict[str, Any]:
     captured: dict[str, Any] = {}
     if training_prefix_enabled(cfg):
-        prefix_state_path = layout.ann_training_prefix_dir / "prefix_state.json"
-        if not prefix_state_path.exists():
-            raise FileNotFoundError(prefix_state_path)
-        saved_ids = [
-            int(value)
-            for value in read_json(prefix_state_path).get("prefix_token_ids", [])
-        ]
+        prefix_info = validate_prefix_discovery_state(
+            cfg, layout, layout.ann_training_prefix_dir
+        )
+        prefix_state_path = prefix_info["state_path"]
+        saved_ids = prefix_info["token_ids"]
         if saved_ids != [int(value) for value in prefix_ids]:
             raise ValueError("Loaded ANN-training Prefix IDs do not match prefix_state.json")
-        prefix_kv_path = layout.ann_training_prefix_dir / "prefixed_key_values.pt"
-        if saved_ids and not prefix_kv_path.exists():
-            raise FileNotFoundError(prefix_kv_path)
+        prefix_kv_path = prefix_info["kv_path"]
         captured.update(
             {
-                "ann_training_prefix_root": str(
-                    layout.ann_training_prefix_dir.resolve()
-                ),
+                "ann_training_prefix_root": str(layout.ann_training_prefix_dir.resolve()),
                 "ann_training_prefix_state_sha256": sha256_file(prefix_state_path),
                 "ann_training_prefix_kv_sha256": (
-                    sha256_file(prefix_kv_path) if saved_ids else None
+                    sha256_file(prefix_kv_path) if prefix_kv_path else None
                 ),
                 "ann_training_prefix_token_ids": saved_ids,
+                "ann_training_prefix_num_samples": int(
+                    prefix_info["state"]["discovery_num_samples"]
+                ),
+                "ann_training_prefix_discovery_manifest_sha256": prefix_info["state"][
+                    "discovery_manifest_sha256"
+                ],
             }
         )
     if is_aware_ann_mode(cfg):
@@ -145,6 +145,8 @@ def validate_recorded_training_artifact_provenance(
         raise FileNotFoundError(result_path)
     recorded_result = read_json(result_path)
     keys = (
+        "ann_training_prefix_num_samples",
+        "ann_training_prefix_discovery_manifest_sha256",
         "ann_training_prefix_root",
         "ann_training_prefix_state_sha256",
         "ann_training_prefix_kv_sha256",
