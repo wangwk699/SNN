@@ -828,9 +828,6 @@ def main():
         )
 
         for neuron in ("phase", "gif", "mtn"):
-            metadata_path = layout.snn_conversion_dir(neuron) / "conversion_metadata.json"
-            metadata = validate_conversion_metadata(cfg, layout, neuron)
-        for neuron in ("phase", "gif", "mtn"):
             metadata = validate_conversion_metadata(cfg, layout, neuron)
             expected_steps = {
                 "phase": int(cfg["phase"]["T"]),

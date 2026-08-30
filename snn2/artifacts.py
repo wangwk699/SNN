@@ -417,8 +417,6 @@ class ArtifactLayout:
             ) / neuron
         if neuron == "phase":
             return result / phase_snn_dirname(self._cfg["phase"]["T"])
-            self.ann_training_prefix_config_dir,
-            self.ann_training_prefix_logs_dir,
         if neuron == "mtn":
             return result / mtn_snn_dirname(self._cfg["mtn"]["T"], self._cfg["mtn"]["K"])
         return result
