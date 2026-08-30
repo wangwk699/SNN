@@ -1,4 +1,4 @@
-from _common import parser, setup
+from _common import apply_deployment_overrides, parser, setup
 
 from snn2.conversion import create_conversion
 from snn2.logging_utils import StageRun
@@ -7,6 +7,7 @@ from snn2.logging_utils import StageRun
 def main():
     args = parser("Create a frozen full-temporal SNN conversion descriptor", neuron=True).parse_args()
     cfg, layout = setup(args.config)
+    apply_deployment_overrides(args, cfg)
     stage = f"convert_snn_{args.neuron}"
     with StageRun(stage, layout.logs_dir, cfg["experiment"]) as run:
         metadata = create_conversion(cfg, layout, args.neuron)

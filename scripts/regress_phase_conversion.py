@@ -52,17 +52,19 @@ def _controller(cfg, layout, graph: str, *, bypass_final_norm_phase: bool):
             mode="phase",
             site_root=layout.ann_training_site_dir,
             common_clip_enabled=False,
+            phase_T=int(cfg["phase"]["T"]),
             phase_surrogate_slope=float(cfg["phase"]["surrogate_slope"]),
         )
     elif graph == "phase_temporal":
-        controller = SiteController(mode="identity", site_root=layout.ann_training_site_dir)
+        controller = SiteController(
+            mode="identity", site_root=layout.ann_training_site_dir,
+            phase_T=int(cfg["phase"]["T"]), mtn_T=int(cfg["mtn"]["T"]),
+            mtn_K=int(cfg["mtn"]["K"]),
+            mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
+        )
         controller.set_deployment(
             "phase",
-            clip_bundle_policy=(
-                "allow_eligible"
-                if conversion_reuses_ann_training_artifacts(cfg)
-                else "forbid_all"
-            ),
+            clip_bundle_policy="forbid_all",
         )
         controller.regression_bypass_final_norm_phase = bool(bypass_final_norm_phase)
     else:
@@ -229,7 +231,7 @@ def main() -> None:
     write_json(output_dir / "regression_metadata.json", metadata)
 
     num_layers = int(validation["conversion"]["expected_num_hidden_layers"])
-    micro = run_phase_neuron_micro_regression(layout.ann_training_site_dir, num_layers)
+    micro = run_phase_neuron_micro_regression(layout.ann_training_site_dir, num_layers, phase_T=int(cfg["phase"]["T"]))
     primitives = run_temporal_primitive_regression(
         steps=int(validation["conversion"]["full_temporal_steps"])
     )

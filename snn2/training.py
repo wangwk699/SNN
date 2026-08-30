@@ -16,7 +16,7 @@ from .data import CausalLMCollator, load_selected_raw, tokenize_dataset
 from .model_integration import install_model_integration
 from .modeling import load_model, load_tokenizer, model_source_for_stage, prefix_ids_for_stage, prefix_key_values_for_stage, rotation_state
 from .prefix_cache import install_prefix_kv_forward
-from .state_validation import validate_site_state_bundle
+from .state_validation import validate_clip_profile, validate_site_state_bundle
 from .temporal_ops import CALIBRATION_GROUPING_POLICY, STATISTICS_FORMAT_VERSION
 
 
@@ -73,34 +73,42 @@ def capture_training_artifact_provenance(
         )
     if is_aware_ann_mode(cfg):
         validation = validate_site_state_bundle(
-            layout.ann_training_site_dir, clip_policy="require_eligible"
+            layout.ann_training_site_dir, clip_policy="forbid_all"
+        )
+        validate_clip_profile(
+            layout.ann_training_site_dir,
+            layout.ann_training_clip_profile_dir,
+            phase_T=int(cfg["phase"]["T"]),
+            mtn_T=int(cfg["mtn"]["T"]),
+            group_size=int(cfg["calibration"]["group_size"]),
+            num_samples=int(cfg["calibration"]["num_samples"]),
         )
         manifest_metadata = validation["manifest"]
         expected_group = int(cfg["calibration"]["group_size"])
+        expected_samples = int(cfg["calibration"]["num_samples"])
         if (
             manifest_metadata.get("calibration_group_size") != expected_group
+            or manifest_metadata.get("calibration_num_samples") != expected_samples
             or manifest_metadata.get("calibration_grouping_policy") != CALIBRATION_GROUPING_POLICY
             or manifest_metadata.get("statistics_format_version") != STATISTICS_FORMAT_VERSION
         ):
-            raise ValueError("ANN-training calibration grouping provenance differs from config")
-        calibration_manifest = (
-            layout.ann_training_site_dir / "calibration_state_manifest.json"
-        )
-        captured.update(
-            {
-                "ann_training_calibration_root": str(
-                    layout.ann_training_site_dir.resolve()
-                ),
-                "ann_training_calibration_manifest_sha256": sha256_file(
-                    calibration_manifest
-                ),
-                "ann_training_calibration_group_size": int(
-                    cfg["calibration"]["group_size"]
-                ),
-                "ann_training_calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
-                "statistics_format_version": STATISTICS_FORMAT_VERSION,
-            }
-        )
+            raise ValueError("ANN-training Stage A provenance differs from config")
+        calibration_manifest = layout.ann_training_site_dir / "calibration_state_manifest.json"
+        profile_manifest = layout.ann_training_clip_profile_dir / "clip_profile_manifest.json"
+        captured.update({
+            "ann_training_calibration_root": str(layout.ann_training_site_dir.resolve()),
+            "ann_training_calibration_manifest_sha256": sha256_file(calibration_manifest),
+            "ann_training_calibration_group_size": expected_group,
+            "ann_training_calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+            "ann_training_stage_a_root": str(layout.ann_training_site_dir.resolve()),
+            "ann_training_stage_a_manifest_sha256": sha256_file(calibration_manifest),
+            "ann_training_clip_profile_root": str(layout.ann_training_clip_profile_dir.resolve()),
+            "ann_training_clip_profile_manifest_sha256": sha256_file(profile_manifest),
+            "ann_training_calibration_num_samples": expected_samples,
+            "ann_training_phase_T": int(cfg["phase"]["T"]),
+            "ann_training_mtn_T": int(cfg["mtn"]["T"]),
+            "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        })
     return captured
 
 
@@ -145,6 +153,13 @@ def validate_recorded_training_artifact_provenance(
         "ann_training_calibration_manifest_sha256",
         "ann_training_calibration_group_size",
         "ann_training_calibration_grouping_policy",
+        "ann_training_stage_a_root",
+        "ann_training_stage_a_manifest_sha256",
+        "ann_training_clip_profile_root",
+        "ann_training_clip_profile_manifest_sha256",
+        "ann_training_calibration_num_samples",
+        "ann_training_phase_T",
+        "ann_training_mtn_T",
         "statistics_format_version",
     )
     recorded = {key: recorded_result[key] for key in keys if key in recorded_result}
@@ -179,16 +194,24 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
     controller = SiteController(
         mode=mode,
         site_root=layout.ann_training_site_dir,
+        clip_root=layout.ann_training_clip_profile_dir,
         common_clip_enabled=common_clip_enabled,
+        phase_T=int(cfg["phase"]["T"]),
+        mtn_T=int(cfg["mtn"]["T"]),
+        mtn_K=int(cfg["mtn"]["K"]),
+        mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
         phase_surrogate_slope=(
-            float(cfg["phase"]["surrogate_slope"])
-            if mode == "phase"
-            else None
+            float(cfg["phase"]["surrogate_slope"]) if mode == "phase" else None
         ),
     )
     if is_aware_ann_mode(cfg):
-        validate_site_state_bundle(
-            layout.ann_training_site_dir, clip_policy="require_eligible"
+        validate_site_state_bundle(layout.ann_training_site_dir, clip_policy="forbid_all")
+        validate_clip_profile(
+            layout.ann_training_site_dir,
+            layout.ann_training_clip_profile_dir,
+            phase_T=int(cfg["phase"]["T"]), mtn_T=int(cfg["mtn"]["T"]),
+            group_size=int(cfg["calibration"]["group_size"]),
+            num_samples=int(cfg["calibration"]["num_samples"]),
         )
     if cfg["rotation"]["enabled"] or mode != "none":
         install_model_integration(model, controller, rotation_state(cfg, layout))

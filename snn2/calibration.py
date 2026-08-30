@@ -89,7 +89,7 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
     rotation_path = layout.rotation_dir / "rotation_state.pt" if cfg["rotation"]["enabled"] else None
     if rotation_path and not rotation_path.exists():
         raise FileNotFoundError(f"Rotation state required for rotated calibration: {rotation_path}")
-    data_manifest = layout.data_dir / "calibration_manifest.json"
+    data_manifest = layout.calibration_data_manifest_path
     if not data_manifest.exists():
         raise FileNotFoundError(f"Calibration data manifest is missing: {data_manifest}")
     ann_config = layout.ann_checkpoint_dir / "config.json" if stage == "post_finetuning" else None
@@ -97,9 +97,9 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         raise FileNotFoundError(f"Final ANN config is missing: {ann_config}")
     post = stage == "post_finetuning"
     state_profile = {
-        "ann_training": "ann_training_with_common_clip",
+        "ann_training": "stage_a_common_states",
         "vanilla_analysis": "analysis_statistics_only",
-        "post_finetuning": "snn_conversion_without_clip",
+        "post_finetuning": "stage_a_common_states",
     }[stage]
     return {
         "purpose": purpose,
@@ -112,8 +112,8 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         ),
         "post_finetuning_recalibration": post,
         "state_profile": state_profile,
-        "common_clip_required": stage == "ann_training",
-        "common_clip_generated": stage == "ann_training",
+        "common_clip_required": False,
+        "common_clip_generated": False,
         "common_clip_application_control": "replacement.common_clip_enabled",
         "source_model_stage": "original_pretrained_base" if stage == "vanilla_analysis" else ("rotated_fused_base" if stage == "ann_training" else "final_ann_checkpoint"),
         "source_ann_mode": cfg["experiment"]["ann_mode"] if post else None,
@@ -135,8 +135,13 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "learning_rate": cfg["training"]["learning_rate"] if post else None,
         "seed": int(cfg["experiment"]["seed"]),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "calibration_architecture": "two_stage_A_common_B_clip_profiles",
+        "calibration_phase": "A",
+        "stage_a_parameter_independence": ["phase.T", "mtn.T", "mtn.K"],
+        "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
         "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
@@ -255,18 +260,12 @@ def build_phase_state(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[s
         tau = phase_stat.float().reshape(int(layout["num_heads"]), 1)
     else:
         tau = group_reduce_last_dim(phase_stat.float(), configured_group, "max")
-    phase_cfg = cfg["phase"]
-    steps = int(phase_cfg["T"])
     return {
         "state_kind": "phase",
         "format_version": SITE_STATE_FORMAT_VERSION,
         "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
-        "T": steps,
-        "base": float(phase_cfg["base"]),
-        "max_spikes": int(phase_cfg.get("max_spikes", steps)),
         **layout,
         "tau": tau,
-        "v0": (0.5 * tau * 2 ** (-steps)).float(),
         "tau_calibration": PHASE_TAU_CALIBRATION,
         "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
         "tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
@@ -274,6 +273,137 @@ def build_phase_state(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[s
         "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
     }
 
+
+def _gif_group_classification(mask_low: torch.Tensor, layout: dict[str, Any]) -> torch.Tensor:
+    group_size = int(layout["group_size"])
+    if layout["parameter_layout"] == "last_dim_grouped":
+        grouped = mask_low.bool().reshape(int(layout["groups_per_head"]), group_size)
+    elif layout["parameter_layout"] == "attention_head_grouped":
+        grouped = mask_low.bool().reshape(
+            int(layout["num_heads"]), int(layout["groups_per_head"]), group_size
+        )
+    else:
+        raise ValueError("GIF mask classification requires a grouped parameter layout")
+    all_low = grouped.all(dim=-1)
+    all_high = (~grouped).all(dim=-1)
+    result = torch.full(all_low.shape, 2, dtype=torch.int8)
+    result[all_low] = 0
+    result[all_high] = 1
+    return result
+
+
+def _apply_gif_constraints(
+    base_lower: torch.Tensor,
+    base_upper: torch.Tensor,
+    classification: torch.Tensor,
+    low_range: tuple[torch.Tensor, torch.Tensor],
+    high_range: tuple[torch.Tensor, torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    low_min, low_max = (value.double() for value in low_range)
+    high_min, high_max = (value.double() for value in high_range)
+    lower, upper = base_lower.clone(), base_upper.clone()
+    lower = torch.where(classification == 0, torch.maximum(lower, low_min), lower)
+    upper = torch.where(classification == 0, torch.minimum(upper, low_max), upper)
+    lower = torch.where(classification == 1, torch.maximum(lower, high_min), lower)
+    upper = torch.where(classification == 1, torch.minimum(upper, high_max), upper)
+    both_lower, both_upper = torch.maximum(low_min, high_min), torch.minimum(low_max, high_max)
+    lower = torch.where(classification == 2, torch.maximum(lower, both_lower), lower)
+    upper = torch.where(classification == 2, torch.minimum(upper, both_upper), upper)
+    return lower, upper
+
+
+def build_clip_state(
+    phase_state: dict[str, Any],
+    gif_state: dict[str, Any],
+    mtn_state: dict[str, Any],
+    *,
+    phase_T: int,
+    mtn_T: int,
+) -> dict[str, Any]:
+    phase_T, mtn_T = int(phase_T), int(mtn_T)
+    if phase_T <= 0 or mtn_T <= 0:
+        raise ValueError("Clip profile phase_T and mtn_T must be positive")
+    for state, kind in ((phase_state, "phase"), (gif_state, "gif"), (mtn_state, "mtn")):
+        if state.get("state_kind") != kind:
+            raise ValueError(f"Expected {kind} Stage A state")
+    layout = {key: phase_state[key] for key in (
+        "parameter_layout", "configured_group_size", "group_size", "num_heads",
+        "channels_per_head", "groups_per_head",
+    )}
+    phase_bound = phase_state["tau"].double() * (1.0 - 2.0 ** (-phase_T))
+    mtn_bound = mtn_state["base_scale"].double() * mtn_T
+    base_lower = torch.maximum(-phase_bound, -mtn_bound)
+    base_upper = torch.minimum(phase_bound, mtn_bound)
+    policy = gif_state["gif_policy"]
+    common = {
+        "state_kind": "clip",
+        "format_version": SITE_STATE_FORMAT_VERSION,
+        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
+        "phase_T": phase_T,
+        "mtn_T": mtn_T,
+        "ordinary_gif_high_qmax": GIF_HIGH_QMAX,
+        "ordinary_gif_per_step_qmax": GIF_STEP_QMAX,
+        "gif_integer_decomposition": GIF_INTEGER_DECOMPOSITION,
+        **layout,
+        "gif_constraint_policy": policy,
+        "gif_group_classification_enum": {"all_low": 0, "all_high": 1, "mixed": 2},
+    }
+    if policy == GIF_IDENTITY_POLICY:
+        result = {**common, "clip_role_policy": "single", "lower": base_lower.float(),
+                  "upper": base_upper.float(), "rule": "intersection(phase, mtn)"}
+    else:
+        low_range = (
+            ((int(gif_state["low_qmin"]) - gif_state["low_zero"]) * gif_state["low_scale"]).float(),
+            ((int(gif_state["low_qmax"]) - gif_state["low_zero"]) * gif_state["low_scale"]).float(),
+        )
+        if policy == GIF_ALL_LOW_POLICY:
+            lower = torch.maximum(base_lower, low_range[0].double())
+            upper = torch.minimum(base_upper, low_range[1].double())
+            result = {**common, "clip_role_policy": "single", "lower": lower.float(),
+                      "upper": upper.float(), "gif_low_range": low_range,
+                      "rule": "intersection(phase, mtn, gif_low)"}
+        else:
+            high_range = (
+                ((int(gif_state["high_qmin"]) - gif_state["high_zero"]) * gif_state["high_scale"]).float(),
+                ((int(gif_state["high_qmax"]) - gif_state["high_zero"]) * gif_state["high_scale"]).float(),
+            )
+            if gif_state.get("mask_policy") == "multi_role":
+                roles = list(gif_state["mask_roles"])
+                classifications = {
+                    role: _gif_group_classification(gif_state["mask_low_by_role"][role], layout)
+                    for role in roles
+                }
+                intervals = {
+                    role: _apply_gif_constraints(base_lower, base_upper, classification, low_range, high_range)
+                    for role, classification in classifications.items()
+                }
+                result = {
+                    **common, "clip_role_policy": "role_specific", "clip_roles": roles,
+                    "lower_by_role": {role: pair[0].float() for role, pair in intervals.items()},
+                    "upper_by_role": {role: pair[1].float() for role, pair in intervals.items()},
+                    "gif_group_classification_by_role": classifications,
+                    "gif_low_range": low_range, "gif_high_range": high_range,
+                    "rule": "mask_aware_per_group_role_specific",
+                }
+            else:
+                classification = _gif_group_classification(gif_state["mask_low"], layout)
+                lower, upper = _apply_gif_constraints(
+                    base_lower, base_upper, classification, low_range, high_range
+                )
+                result = {
+                    **common, "clip_role_policy": "single", "lower": lower.float(),
+                    "upper": upper.float(), "gif_group_classification": classification,
+                    "gif_low_range": low_range, "gif_high_range": high_range,
+                    "rule": "mask_aware_per_group",
+                }
+    intervals = (
+        list(zip(result["lower_by_role"].values(), result["upper_by_role"].values()))
+        if result["clip_role_policy"] == "role_specific"
+        else [(result["lower"], result["upper"])]
+    )
+    if any(torch.any(lower >= upper) for lower, upper in intervals):
+        raise ValueError("Invalid common clipping interval: every lower must be < upper")
+    return result
 
 def build_site_states(
     statistics: dict[str, Any],
@@ -296,9 +426,7 @@ def build_site_states(
         maximum = group_reduce_last_dim(statistics["value_max"].double(), configured_group, "max")
     absolute = torch.maximum(minimum.abs(), maximum.abs()).clamp_min(1e-8)
 
-    phase_cfg = cfg["phase"]
     phase_state = build_phase_state(statistics, cfg)
-    phase_tau = phase_state["tau"]
 
     gif_cfg = cfg["gif"]
     base_bits = int(gif_cfg["base_bits"])
@@ -421,65 +549,24 @@ def build_site_states(
                     "saliency_score": scores["default"],
                 })
 
-    mtn_cfg = cfg["mtn"]
     mtn_state = {
         "state_kind": "mtn",
         "format_version": SITE_STATE_FORMAT_VERSION,
         "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
-        "T": int(mtn_cfg["T"]),
-        "K": int(mtn_cfg["K"]),
         **layout,
         "base_scale": (2.0 * absolute).float(),
-        "threshold_factor": float(mtn_cfg.get("threshold_factor", 0.75)),
     }
     states = {"phase": phase_state, "gif": gif_state, "mtn": mtn_state}
     if not include_clip or not site_supports_clip(site_index):
         return states
 
-    phase_bound = phase_tau.double() * sum(
-        float(phase_cfg["base"]) ** (-(step + 1))
-        for step in range(int(phase_cfg["T"]))
+    states["clip"] = build_clip_state(
+        phase_state,
+        gif_state,
+        mtn_state,
+        phase_T=int(cfg["phase"]["T"]),
+        mtn_T=int(cfg["mtn"]["T"]),
     )
-    mtn_bound = 2.0 * int(mtn_cfg["T"]) * absolute
-    base_lower = torch.maximum(-phase_bound, -mtn_bound)
-    base_upper = torch.minimum(phase_bound, mtn_bound)
-    if site_index in GIF_IDENTITY_SITE_IDS:
-        gif_ranges = {}
-        lower, upper = base_lower, base_upper
-        clip_rule = "intersection(phase, mtn)"
-    elif site_index in GIF_ALL_LOW_SITE_IDS:
-        gif_ranges = {"gif_low_range": (low_min.float(), low_max.float())}
-        lower = torch.maximum(base_lower, low_min)
-        upper = torch.minimum(base_upper, low_max)
-        clip_rule = "intersection(phase, mtn, gif_low)"
-    else:
-        gif_lower = torch.maximum(low_min, high_min)
-        gif_upper = torch.minimum(low_max, high_max)
-        gif_ranges = {
-            "gif_low_range": (low_min.float(), low_max.float()),
-            "gif_high_range": (high_min.float(), high_max.float()),
-        }
-        lower = torch.maximum(base_lower, gif_lower)
-        upper = torch.minimum(base_upper, gif_upper)
-        clip_rule = "intersection(phase, mtn, gif_low, gif_high)"
-    if torch.any(lower >= upper):
-        bad = torch.nonzero(lower >= upper, as_tuple=False).flatten().tolist()
-        raise ValueError(f"Invalid common clipping interval in groups {bad}")
-    clip_state = {
-        "state_kind": "clip",
-        "format_version": SITE_STATE_FORMAT_VERSION,
-        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
-        "ordinary_gif_high_qmax": GIF_HIGH_QMAX,
-        "ordinary_gif_per_step_qmax": GIF_STEP_QMAX,
-        "gif_integer_decomposition": GIF_INTEGER_DECOMPOSITION,
-        **layout,
-        "lower": lower.float(),
-        "upper": upper.float(),
-        **gif_ranges,
-        "gif_constraint_policy": gif_state["gif_policy"],
-        "rule": clip_rule,
-    }
-    states["clip"] = clip_state
     return states
 
 
@@ -502,6 +589,10 @@ def materialize_calibration_states(
         **(metadata or {}),
         "format_version": CALIBRATION_MANIFEST_FORMAT_VERSION,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        "calibration_architecture": "two_stage_A_common_B_clip_profiles",
+        "calibration_phase": "A",
+        "stage_a_parameter_independence": ["phase.T", "mtn.T", "mtn.K"],
+        "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
@@ -522,11 +613,11 @@ def materialize_calibration_states(
         key = directory.relative_to(root).as_posix()
         statistics = torch.load(statistics_path, map_location="cpu", weights_only=False)
         _validate_statistics(statistics)
-        states = build_site_states(statistics, cfg, include_clip=include_clip)
+        states = build_site_states(statistics, cfg, include_clip=False)
         for name, state in states.items():
             torch.save(state, directory / f"{name}_state.pt")
-        if not include_clip or is_softmax_site(int(statistics["site_index"])):
-            (directory / "clip_state.pt").unlink(missing_ok=True)
+        (directory / "clip_state.pt").unlink(missing_ok=True)
+        (directory / "calibration_summary.json").unlink(missing_ok=True)
         gif_state = states["gif"]
         summary = {
             "site_index": int(statistics["site_index"]),
@@ -538,45 +629,22 @@ def materialize_calibration_states(
             "channels_per_head": states["phase"]["channels_per_head"],
             "groups_per_head": states["phase"]["groups_per_head"],
             "phase_tau_shape": list(states["phase"]["tau"].shape),
-            "phase_T": states["phase"]["T"],
-            "phase_base": states["phase"]["base"],
-            "mtn_T": states["mtn"]["T"],
-            "mtn_K_positive_and_negative": states["mtn"]["K"],
             "mtn_parameter_shape": list(states["mtn"]["base_scale"].shape),
             "gif_policy": gif_state["gif_policy"],
-            "gif_parameter_shape": (
-                None if "low_scale" not in gif_state
-                else list(gif_state["low_scale"].shape)
-            ),
-            "gif_temporal_steps": gif_state["temporal_steps"],
             "saliency_enabled": bool(gif_state.get("saliency_enabled", False)),
-            "saliency_roles": (
-                list(gif_state.get("saliency_rule_by_role", {}).keys())
-                if gif_state.get("saliency_enabled", False) else []
-            ),
-            "saliency_rule_by_role": dict(
-                gif_state.get("saliency_rule_by_role", {})
-            ),
-            "saliency_accumulator_dtype_by_role": dict(
-                gif_state.get("saliency_accumulator_dtype_by_role", {})
-            ),
+            "saliency_roles": list(gif_state.get("saliency_rule_by_role", {}).keys()),
+            "saliency_rule_by_role": dict(gif_state.get("saliency_rule_by_role", {})),
+            "saliency_accumulator_dtype_by_role": dict(gif_state.get("saliency_accumulator_dtype_by_role", {})),
             "gif_mask_policy": gif_state.get("mask_policy"),
             "gif_mask_roles": list(gif_state.get("mask_roles", [])),
-            "clip_policy": "eligible_common_intersection" if "clip" in states else "disabled",
-            "clip_state_present": "clip" in states,
             "phase_tau_calibration": states["phase"]["tau_calibration"],
             "phase_tau_ema_factor": states["phase"]["tau_ema_factor"],
             "phase_tau_accumulator_dtype": states["phase"]["tau_accumulator_dtype"],
             "state_sha256": {
                 name: sha256_file(directory / f"{name}_state.pt")
-                for name in states
+                for name in ("phase", "gif", "mtn")
             },
         }
-        if "clip" in states:
-            summary["clip_valid"] = bool(
-                torch.all(states["clip"]["lower"] < states["clip"]["upper"])
-            )
-        write_json(directory / "calibration_summary.json", summary)
         manifest["sites"][key] = summary
     global_statistics = root / "_global" / "final_rmsnorm" / "statistics.pt"
     if not global_statistics.exists():
@@ -612,6 +680,126 @@ def materialize_calibration_states(
     write_json(root / "calibration_state_manifest.json", manifest)
     return manifest
 
+
+
+def _classification_counts(value: torch.Tensor) -> dict[str, int]:
+    return {
+        "all_low": int((value == 0).sum().item()),
+        "all_high": int((value == 1).sum().item()),
+        "mixed": int((value == 2).sum().item()),
+    }
+
+
+def materialize_clip_profile(
+    site_root: str | Path,
+    profile_root: str | Path,
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
+    """Stage B: materialize one T-specific Clip profile from Stage A only."""
+    stage_a_root = Path(site_root)
+    output_root = Path(profile_root)
+    stage_a_manifest_path = stage_a_root / "calibration_state_manifest.json"
+    if not stage_a_manifest_path.exists():
+        raise FileNotFoundError(stage_a_manifest_path)
+    stage_a_manifest = read_json(stage_a_manifest_path)
+    if stage_a_manifest.get("format_version") != CALIBRATION_MANIFEST_FORMAT_VERSION:
+        raise ValueError("Legacy pre-A/B calibration artifact detected. Re-run calibration Stage A.")
+    if stage_a_manifest.get("calibration_phase") != "A":
+        raise ValueError("Stage B requires a Stage A calibration manifest")
+    phase_T, mtn_T = int(cfg["phase"]["T"]), int(cfg["mtn"]["T"])
+    expected_name = f"phase_T_{phase_T}_mtn_T_{mtn_T}"
+    if output_root.name != expected_name:
+        raise ValueError(f"Clip profile directory must be named {expected_name}")
+    output_root.mkdir(parents=True, exist_ok=True)
+    summaries: dict[str, Any] = {}
+    for key, stage_a_summary in sorted(stage_a_manifest.get("sites", {}).items()):
+        source = stage_a_root / key
+        destination = output_root / key
+        destination.mkdir(parents=True, exist_ok=True)
+        site_index = int(stage_a_summary["site_index"])
+        clip_path = destination / "clip_state.pt"
+        if not site_supports_clip(site_index):
+            clip_path.unlink(missing_ok=True)
+            summary = {
+                **{name: stage_a_summary.get(name) for name in (
+                    "site_index", "layout_kind", "parameter_layout",
+                    "configured_group_size", "effective_group_size", "num_heads",
+                    "channels_per_head", "groups_per_head", "gif_policy",
+                )},
+                "phase_T": phase_T, "mtn_T": mtn_T,
+                "clip_state_present": False, "clip_valid": True,
+                "clip_rule": "disabled", "clip_role_policy": "disabled",
+                "clip_roles": [],
+                "state_a_phase_sha256": stage_a_summary["state_sha256"]["phase"],
+                "state_a_gif_sha256": stage_a_summary["state_sha256"]["gif"],
+                "state_a_mtn_sha256": stage_a_summary["state_sha256"]["mtn"],
+                "clip_state_sha256": None,
+            }
+        else:
+            phase_state = torch.load(source / "phase_state.pt", map_location="cpu", weights_only=False)
+            gif_state = torch.load(source / "gif_state.pt", map_location="cpu", weights_only=False)
+            mtn_state = torch.load(source / "mtn_state.pt", map_location="cpu", weights_only=False)
+            clip_state = build_clip_state(
+                phase_state, gif_state, mtn_state, phase_T=phase_T, mtn_T=mtn_T
+            )
+            torch.save(clip_state, clip_path)
+            role_policy = clip_state["clip_role_policy"]
+            intervals = (
+                list(zip(clip_state["lower_by_role"].values(), clip_state["upper_by_role"].values()))
+                if role_policy == "role_specific"
+                else [(clip_state["lower"], clip_state["upper"])]
+            )
+            summary = {
+                **{name: stage_a_summary.get(name) for name in (
+                    "site_index", "layout_kind", "parameter_layout",
+                    "configured_group_size", "effective_group_size", "num_heads",
+                    "channels_per_head", "groups_per_head", "gif_policy",
+                )},
+                "phase_T": phase_T, "mtn_T": mtn_T,
+                "phase_bound_shape": list(phase_state["tau"].shape),
+                "mtn_bound_shape": list(mtn_state["base_scale"].shape),
+                "clip_state_present": True,
+                "clip_valid": all(bool(torch.all(lower < upper)) for lower, upper in intervals),
+                "clip_rule": clip_state["rule"],
+                "clip_role_policy": role_policy,
+                "clip_roles": list(clip_state.get("clip_roles", [])),
+                "state_a_phase_sha256": stage_a_summary["state_sha256"]["phase"],
+                "state_a_gif_sha256": stage_a_summary["state_sha256"]["gif"],
+                "state_a_mtn_sha256": stage_a_summary["state_sha256"]["mtn"],
+                "clip_state_sha256": sha256_file(clip_path),
+            }
+            if "gif_group_classification" in clip_state:
+                summary["gif_group_class_counts"] = _classification_counts(
+                    clip_state["gif_group_classification"]
+                )
+            if "gif_group_classification_by_role" in clip_state:
+                summary["gif_group_class_counts_by_role"] = {
+                    role: _classification_counts(value)
+                    for role, value in clip_state["gif_group_classification_by_role"].items()
+                }
+        write_json(destination / "calibration_summary.json", summary)
+        summaries[key] = summary
+    manifest = {
+        "format_version": CALIBRATION_MANIFEST_FORMAT_VERSION,
+        "calibration_phase": "B",
+        "phase_T": phase_T,
+        "mtn_T": mtn_T,
+        "phase_base": 2.0,
+        "stage_a_root": str(stage_a_root.resolve()),
+        "stage_a_calibration_manifest_path": str(stage_a_manifest_path.resolve()),
+        "stage_a_calibration_manifest_sha256": sha256_file(stage_a_manifest_path),
+        "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
+        "expected_num_hidden_layers": stage_a_manifest["expected_num_hidden_layers"],
+        "clip_policy_version": "mask_aware_role_specific_v1",
+        "mask_aware_policy": "all_low_all_high_mixed_per_group",
+        "role_specific_policy": "site1_qkv_site7_gate_up",
+        **topology_metadata(),
+        **temporal_policy_metadata(),
+        "sites": summaries,
+    }
+    write_json(output_root / "clip_profile_manifest.json", manifest)
+    return manifest
 
 @torch.no_grad()
 def collect_site_statistics(
@@ -715,9 +903,9 @@ def collect_site_statistics(
         "post_finetuning_conversion_calibration": "final_ann_only",
     }[purpose]
     state_profile = {
-        "ann_training_calibration": "ann_training_with_common_clip",
+        "ann_training_calibration": "stage_a_common_states",
         "vanilla_analysis_calibration": "analysis_statistics_only",
-        "post_finetuning_conversion_calibration": "snn_conversion_without_clip",
+        "post_finetuning_conversion_calibration": "stage_a_common_states",
     }[purpose]
     metadata = {
         "purpose": purpose,
@@ -727,8 +915,8 @@ def collect_site_statistics(
         "conversion_reuse_policy": conversion_reuse_policy,
         "post_finetuning_recalibration": purpose == "post_finetuning_conversion_calibration",
         "state_profile": state_profile,
-        "common_clip_required": eligible_ann,
-        "common_clip_generated": eligible_ann,
+        "common_clip_required": False,
+        "common_clip_generated": False,
         "common_clip_application_control": "replacement.common_clip_enabled",
         "source_model_stage": None,
         "source_ann_mode": None,
@@ -766,8 +954,8 @@ def collect_site_statistics(
         "conversion_reuse_policy": conversion_reuse_policy,
         "post_finetuning_recalibration": purpose == "post_finetuning_conversion_calibration",
         "state_profile": state_profile,
-        "common_clip_required": eligible_ann,
-        "common_clip_generated": eligible_ann,
+        "common_clip_required": False,
+        "common_clip_generated": False,
         "common_clip_application_control": "replacement.common_clip_enabled",
         "expected_num_hidden_layers": expected_num_hidden_layers,
         "expected_layer_names": [
@@ -781,7 +969,7 @@ def collect_site_statistics(
             site_root,
             cfg,
             metadata,
-            include_clip=eligible_ann,
+            include_clip=False,
             expected_num_hidden_layers=expected_num_hidden_layers,
         )
         if materialize_states

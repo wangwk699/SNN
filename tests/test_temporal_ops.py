@@ -158,10 +158,10 @@ def test_temporal_linear_bias_is_kept_only_at_timestep_zero():
 
 
 def test_artifact_schema_versions_do_not_change_temporal_arithmetic():
-    assert CALIBRATION_MANIFEST_FORMAT_VERSION == 10
-    assert CONVERSION_METADATA_FORMAT_VERSION == 11
-    assert SITE_STATE_FORMAT_VERSION == 8
-    assert TEMPORAL_IMPLEMENTATION_VERSION == 6
+    assert CALIBRATION_MANIFEST_FORMAT_VERSION == 11
+    assert CONVERSION_METADATA_FORMAT_VERSION == 12
+    assert SITE_STATE_FORMAT_VERSION == 9
+    assert TEMPORAL_IMPLEMENTATION_VERSION == 7
 
 
 def test_temporal_metadata_scopes_ordinary_gif_and_site5_identity():

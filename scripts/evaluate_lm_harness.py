@@ -4,7 +4,7 @@ import os
 
 import torch
 
-from _common import parser, setup
+from _common import apply_deployment_overrides, parser, setup
 
 from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
 from snn2.config import (
@@ -68,6 +68,7 @@ def main():
             else ("rotated_pre_finetuning" if args.rotated_pre_finetuning else "run")
         ),
     )
+    apply_deployment_overrides(args, cfg)
 
     # --------------------------------------------------
     # Base evaluation 只能是原始 ANN，

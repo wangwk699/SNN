@@ -2,7 +2,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import torch
-from _common import parser, setup
+from _common import apply_deployment_overrides, parser, setup
 
 from snn2.artifacts import prefix_enabled_dirname, read_json, sha256_file, write_json
 from snn2.config import (
@@ -30,7 +30,7 @@ from snn2.sites import (
 )
 from snn2.evaluation import final_ann_replacement_mode, resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
-from snn2.state_validation import validate_site_state_bundle
+from snn2.state_validation import validate_clip_profile, validate_site_state_bundle
 from snn2.temporal_ops import (
     CALIBRATION_GROUPING_POLICY,
     GIF_LINEAR_SALIENCY_DTYPE,
@@ -234,7 +234,7 @@ def _verify_grouped_calibration(cfg, layout, manifest, calibration):
                 raise ValueError(
                     f"Site 5 must use SpikeLLM identity GIF and no Clip: {directory}"
                 )
-    expected_clips = calibration["layers"] * len(CLIP_ELIGIBLE_SITE_IDS) if conversion_reuses_ann_training_artifacts(cfg) else 0
+    expected_clips = 0
     if clip_count != expected_clips:
         raise ValueError(f"Calibration Clip count mismatch: {clip_count} != {expected_clips}")
 
@@ -559,10 +559,11 @@ def _verify_rotation_regression_suite(regression) -> None:
 
 def main():
     args = parser(
-        "Verify required artifacts for one ANN run"
+        "Verify required artifacts for one ANN run", deployment_overrides=True
     ).parse_args()
 
     cfg, layout = setup(args.config)
+    apply_deployment_overrides(args, cfg)
 
     with StageRun(
         "verify_artifacts",
@@ -573,7 +574,7 @@ def main():
         required = [
             layout.data_dir / "train_manifest.json",
             layout.data_dir / "validation_manifest.json",
-            layout.data_dir / "calibration_manifest.json",
+            layout.calibration_data_manifest_path,
             layout.ann_checkpoint_dir / "config.json",
             layout.ann_dir / "training_result.json",
         ]
@@ -614,6 +615,10 @@ def main():
         # --------------------------------------------------
         prefix_state_path = layout.conversion_prefix_dir / "prefix_state.json"
         required.append(layout.conversion_site_dir / "calibration_state_manifest.json")
+        if requires_ann_training_calibration(cfg):
+            required.append(
+                layout.ann_training_site_dir / "calibration_state_manifest.json"
+            )
         if conversion_prefix_enabled(cfg) or evaluation_prefix_enabled(cfg):
             required.append(prefix_state_path)
 
@@ -683,7 +688,7 @@ def main():
                 or int(summary.get("rotation_regression_format_version", -1)) != 4
             ):
                 raise ValueError("Rotation summary metadata is incompatible with regression v4")
-            calibration_manifest = layout.data_dir / "calibration_manifest.json"
+            calibration_manifest = layout.calibration_data_manifest_path
             recorded_manifest = regression.get("calibration_manifest_path")
             if (
                 not recorded_manifest
@@ -748,36 +753,34 @@ def main():
         reused = conversion_reuses_ann_training_artifacts(cfg)
         calibration = validate_calibration(
             layout.conversion_site_dir,
-            clip_policy="allow_eligible" if reused else "forbid_all",
+            clip_policy="forbid_all",
         )
         source_manifest = read_json(
             layout.conversion_site_dir / "calibration_state_manifest.json"
         )
-        expected_flags = (
-            {
-                "purpose": "ann_training_calibration",
-                "eligible_for_ann_training": True,
-                "eligible_for_conversion": True,
-                "conversion_reuse_policy": "aware_modes_only",
-                "post_finetuning_recalibration": False,
-                "state_profile": "ann_training_with_common_clip",
-                "common_clip_required": True,
-                "common_clip_generated": True,
-                "common_clip_application_control": "replacement.common_clip_enabled",
-            }
-            if reused
-            else {
-                "purpose": "post_finetuning_conversion_calibration",
-                "eligible_for_ann_training": False,
-                "eligible_for_conversion": True,
-                "conversion_reuse_policy": "final_ann_only",
-                "post_finetuning_recalibration": True,
-                "state_profile": "snn_conversion_without_clip",
-                "common_clip_required": False,
-                "common_clip_generated": False,
-                "common_clip_application_control": "replacement.common_clip_enabled",
-            }
-        )
+        expected_flags = {
+            "purpose": ("ann_training_calibration" if reused else "post_finetuning_conversion_calibration"),
+            "eligible_for_ann_training": reused,
+            "eligible_for_conversion": True,
+            "conversion_reuse_policy": ("aware_modes_only" if reused else "final_ann_only"),
+            "post_finetuning_recalibration": not reused,
+            "state_profile": "stage_a_common_states",
+            "common_clip_required": False,
+            "common_clip_generated": False,
+            "common_clip_application_control": "replacement.common_clip_enabled",
+        }
+        if reused:
+            training_result = read_json(layout.ann_dir / "training_result.json")
+            training_profile_root = Path(training_result["ann_training_clip_profile_root"])
+            required.append(training_profile_root / "clip_profile_manifest.json")
+            validate_clip_profile(
+                layout.ann_training_site_dir,
+                training_profile_root,
+                phase_T=int(training_result["ann_training_phase_T"]),
+                mtn_T=int(training_result["ann_training_mtn_T"]),
+                group_size=int(training_result["ann_training_calibration_group_size"]),
+                num_samples=int(training_result["ann_training_calibration_num_samples"]),
+            )
         _require_manifest_flags(source_manifest, expected_flags, "Conversion source")
         _verify_hashes(source_manifest, "Conversion source calibration")
         validate_temporal_policy(source_manifest, context="Conversion source manifest")
@@ -827,7 +830,7 @@ def main():
             metadata = validate_conversion_metadata(cfg, layout, neuron)
             if (
                 int(metadata.get("full_temporal_steps", -1))
-                != int(calibration["temporal_steps"][neuron])
+                != int({"phase": cfg["phase"]["T"], "gif": 2, "mtn": cfg["mtn"]["T"]}[neuron])
             ):
                 raise ValueError(
                     f"Conversion has incompatible calibration timestep metadata: {neuron}"

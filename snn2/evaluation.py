@@ -19,7 +19,7 @@ from .sites import (
     GIF_ACTIVE_SITE_IDS, GIF_ALL_LOW_SITE_IDS, GIF_IDENTITY_SITE_IDS,
     GIF_MULTI_MASK_ROLES, GIF_SALIENT_SITE_IDS, SITE_COUNT,
 )
-from .state_validation import validate_site_state_bundle
+from .state_validation import validate_clip_profile, validate_site_state_bundle
 from .temporal_ops import (
     CALIBRATION_GROUPING_POLICY,
     GIF_LINEAR_SALIENCY_DTYPE,
@@ -107,7 +107,14 @@ def build_evaluation_controller(
         aware = is_aware_ann_mode(cfg)
         if aware:
             validation = validate_site_state_bundle(
-                layout.ann_training_site_dir, clip_policy="require_eligible"
+                layout.ann_training_site_dir, clip_policy="forbid_all"
+            )
+            validate_clip_profile(
+                layout.ann_training_site_dir,
+                layout.ann_training_clip_profile_dir,
+                phase_T=int(cfg["phase"]["T"]), mtn_T=int(cfg["mtn"]["T"]),
+                group_size=int(cfg["calibration"]["group_size"]),
+                num_samples=int(cfg["calibration"]["num_samples"]),
             )
             manifest = validation["manifest"]
             if (
@@ -118,6 +125,11 @@ def build_evaluation_controller(
         controller = SiteController(
             mode=mode,
             site_root=layout.ann_training_site_dir if aware else None,
+            clip_root=layout.ann_training_clip_profile_dir if aware else None,
+            phase_T=int(cfg["phase"]["T"]),
+            mtn_T=int(cfg["mtn"]["T"]),
+            mtn_K=int(cfg["mtn"]["K"]),
+            mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
             common_clip_enabled=(
                 training_common_clip_enabled(cfg) if aware else False
             ),
@@ -134,13 +146,13 @@ def build_evaluation_controller(
     controller = SiteController(
         mode="identity",
         site_root=layout.conversion_site_dir,
+        phase_T=int(cfg["phase"]["T"]),
+        mtn_T=int(cfg["mtn"]["T"]),
+        mtn_K=int(cfg["mtn"]["K"]),
+        mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
         common_clip_enabled=False,
     )
-    clip_policy = (
-        "allow_eligible"
-        if conversion_reuses_ann_training_artifacts(cfg)
-        else "forbid_all"
-    )
+    clip_policy = "forbid_all"
     return controller, controller.set_deployment(
         neuron, clip_bundle_policy=clip_policy
     )

@@ -32,12 +32,28 @@ def ann_run_variant_dirname(
     return result
 
 
-def phase_training_dirname(*, surrogate_slope: Any, warmup_ratio: Any) -> str:
-    """Return the Phase-aware run directory for its training hyperparameters."""
+def phase_training_dirname(*, phase_T: Any, mtn_T: Any, surrogate_slope: Any, warmup_ratio: Any) -> str:
     return (
+        f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}_"
         f"surrogate_slope_{float(surrogate_slope)}"
         f"_warmup_ratio_{float(warmup_ratio)}"
     )
+
+
+def gif_training_dirname(*, phase_T: Any, mtn_T: Any, warmup_ratio: Any) -> str:
+    return f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}_warmup_ratio_{float(warmup_ratio)}"
+
+
+def clip_profile_dirname(phase_T: Any, mtn_T: Any) -> str:
+    return f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}"
+
+
+def phase_snn_dirname(phase_T: Any) -> str:
+    return f"phase_T_{int(phase_T)}"
+
+
+def mtn_snn_dirname(mtn_T: Any, mtn_K: Any) -> str:
+    return f"mtn_T_{int(mtn_T)}_mtn_K_{int(mtn_K)}"
 
 
 def calibration_group_dirname(group_size: Any) -> str:
@@ -45,6 +61,13 @@ def calibration_group_dirname(group_size: Any) -> str:
     if value != -1 and value <= 0:
         raise ValueError("calibration.group_size must be -1 or a positive integer")
     return f"calibration_group_size_{value}"
+
+
+def calibration_variant_dirname(group_size: Any, num_samples: Any) -> str:
+    samples = int(num_samples)
+    if samples <= 0:
+        raise ValueError("calibration.num_samples must be a positive integer")
+    return f"{calibration_group_dirname(group_size)}_num_samples_{samples}"
 
 
 def safe_name(value: str) -> str:
@@ -75,6 +98,7 @@ class ArtifactLayout:
             learning_rate = f"{learning_rate}_train_samples_{train_samples}"
         if is_aware_ann_mode(cfg):
             learning_rate = (
+                f"num_samples_{int(cfg['calibration']['num_samples'])}_"
                 f"{learning_rate}_"
                 f"{calibration_group_dirname(cfg['calibration']['group_size'])}"
             )
@@ -99,7 +123,13 @@ class ArtifactLayout:
         )
         if exp["ann_mode"] == "phase_aware":
             run_root = run_root / phase_training_dirname(
+                phase_T=cfg["phase"]["T"], mtn_T=cfg["mtn"]["T"],
                 surrogate_slope=cfg["phase"]["surrogate_slope"],
+                warmup_ratio=cfg["training"]["warmup_ratio"],
+            )
+        elif exp["ann_mode"] == "gif_aware":
+            run_root = run_root / gif_training_dirname(
+                phase_T=cfg["phase"]["T"], mtn_T=cfg["mtn"]["T"],
                 warmup_ratio=cfg["training"]["warmup_ratio"],
             )
         self.root = run_root / seed
@@ -131,6 +161,14 @@ class ArtifactLayout:
     @property
     def data_dir(self) -> Path:
         return self.shared_task_root / "data"
+
+    @property
+    def calibration_data_dir(self) -> Path:
+        return self.data_dir / "calibration" / f"num_samples_{int(self._cfg['calibration']['num_samples'])}"
+
+    @property
+    def calibration_data_manifest_path(self) -> Path:
+        return self.calibration_data_dir / "calibration_manifest.json"
 
     @property
     def shared_task_logs_dir(self) -> Path:
@@ -190,12 +228,20 @@ class ArtifactLayout:
             / "rotated_prefix"
             / "ann_training_calibration"
             / prefix_enabled_dirname(enabled)
-            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
+            / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
         )
 
     @property
     def ann_training_site_dir(self) -> Path:
         return self.ann_training_calibration_dir / "sites"
+
+    @property
+    def ann_training_clip_profiles_dir(self) -> Path:
+        return self.ann_training_calibration_dir / "clip_profiles"
+
+    @property
+    def ann_training_clip_profile_dir(self) -> Path:
+        return self.ann_training_clip_profiles_dir / clip_profile_dirname(self._cfg["phase"]["T"], self._cfg["mtn"]["T"])
 
     @property
     def ann_training_calibration_config_dir(self) -> Path:
@@ -211,7 +257,7 @@ class ArtifactLayout:
             self.shared_model_root
             / "vanilla_original"
             / "vanilla_analysis_calibration"
-            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
+            / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
         )
 
     @property
@@ -266,12 +312,20 @@ class ArtifactLayout:
             self.post_finetuning_dir
             / "conversion_calibration"
             / prefix_enabled_dirname(enabled)
-            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
+            / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
         )
 
     @property
     def post_finetuning_site_dir(self) -> Path:
         return self.post_finetuning_conversion_calibration_dir / "sites"
+
+    @property
+    def post_finetuning_clip_profiles_dir(self) -> Path:
+        return self.post_finetuning_conversion_calibration_dir / "clip_profiles"
+
+    @property
+    def post_finetuning_clip_profile_dir(self) -> Path:
+        return self.post_finetuning_clip_profiles_dir / clip_profile_dirname(self._cfg["phase"]["T"], self._cfg["mtn"]["T"])
 
     @property
     def post_finetuning_conversion_calibration_config_dir(self) -> Path:
@@ -308,12 +362,17 @@ class ArtifactLayout:
     def snn_dir(self, neuron: str) -> Path:
         base = self.root / "snn"
         if is_aware_ann_mode(self._cfg):
-            return base / neuron
-        return (
-            base
-            / calibration_group_dirname(self._cfg["calibration"]["group_size"])
-            / neuron
-        )
+            result = base / neuron
+        else:
+            result = base / calibration_variant_dirname(
+                self._cfg["calibration"]["group_size"],
+                self._cfg["calibration"]["num_samples"],
+            ) / neuron
+        if neuron == "phase":
+            return result / phase_snn_dirname(self._cfg["phase"]["T"])
+        if neuron == "mtn":
+            return result / mtn_snn_dirname(self._cfg["mtn"]["T"], self._cfg["mtn"]["K"])
+        return result
 
     def snn_conversion_dir(self, neuron: str) -> Path:
         enabled = conversion_prefix_enabled(self._cfg)

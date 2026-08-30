@@ -124,8 +124,9 @@ def validate_config(cfg: dict[str, Any]) -> None:
     mode = cfg["experiment"].get("ann_mode")
     if mode not in ANN_MODES:
         raise ValueError(f"ann_mode must be one of {sorted(ANN_MODES)}, got {mode}")
-    if int(cfg["calibration"]["num_samples"]) != 128:
-        raise ValueError("Main experiments require exactly 128 calibration draws")
+    num_samples = cfg["calibration"].get("num_samples")
+    if not isinstance(num_samples, int) or isinstance(num_samples, bool) or num_samples <= 0:
+        raise ValueError("calibration.num_samples must be a positive integer")
     expected_sites = int(cfg["calibration"]["expected_sites_per_layer"])
     if expected_sites != SITE_COUNT:
         raise ValueError(
@@ -143,6 +144,13 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("calibration.group_size must be -1 or a positive integer")
     if int(cfg["data"]["max_seq_length"]) != 2048:
         raise ValueError("Main experiments require max_seq_length=2048")
+    if "max_spikes" in cfg["phase"]:
+        raise ValueError("phase.max_spikes is no longer supported; re-run materialize_configs.py")
+    phase_t = cfg["phase"].get("T")
+    if not isinstance(phase_t, int) or isinstance(phase_t, bool) or phase_t <= 0:
+        raise ValueError("phase.T must be a positive integer")
+    if float(cfg["phase"].get("base", float("nan"))) != 2.0:
+        raise ValueError("phase.base is fixed and must equal 2.0")
     try:
         surrogate_slope = float(cfg["phase"]["surrogate_slope"])
     except (TypeError, ValueError) as exc:
@@ -209,10 +217,16 @@ def validate_config(cfg: dict[str, Any]) -> None:
     if mismatched_gif or 2 * int(cfg["gif"].get("per_step_qmax", -1)) != GIF_HIGH_QMAX:
         raise ValueError(f"Unsupported GIF qmax/chunk policy: {mismatched_gif}")
 
-    if int(cfg["phase"]["T"]) <= 0 or int(cfg["mtn"]["T"]) <= 0:
-        raise ValueError("Neuron timesteps must be positive")
-    if int(cfg["mtn"]["K"]) <= 0:
-        raise ValueError("MTN K must be positive")
+    for key in ("T", "K"):
+        value = cfg["mtn"].get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"mtn.{key} must be a positive integer")
+    try:
+        threshold_factor = float(cfg["mtn"]["threshold_factor"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("mtn.threshold_factor must be a positive finite number") from exc
+    if not math.isfinite(threshold_factor) or threshold_factor <= 0.0:
+        raise ValueError("mtn.threshold_factor must be a positive finite number")
     if int(cfg["gif"]["base_bits"]) < 2 or int(cfg["gif"]["add_bits"]) < 0:
         raise ValueError("Invalid GIF bit widths")
     if not 0.0 < float(cfg["gif"]["low_ratio"]) <= 1.0:

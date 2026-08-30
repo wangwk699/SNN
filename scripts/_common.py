@@ -19,14 +19,45 @@ from snn2.config import load_config
 
 
 def parser(
-    description: str, neuron: bool = False, allow_ann: bool = False
+    description: str,
+    neuron: bool = False,
+    allow_ann: bool = False,
+    deployment_overrides: bool = False,
 ) -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=description)
     result.add_argument("--config", required=True, help="YAML experiment config")
     if neuron:
         choices = ("ann", "phase", "gif", "mtn") if allow_ann else ("phase", "gif", "mtn")
         result.add_argument("--neuron", required=True, choices=choices)
+    if neuron or deployment_overrides:
+        result.add_argument("--phase-T", type=int, default=None)
+        result.add_argument("--mtn-T", type=int, default=None)
+        result.add_argument("--mtn-K", type=int, default=None)
     return result
+
+
+def apply_deployment_overrides(args, cfg):
+    """Apply deployment-only T/K after ArtifactLayout fixed the source ANN run."""
+    phase_T = getattr(args, "phase_T", None)
+    mtn_T = getattr(args, "mtn_T", None)
+    mtn_K = getattr(args, "mtn_K", None)
+    neuron = getattr(args, "neuron", None)
+    if neuron in {"ann", "gif"} and any(value is not None for value in (phase_T, mtn_T, mtn_K)):
+        raise ValueError(f"Deployment T/K overrides do not apply to neuron={neuron}")
+    if neuron == "phase" and any(value is not None for value in (mtn_T, mtn_K)):
+        raise ValueError("Phase deployment accepts only --phase-T")
+    if neuron == "mtn" and phase_T is not None:
+        raise ValueError("MTN deployment accepts only --mtn-T/--mtn-K")
+    for name, value in (("phase.T", phase_T), ("mtn.T", mtn_T), ("mtn.K", mtn_K)):
+        if value is not None and value <= 0:
+            raise ValueError(f"{name} deployment override must be a positive integer")
+    if phase_T is not None:
+        cfg["phase"]["T"] = phase_T
+    if mtn_T is not None:
+        cfg["mtn"]["T"] = mtn_T
+    if mtn_K is not None:
+        cfg["mtn"]["K"] = mtn_K
+    return cfg
 
 
 def setup(config_path: str, config_scope: str = "run"):

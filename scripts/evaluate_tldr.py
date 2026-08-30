@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from _common import parser, setup
+from _common import apply_deployment_overrides, parser, setup
 from tqdm.auto import tqdm
 from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
 from snn2.conversion import validate_conversion_metadata
@@ -141,6 +141,7 @@ def main():
             )
         ),
     )
+    apply_deployment_overrides(args, cfg)
 
     if cfg["experiment"]["task"] != "tldr":
         raise ValueError(

@@ -72,13 +72,13 @@ def _cfg(ann_mode: str = "vanilla") -> dict:
         },
         "calibration": {
             "group_size": -1,
+            "num_samples": 128,
             "expected_sites_per_layer": 10,
         },
         "phase": {
             "T": 2,
             "base": 2.0,
             "surrogate_slope": 1.0,
-            "max_spikes": 2,
         },
         "gif": {
             "base_bits": 4,

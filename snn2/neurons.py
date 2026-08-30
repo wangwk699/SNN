@@ -185,13 +185,15 @@ class PhaseSurrogate(nn.Module):
         self,
         state: dict[str, Any],
         *,
+        T: int,
         surrogate_slope: float | None = None,
     ):
         super().__init__()
         _validate_state_header(state, "phase")
-        if "surrogate_slope" in state:
+        forbidden = {"T", "base", "max_spikes", "v0", "surrogate_slope"} & state.keys()
+        if forbidden:
             raise ValueError(
-                "Legacy Phase state contains surrogate_slope; re-run calibration"
+                f"Legacy pre-A/B Phase state contains runtime fields {sorted(forbidden)}; re-run Stage A"
             )
         if (
             state.get("tau_calibration") != PHASE_TAU_CALIBRATION
@@ -200,44 +202,32 @@ class PhaseSurrogate(nn.Module):
             or state.get("tau_channel_policy") != PHASE_TAU_CHANNEL_POLICY
             or state.get("tau_reduction_policy") != PHASE_TAU_REDUCTION_POLICY
         ):
-            raise ValueError(
-                "Incompatible grouped Phase tau calibration; re-run calibration"
-            )
-        self.T = int(state["T"])
-        self.base = float(state["base"])
+            raise ValueError("Incompatible grouped Phase tau calibration; re-run Stage A")
+        self.T = int(T)
+        if self.T <= 0:
+            raise ValueError("Phase T must be positive")
         self.layout = _state_layout(state)
-        self.slope = (
-            None if surrogate_slope is None else float(surrogate_slope)
-        )
-        if self.slope is not None and (
-            not math.isfinite(self.slope) or self.slope <= 0.0
-        ):
+        self.slope = None if surrogate_slope is None else float(surrogate_slope)
+        if self.slope is not None and (not math.isfinite(self.slope) or self.slope <= 0.0):
             raise ValueError("Phase surrogate_slope must be a positive finite number")
-        self.max_spikes = int(state.get("max_spikes", 2))
         self.register_buffer("tau", state["tau"].float())
-        self.register_buffer("v0", state["v0"].float())
+        self.register_buffer("v0", (0.5 * self.tau * 2.0 ** (-self.T)).float())
         _require_parameter_shape("Phase tau", self.tau, self.layout)
-        if self.tau.shape != self.v0.shape:
-            raise ValueError("Phase tau and v0 shapes must match")
 
     def encode(self, x: torch.Tensor, return_temporal: bool) -> torch.Tensor:
         sign = x.sign().detach()
         tau = _parameter_values(x, self.tau, self.layout)
         v0 = _parameter_values(x, self.v0, self.layout)
         membrane = x.abs() + v0
-        spike_count = torch.zeros_like(x)
         outputs = []
         for timestep in range(self.T):
-            amplitude = tau * (self.base ** (-(timestep + 1)))
+            amplitude = tau * 2.0 ** (-(timestep + 1))
             distance = membrane - amplitude
             spike = (
                 (distance > 0).to(distance.dtype)
                 if self.slope is None
                 else HeavisideSigmoid.apply(distance, self.slope)
             )
-            if self.max_spikes > 0:
-                spike = spike * (spike_count < self.max_spikes).to(spike.dtype)
-            spike_count = spike_count + spike.detach()
             outputs.append(sign * amplitude * spike)
             membrane = membrane - amplitude * spike
         temporal = torch.stack(outputs, dim=0)
@@ -245,7 +235,6 @@ class PhaseSurrogate(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.encode(x, return_temporal=False)
-
 
     def temporal(self, incoming: torch.Tensor) -> torch.Tensor:
         if incoming.shape[0] != self.T:
@@ -414,16 +403,30 @@ class StaticGIF(nn.Module):
 
 
 class MultiThresholdNeuron(nn.Module):
-    def __init__(self, state: dict[str, Any]):
+    def __init__(
+        self,
+        state: dict[str, Any],
+        *,
+        T: int,
+        K: int,
+        threshold_factor: float,
+    ):
         super().__init__()
         _validate_state_header(state, "mtn")
-        self.T = int(state["T"])
-        self.K = int(state["K"])
+        forbidden = {"T", "K", "threshold_factor"} & state.keys()
+        if forbidden:
+            raise ValueError(
+                f"Legacy pre-A/B MTN state contains runtime fields {sorted(forbidden)}; re-run Stage A"
+            )
+        self.T, self.K = int(T), int(K)
+        self.threshold_factor = float(threshold_factor)
+        if self.T <= 0 or self.K <= 0:
+            raise ValueError("MTN T and K must be positive")
+        if not math.isfinite(self.threshold_factor) or self.threshold_factor <= 0.0:
+            raise ValueError("MTN threshold_factor must be positive and finite")
         self.layout = _state_layout(state)
-        self.threshold_factor = float(state.get("threshold_factor", 0.75))
         self.register_buffer("base_scale", state["base_scale"].float())
         _require_parameter_shape("MTN base_scale", self.base_scale, self.layout)
-
 
     def temporal(self, incoming: torch.Tensor) -> torch.Tensor:
         if incoming.shape[0] != self.T:
@@ -457,52 +460,48 @@ class Clipper(nn.Module):
             "ordinary_gif_per_step_qmax": GIF_STEP_QMAX,
             "gif_integer_decomposition": GIF_INTEGER_DECOMPOSITION,
         }
-        mismatched = {
-            key: (value, state.get(key))
-            for key, value in expected.items()
-            if key not in state or state[key] != value
-        }
+        mismatched = {key: (value, state.get(key)) for key, value in expected.items() if state.get(key) != value}
         if mismatched:
-            raise ValueError(
-                "Incompatible legacy Clip/GIF range metadata; re-materialize "
-                f"calibration states (mismatched={mismatched})"
-            )
+            raise ValueError(f"Incompatible Stage B Clip metadata: {mismatched}; re-run Stage B")
         self.layout = _state_layout(state)
-        self.register_buffer("lower", state["lower"].float())
-        self.register_buffer("upper", state["upper"].float())
-        _require_parameter_shape("Clip lower", self.lower, self.layout)
-        _require_parameter_shape("Clip upper", self.upper, self.layout)
-        policy = state.get("gif_constraint_policy")
-        ranges = []
-        required_ranges = (
-            () if policy == GIF_IDENTITY_POLICY else
-            (("gif_low_range",) if policy == GIF_ALL_LOW_POLICY else
-             ("gif_low_range", "gif_high_range"))
-        )
-        for range_name in required_ranges:
-            raw_range = state.get(range_name)
-            if not isinstance(raw_range, (tuple, list)) or len(raw_range) != 2:
-                raise ValueError(f"Clip state is missing valid {range_name} metadata")
-            range_lower, range_upper = raw_range[0].float(), raw_range[1].float()
-            if range_lower.shape != self.lower.shape or range_upper.shape != self.upper.shape:
-                raise ValueError(f"Clip state has invalid {range_name} shape")
-            ranges.append((range_lower, range_upper))
-        if ranges:
-            gif_lower, gif_upper = ranges[0]
-            for range_lower, range_upper in ranges[1:]:
-                gif_lower = torch.maximum(gif_lower, range_lower)
-                gif_upper = torch.minimum(gif_upper, range_upper)
-            tolerance = 1e-6
-            if torch.any(self.lower < gif_lower - tolerance) or torch.any(
-                self.upper > gif_upper + tolerance
-            ):
-                raise ValueError("Clip interval is inconsistent with saved GIF ranges")
-        if torch.any(self.lower >= self.upper):
-            raise ValueError("Every clipping interval must satisfy lower < upper")
+        self.role_policy = state.get("clip_role_policy")
+        self.roles = tuple(state.get("clip_roles", ()))
+        if self.role_policy == "role_specific":
+            lowers, uppers = state.get("lower_by_role"), state.get("upper_by_role")
+            if not isinstance(lowers, dict) or not isinstance(uppers, dict) or set(lowers) != set(self.roles) or set(uppers) != set(self.roles):
+                raise ValueError("Role-specific Clip state has incomplete role intervals")
+            self._role_buffers = {}
+            for role in self.roles:
+                lower_name, upper_name = f"lower_role_{role}", f"upper_role_{role}"
+                self.register_buffer(lower_name, lowers[role].float())
+                self.register_buffer(upper_name, uppers[role].float())
+                _require_parameter_shape(f"Clip {role} lower", getattr(self, lower_name), self.layout)
+                _require_parameter_shape(f"Clip {role} upper", getattr(self, upper_name), self.layout)
+                if torch.any(getattr(self, lower_name) >= getattr(self, upper_name)):
+                    raise ValueError(f"Every {role} clipping interval must satisfy lower < upper")
+                self._role_buffers[role] = (lower_name, upper_name)
+        elif self.role_policy == "single":
+            self.register_buffer("lower", state["lower"].float())
+            self.register_buffer("upper", state["upper"].float())
+            _require_parameter_shape("Clip lower", self.lower, self.layout)
+            _require_parameter_shape("Clip upper", self.upper, self.layout)
+            if torch.any(self.lower >= self.upper):
+                raise ValueError("Every clipping interval must satisfy lower < upper")
+        else:
+            raise ValueError("Clip state must declare clip_role_policy single or role_specific")
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        lower = _parameter_values(x, self.lower, self.layout)
-        upper = _parameter_values(x, self.upper, self.layout)
+    def forward(self, x: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
+        if self.role_policy == "role_specific":
+            if role not in self._role_buffers:
+                raise ValueError(f"Clip role must be one of {self.roles}, got {role!r}")
+            lower_name, upper_name = self._role_buffers[role]
+            lower_values, upper_values = getattr(self, lower_name), getattr(self, upper_name)
+        else:
+            if role is not None:
+                raise ValueError("Single-role Clip does not accept a role")
+            lower_values, upper_values = self.lower, self.upper
+        lower = _parameter_values(x, lower_values, self.layout)
+        upper = _parameter_values(x, upper_values, self.layout)
         return hard_clip(x, lower, upper)
 
 

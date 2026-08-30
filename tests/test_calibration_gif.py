@@ -29,7 +29,7 @@ def test_gif_high_qparams_use_two_chunk_capacity():
     }
     cfg = {
         "calibration": {"group_size": -1},
-        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0, "max_spikes": 4},
+        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
     }

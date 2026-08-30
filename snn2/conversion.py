@@ -56,7 +56,7 @@ def validate_calibration(
     if clip_policy == "forbid_all" and clip_states:
         raise ValueError(
             "Post-finetuning conversion calibration must be clip-free; "
-            "re-run calibrate_sites.py --stage post_finetuning"
+            "re-run calibrate_sites.py --stage post_finetuning --calibration-phase A"
         )
     return {
         "expected_num_hidden_layers": validation["expected_num_hidden_layers"],
@@ -75,9 +75,9 @@ def _validate_source_manifest(manifest: dict[str, Any], *, reused: bool) -> None
             "eligible_for_conversion": True,
             "conversion_reuse_policy": "aware_modes_only",
             "post_finetuning_recalibration": False,
-            "state_profile": "ann_training_with_common_clip",
-            "common_clip_required": True,
-            "common_clip_generated": True,
+            "state_profile": "stage_a_common_states",
+            "common_clip_required": False,
+            "common_clip_generated": False,
             "common_clip_application_control": "replacement.common_clip_enabled",
         }
         if reused
@@ -87,7 +87,7 @@ def _validate_source_manifest(manifest: dict[str, Any], *, reused: bool) -> None
             "eligible_for_conversion": True,
             "conversion_reuse_policy": "final_ann_only",
             "post_finetuning_recalibration": True,
-            "state_profile": "snn_conversion_without_clip",
+            "state_profile": "stage_a_common_states",
             "common_clip_required": False,
             "common_clip_generated": False,
             "common_clip_application_control": "replacement.common_clip_enabled",
@@ -164,6 +164,12 @@ def _validate_aware_training_provenance(
         "ann_training_calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
     }
+    profile_path = Path(result.get("ann_training_clip_profile_root", "")) / "clip_profile_manifest.json"
+    if not profile_path.exists() or result.get("ann_training_clip_profile_manifest_sha256") != sha256_file(profile_path):
+        raise ValueError("Aware ANN training Stage B Clip profile provenance is missing or changed")
+    for key in ("ann_training_phase_T", "ann_training_mtn_T", "ann_training_calibration_num_samples"):
+        if not isinstance(result.get(key), int):
+            raise ValueError(f"Aware ANN training provenance is missing {key}")
     mismatched = {
         key: {"expected": value, "actual": result.get(key)}
         for key, value in expected.items()
@@ -174,7 +180,15 @@ def _validate_aware_training_provenance(
             "Aware conversion artifacts differ from those fixed during ANN training: "
             f"{mismatched}"
         )
-    return {"training_result_path": str(result_path.resolve()), **expected}
+    return {
+        "training_result_path": str(result_path.resolve()),
+        **expected,
+        "ann_training_phase_T": int(result["ann_training_phase_T"]),
+        "ann_training_mtn_T": int(result["ann_training_mtn_T"]),
+        "ann_training_calibration_num_samples": int(result["ann_training_calibration_num_samples"]),
+        "ann_training_clip_profile_root": result["ann_training_clip_profile_root"],
+        "ann_training_clip_profile_manifest_sha256": result["ann_training_clip_profile_manifest_sha256"],
+    }
 
 
 def _source_bundle(
@@ -187,13 +201,14 @@ def _source_bundle(
     validation = validate_calibration(
         layout.conversion_site_dir,
         expected_num_hidden_layers=layers,
-        clip_policy="allow_eligible" if reused else "forbid_all",
+        clip_policy="forbid_all",
     )
     manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
     manifest = read_json(manifest_path)
     _validate_source_manifest(manifest, reused=reused)
     expected_grouping = {
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
@@ -228,14 +243,14 @@ def validate_conversion_metadata(
             f"format v{CONVERSION_METADATA_FORMAT_VERSION} is required"
         )
     validate_temporal_policy(metadata, context=str(path))
-    prefix, bundle, manifest_path, _ = _source_bundle(cfg, layout)
+    prefix, bundle, manifest_path, training_provenance = _source_bundle(cfg, layout)
     reused = conversion_reuses_ann_training_artifacts(cfg)
     ann_config = layout.ann_checkpoint_dir / "config.json"
     rotation_enabled = bool(cfg["rotation"]["enabled"])
     rotation_path = layout.rotation_dir / "rotation_state.pt"
     expected = {
         "deployment_neuron": neuron,
-        "full_temporal_steps": bundle["temporal_steps"].get(neuron),
+        "full_temporal_steps": ({"phase": int(cfg["phase"]["T"]), "mtn": int(cfg["mtn"]["T"]), "gif": GIF_LOCAL_STEPS}[neuron]),
         "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()),
         "source_ann_config_sha256": sha256_file(ann_config),
         "calibration_root": str(layout.conversion_site_dir.resolve()),
@@ -255,6 +270,12 @@ def validate_conversion_metadata(
         "source_ann_common_clip_enabled": training_common_clip_enabled(cfg),
         "ordinary_gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
+        "source_ann_training_phase_T": training_provenance.get("ann_training_phase_T"),
+        "source_ann_training_mtn_T": training_provenance.get("ann_training_mtn_T"),
+        "deployment_phase_T": int(cfg["phase"]["T"]) if neuron == "phase" else None,
+        "deployment_mtn_T": int(cfg["mtn"]["T"]) if neuron == "mtn" else None,
+        "deployment_mtn_K": int(cfg["mtn"]["K"]) if neuron == "mtn" else None,
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
@@ -279,10 +300,16 @@ def create_conversion(
     expected_num_hidden_layers = _ann_num_hidden_layers(ann_config)
     reused = conversion_reuses_ann_training_artifacts(cfg)
     prefix, validation, manifest_path, training_provenance = _source_bundle(cfg, layout)
-    controller = SiteController(site_root=layout.conversion_site_dir)
+    controller = SiteController(
+        site_root=layout.conversion_site_dir,
+        phase_T=int(cfg["phase"]["T"]),
+        mtn_T=int(cfg["mtn"]["T"]),
+        mtn_K=int(cfg["mtn"]["K"]),
+        mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
+    )
     steps = controller.set_deployment(
         neuron,
-        clip_bundle_policy="allow_eligible" if reused else "forbid_all",
+        clip_bundle_policy="forbid_all",
     )
     output = layout.snn_conversion_dir(neuron)
     output.mkdir(parents=True, exist_ok=True)
@@ -302,6 +329,11 @@ def create_conversion(
         "reused_ann_training_artifacts": reused,
         "deployment_neuron": neuron,
         "full_temporal_steps": steps,
+        "source_ann_training_phase_T": training_provenance.get("ann_training_phase_T"),
+        "source_ann_training_mtn_T": training_provenance.get("ann_training_mtn_T"),
+        "deployment_phase_T": int(cfg["phase"]["T"]) if neuron == "phase" else None,
+        "deployment_mtn_T": int(cfg["mtn"]["T"]) if neuron == "mtn" else None,
+        "deployment_mtn_K": int(cfg["mtn"]["K"]) if neuron == "mtn" else None,
         "ordinary_gif_local_decomposition_steps": GIF_LOCAL_STEPS,
         "rotation_enabled": rotation_enabled,
         "expected_num_hidden_layers": expected_num_hidden_layers,
@@ -314,6 +346,7 @@ def create_conversion(
         "snn_clip_applied": False,
         "source_ann_common_clip_enabled": training_common_clip_enabled(cfg),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,

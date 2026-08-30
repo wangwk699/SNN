@@ -247,9 +247,10 @@ def test_final_ann_replacement_mode_mapping(ann_mode, expected):
 def _evaluation_cfg(ann_mode, clip=False):
     return {
         "experiment": {"ann_mode": ann_mode},
-        "phase": {"surrogate_slope": 2.0},
+        "phase": {"T": 4, "surrogate_slope": 2.0},
+        "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
         "replacement": {"common_clip_enabled": clip},
-        "calibration": {"group_size": -1},
+        "calibration": {"group_size": -1, "num_samples": 128},
     }
 
 
@@ -261,7 +262,8 @@ def _evaluation_cfg(ann_mode, clip=False):
 )
 def test_build_final_ann_controller(monkeypatch, ann_mode, clip, expected_mode):
     monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2"}})
-    layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
+    monkeypatch.setattr("snn2.evaluation.validate_clip_profile", lambda *_a, **_k: {})
+    layout = SimpleNamespace(ann_training_site_dir="training", ann_training_clip_profile_dir="clip", conversion_site_dir="conversion")
     controller, steps = build_evaluation_controller(
         _evaluation_cfg(ann_mode, clip), layout, neuron="ann"
     )
@@ -311,9 +313,10 @@ def test_all_ann_modes_use_temporal_snn_controller(monkeypatch, ann_mode, neuron
 )
 def test_evaluation_forward_metadata(monkeypatch, ann_mode, neuron, kind):
     monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2"}})
+    monkeypatch.setattr("snn2.evaluation.validate_clip_profile", lambda *_a, **_k: {})
     monkeypatch.setattr("snn2.controller.validate_site_state_bundle", lambda *_a, **_k: {"temporal_steps": {"phase": 4, "gif": 2, "mtn": 4}})
     cfg = _evaluation_cfg(ann_mode, True)
-    layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
+    layout = SimpleNamespace(ann_training_site_dir="training", ann_training_clip_profile_dir="clip", conversion_site_dir="conversion")
     controller, _ = build_evaluation_controller(cfg, layout, neuron=neuron)
     metadata = evaluation_forward_metadata(
         cfg, layout, neuron=neuron, controller=controller

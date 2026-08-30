@@ -20,7 +20,7 @@
 
 `vanilla` 和 `unaware` 不执行 activation replacement。
 
-`phase_aware` 与 `gif_aware` 在 ANN fine-tuning 阶段分别使用 Phase 或 GIF replacement。ANN-training calibration 为 9 个 clip-eligible sites 生成 `clip_state.pt`；Site 5 永久 no-Clip。`replacement.common_clip_enabled` 决定 ANN forward 是否执行 Clip，但 GIF identity Site 8/9 始终跳过 Clip；SNN conversion/deployment 始终不执行 common Clip。
+`phase_aware` 与 `gif_aware` 在 ANN fine-tuning 阶段分别使用 Phase 或 GIF replacement。ANN-training calibration 拆成 T/K-independent Stage A 和按 `phase.T/mtn.T` 隔离的 Stage B Clip profile；`replacement.common_clip_enabled` 只决定是否应用已选 profile。Site 5 永久 no-Clip，SNN conversion/deployment 始终不执行 common Clip。
 
 ## ANN Training / Final ANN Evaluation / SNN Evaluation Semantics
 
@@ -37,17 +37,17 @@ Aware final ANN evaluation 同时镜像训练期 common Clip 开关；SNN evalua
 
 ## Mode-aware SNN Conversion
 
-`vanilla` 不使用 Pre-finetuning Prefix；`vanilla` 和 `unaware` 在 ANN 微调后生成 Post-finetuning Prefix 与 clip-free conversion calibration。`phase_aware` 和 `gif_aware` 则跳过这两个 Post-finetuning 步骤，最终 Phase/GIF/MTN conversion 必须复用 ANN 微调前固定的 Pre-finetuning Prefix 与 ANN-training calibration，并用 SHA-256 校验它们与训练记录完全一致。
+`vanilla` 和 `unaware` 在 ANN 微调后生成 Post-finetuning Prefix，并只运行 Post-finetuning Stage A。`phase_aware` 和 `gif_aware` 复用 ANN 微调前固定的 Prefix、Stage A 与训练所选 Stage B profile；conversion/deployment 始终只读取 Stage A，绝不加载 Clip。
 
-Aware ANN-training bundle 在 Site 1/2/3/4/6/7/8/9/10 保留 `clip_state.pt`，Site 5 不存在该文件；bundle 校验使用 `require_eligible`（aware ANN）、`allow_eligible`（aware SNN reuse）和 `forbid_all`（post-finetuning）三态协议。SNN controller 即使复用含 9 个 Clip 的 bundle 也只加载选定的 Phase/GIF/MTN state，conversion、deployment 和 evaluation 均不实例化或执行 Clip。
+Stage A 的 site 目录只包含 statistics 与 T/K-independent Phase/GIF/MTN state。Stage B 位于独立的 `clip_profiles/phase_T_<P>_mtn_T_<M>/`，并通过 Stage A manifest 哈希绑定来源。训练和 final aware ANN evaluation 分别传入 Stage A root 与 Stage B Clip root；两者都冻结并校验 provenance。
 
 其中 GIF 内部量化使用的整数范围 clamp 属于 GIF 自身算法，不属于 ANN-aware training 中的 common Clip。
 
-Prefix K/V 在 ANN-aware replacement 与 SNN deployment runtime 中都经过 Site 3/4 neuron；calibration statistics 仍可排除 Prefix positions。Phase `surrogate_slope` 接受正有限值，phase-aware run 按 slope 和 `training.warmup_ratio` 联合隔离，但 shared calibration/state 与这两个训练参数无关；训练和 final ANN 评估从当前 YAML 显式注入 slope。Phase EMA 固定为 FP32、factor `0.99`。
+Prefix K/V 在 ANN-aware replacement 与 SNN deployment runtime 中都经过 Site 3/4 neuron；calibration statistics 仍可排除 Prefix positions。Phase EMA 固定为 FP32、factor `0.99`。Phase state 只保存 T-independent `tau`，运行时按 `v0 = 0.5 * tau * 2^-T` 构造；MTN state 也不保存 T/K。`phase.base` 固定为 `2.0`，旧 `max_spikes` 配置已删除。
 
-`calibration.group_size` 同时控制 Phase/GIF/MTN/Clip 和 final RMSNorm Phase。Site 2/3/4 的参数保持 logical per-head grouping；Site 3/4 在 `repeat_kv()` 后以 query heads 统计并将 merged `[B,L,HD]` 输入 neuron。Site 6 在 PV head merge 后按普通 last-dim `HD` grouping，不再 per-head。Site 5 忽略 G 并保持 Softmax identity；Site 8/9 的 GIF 也严格 identity，Site 2 是 all-low 4-bit。salient GIF 保持 static `high_qmax=30`、`per_step_qmax=15`，并使用 SpikeLLM threshold tie 规则。
+`calibration.group_size` 同时控制 Phase/GIF/MTN/Clip 和 final RMSNorm Phase。Site 2/3/4 的参数保持 logical per-head grouping，Site 6 使用 merged last-dim。Stage B Clip 对每个 group 做 mask-aware all-low/all-high/mixed 分类；Site 1 保存 q/k/v role-specific interval，Site 7 保存 gate/up interval，Site 5 永久 identity/no-Clip。
 
-所有 G-dependent calibration（包括 resolved config、logs、statistics、states、manifest）、aware ANN run 和 SNN conversion/evaluation 路径均包含且只包含一次 `calibration_group_size_<G>`，metadata 同时记录 G 与 `site234_logical_per_head_site6_merged_last_dim_v2` policy。aware ANN 将 G 写入学习率目录后缀（如 `lr5e-05_train_samples_2048_calibration_group_size_-1`），其 SNN 路径为该 run root 下的 `snn/<neuron>`；vanilla/unaware 为 `snn/calibration_group_size_<G>/<neuron>`。identity ANN checkpoint 可跨 G 共享，但改变 G 后仍必须重做其 post-finetuning calibration 与 SNN 工件；Rotation、数据和 Prefix 不随 G 复制。
+Calibration data、Stage A、aware run 与 non-aware SNN 路径同时按 `calibration.group_size` 和 `calibration.num_samples` 隔离。Aware run 还包含训练期 `phase.T/mtn.T`；Phase SNN 使用 `phase/phase_T_<P>`，MTN SNN 使用 `mtn/mtn_T_<M>_mtn_K_<K>`，GIF 路径不变。改变部署 T/K 不修改 Stage A；改变 `num_samples` 或 G 必须重建对应数据 manifest 和 Stage A。
 
 ## 主要入口
 

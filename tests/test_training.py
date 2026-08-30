@@ -40,30 +40,37 @@ def test_ann_training_common_clip_metadata(mode, enabled):
 def _provenance_fixture(tmp_path):
     prefix_dir = tmp_path / "prefix"
     site_dir = tmp_path / "sites"
+    clip_dir = tmp_path / "clip_profile"
     prefix_dir.mkdir()
     site_dir.mkdir()
+    clip_dir.mkdir()
     (prefix_dir / "prefix_state.json").write_text(
         json.dumps({"prefix_token_ids": [7, 8]}), encoding="utf-8"
     )
     (prefix_dir / "prefixed_key_values.pt").write_bytes(b"kv-v1")
     (site_dir / "calibration_state_manifest.json").write_text(
-        json.dumps({"format_version": 6}), encoding="utf-8"
+        json.dumps({"format_version": 11}), encoding="utf-8"
     )
+    (clip_dir / "clip_profile_manifest.json").write_text(json.dumps({"format_version": 1}), encoding="utf-8")
     cfg = {
         "experiment": {"ann_mode": "phase_aware"},
         "ann_training": {"prefix_enabled": True},
         "prefix": {"enabled": True},
-        "calibration": {"group_size": -1},
+        "calibration": {"group_size": -1, "num_samples": 128},
+        "phase": {"T": 4},
+        "mtn": {"T": 4},
     }
     layout = SimpleNamespace(
         ann_training_prefix_dir=prefix_dir,
         ann_training_site_dir=site_dir,
+        ann_training_clip_profile_dir=clip_dir,
     )
     return cfg, layout
 
 
 def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
-    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": 3}})
+    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": 3}})
+    monkeypatch.setattr("snn2.training.validate_clip_profile", lambda *args, **kwargs: {})
     cfg, layout = _provenance_fixture(tmp_path)
     captured = capture_training_artifact_provenance(
         cfg, layout, prefix_ids=[7, 8]
@@ -86,7 +93,8 @@ def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
 def test_training_artifact_provenance_rejects_mid_training_changes(
     monkeypatch, tmp_path, relative_path, replacement
 ):
-    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": 3}})
+    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": 3}})
+    monkeypatch.setattr("snn2.training.validate_clip_profile", lambda *args, **kwargs: {})
     cfg, layout = _provenance_fixture(tmp_path)
     captured = capture_training_artifact_provenance(
         cfg, layout, prefix_ids=[7, 8]

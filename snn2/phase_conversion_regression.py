@@ -250,13 +250,13 @@ def _selected_phase_state_paths(site_root: Path, num_layers: int) -> list[Path]:
 
 
 def run_phase_neuron_micro_regression(
-    site_root: str | Path, num_layers: int, *, seed: int = 42
+    site_root: str | Path, num_layers: int, *, phase_T: int, seed: int = 42
 ) -> dict[str, Any]:
     generator = torch.Generator().manual_seed(seed)
     cases = []
     for path in _selected_phase_state_paths(Path(site_root), num_layers):
         state = torch.load(path, map_location="cpu", weights_only=False)
-        module = PhaseSurrogate(state).eval()
+        module = PhaseSurrogate(state, T=phase_T).eval()
         layout = state["parameter_layout"]
         if layout == "last_dim_grouped":
             x = torch.randn(

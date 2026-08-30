@@ -15,7 +15,7 @@ from snn2.temporal_ops import STATISTICS_FORMAT_VERSION
 def _cfg(group_size=-1):
     return {
         "calibration": {"group_size": group_size},
-        "phase": {"T": 4, "base": 2.0, "max_spikes": 4},
+        "phase": {"T": 4, "base": 2.0},
     }
 
 

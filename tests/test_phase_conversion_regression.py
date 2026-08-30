@@ -32,17 +32,13 @@ def _phase_state():
         "state_kind": "phase",
         "format_version": SITE_STATE_FORMAT_VERSION,
         "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
-        "T": 4,
-        "base": 2.0,
         "parameter_layout": "last_dim_grouped",
         "configured_group_size": -1,
         "group_size": 9,
         "num_heads": None,
         "channels_per_head": 9,
         "groups_per_head": 1,
-        "max_spikes": 2,
         "tau": torch.tensor([2.0]),
-        "v0": torch.tensor([0.0625]),
         "tau_calibration": PHASE_TAU_CALIBRATION,
         "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
         "tau_accumulator_dtype": "float32",
@@ -54,7 +50,7 @@ def _phase_state():
 @pytest.mark.parametrize("decomposition", ["first", "uniform", "random"])
 def test_phase_static_matches_temporal_sum_for_all_decompositions(decomposition):
     torch.manual_seed(101)
-    module = PhaseSurrogate(_phase_state()).eval()
+    module = PhaseSurrogate(_phase_state(), T=4).eval()
     x = torch.randn(2, 3, 9)
     if decomposition == "first":
         incoming = torch.cat((x.unsqueeze(0), torch.zeros(3, *x.shape)), dim=0)
@@ -185,12 +181,14 @@ def test_regression_rejects_training_provenance_mismatch(tmp_path, monkeypatch):
 
 def test_official_phase_ann_controller_matches_graph_p(monkeypatch):
     monkeypatch.setattr("snn2.evaluation.validate_site_state_bundle", lambda *_a, **_k: {"manifest": {"calibration_group_size": -1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2"}})
-    layout = SimpleNamespace(ann_training_site_dir="training", conversion_site_dir="conversion")
+    monkeypatch.setattr("snn2.evaluation.validate_clip_profile", lambda *_a, **_k: {})
+    layout = SimpleNamespace(ann_training_site_dir="training", ann_training_clip_profile_dir="clip", conversion_site_dir="conversion")
     cfg = {
         "experiment": {"ann_mode": "phase_aware"},
-        "phase": {"surrogate_slope": 2.0},
+        "phase": {"T": 4, "surrogate_slope": 2.0},
+        "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
         "replacement": {"common_clip_enabled": False},
-        "calibration": {"group_size": -1},
+        "calibration": {"group_size": -1, "num_samples": 128},
     }
     controller, steps = build_evaluation_controller(cfg, layout, neuron="ann")
     assert controller.mode == "phase"

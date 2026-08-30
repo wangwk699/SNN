@@ -433,10 +433,19 @@ def install_model_integration(
 
         def make_gif_branch_pre_hook(site_index, role, index=layer_index):
             def hook(_module, inputs):
-                if controller.mode not in {"gif", "deploy_gif"}:
-                    return None
-                replaced = controller.apply(index, site_index, inputs[0], gif_role=role)
-                return (replaced, *inputs[1:])
+                if controller.mode in {"gif", "deploy_gif"}:
+                    replaced = controller.apply(index, site_index, inputs[0], gif_role=role)
+                    return (replaced, *inputs[1:])
+                if (
+                    controller.mode == "phase"
+                    and controller.common_clip_enabled
+                    and site_index in {1, 7}
+                ):
+                    replaced = controller.apply_role_clip(
+                        index, site_index, inputs[0], role=role
+                    )
+                    return (replaced, *inputs[1:])
+                return None
             return hook
 
         def make_branch_linear_hook(label, index=layer_index):

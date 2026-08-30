@@ -206,15 +206,19 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         }
     layout.data_dir.mkdir(parents=True, exist_ok=True)
     for name, manifest in manifests.items():
-        write_json(layout.data_dir / f"{name}_manifest.json", manifest)
+        path = (Path(layout.data_dir) / "calibration" / f"num_samples_{int(cfg['calibration']['num_samples'])}" / "calibration_manifest.json") if name == "calibration" else Path(layout.data_dir) / f"{name}_manifest.json"
+        write_json(path, manifest)
     return manifests
 
 
-def load_manifests(layout: ArtifactLayout) -> dict[str, dict[str, Any]]:
+def load_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, dict[str, Any]]:
     result = {
         name: read_json(layout.data_dir / f"{name}_manifest.json")
-        for name in ("train", "validation", "calibration")
+        for name in ("train", "validation")
     }
+    result["calibration"] = read_json(
+        Path(layout.data_dir) / "calibration" / f"num_samples_{int(cfg['calibration']['num_samples'])}" / "calibration_manifest.json"
+    )
     evaluation = layout.data_dir / "evaluation_manifest.json"
     if evaluation.exists():
         result["evaluation"] = read_json(evaluation)
@@ -227,7 +231,7 @@ def load_selected_raw(
     *,
     use_configured_train_subset: bool = False,
 ) -> DatasetBundle:
-    manifests = load_manifests(layout)
+    manifests = load_manifests(cfg, layout)
     raw = _load_raw(cfg)
     selected = {}
     for name, manifest in manifests.items():

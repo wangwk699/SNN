@@ -3,8 +3,12 @@ import json
 import torch
 import pytest
 
-from snn2.calibration import build_site_states, materialize_calibration_states
+from snn2.calibration import (
+    build_clip_state, build_site_states, materialize_calibration_states,
+    materialize_clip_profile,
+)
 from snn2.sites import SITE_IDS, SITE_NAMES
+from snn2.state_validation import validate_clip_profile, validate_site_state_bundle
 from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE, PHASE_TAU_CALIBRATION,
     PHASE_TAU_CHANNEL_POLICY, PHASE_TAU_EMA_FACTOR, PHASE_TAU_REDUCTION_POLICY,
@@ -45,8 +49,8 @@ def _statistics(site_index=1):
 
 def _cfg():
     return {
-        "calibration": {"group_size": -1, "expected_sites_per_layer": 10},
-        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0, "max_spikes": 4},
+        "calibration": {"group_size": -1, "num_samples": 128, "expected_sites_per_layer": 10},
+        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
     }
@@ -101,106 +105,70 @@ def test_non_divisible_ordinary_group_fails_but_site5_ignores_global_group():
     ):
         assert key not in site5_gif
 
-
-def test_conversion_materialization_removes_common_clip(tmp_path):
+def test_stage_a_materialization_is_clip_free_and_runtime_independent(tmp_path):
     directories = _write_statistics(tmp_path)
-    for directory in directories:
-        torch.save({}, directory / "clip_state.pt")
-
+    cfg = _cfg()
+    cfg["phase"]["T"] = 2
+    cfg["mtn"].update({"T": 2, "K": 4})
     manifest = materialize_calibration_states(
-        tmp_path,
-        _cfg(),
-        {
-            "state_profile": "snn_conversion_without_clip",
-            "common_clip_required": False,
-        },
-        include_clip=False,
-        expected_num_hidden_layers=1,
+        tmp_path, cfg, include_clip=True, expected_num_hidden_layers=1
     )
-
-    assert manifest["state_profile"] == "snn_conversion_without_clip"
+    assert manifest["calibration_phase"] == "A"
+    assert manifest["calibration_architecture"] == "two_stage_A_common_B_clip_profiles"
     assert all(not (directory / "clip_state.pt").exists() for directory in directories)
-    summary = json.loads(
-        (directories[0] / "calibration_summary.json").read_text(encoding="utf-8")
+    assert all(not (directory / "calibration_summary.json").exists() for directory in directories)
+    phase = torch.load(directories[0] / "phase_state.pt", weights_only=False)
+    mtn = torch.load(directories[0] / "mtn_state.pt", weights_only=False)
+    assert not {"T", "base", "max_spikes", "v0", "surrogate_slope"}.intersection(phase)
+    assert not {"T", "K", "threshold_factor"}.intersection(mtn)
+    assert set(manifest["sites"][directories[0].relative_to(tmp_path).as_posix()]["state_sha256"]) == {"phase", "gif", "mtn"}
+
+
+def test_two_stage_b_profiles_reuse_unchanged_stage_a(tmp_path):
+    directories = _write_statistics(tmp_path / "sites")
+    cfg = _cfg()
+    materialize_calibration_states(
+        tmp_path / "sites", cfg, include_clip=False, expected_num_hidden_layers=1
     )
-    assert summary["clip_state_present"] is False
-    assert "clip_valid" not in summary
-
-
-def test_ann_training_materialization_keeps_common_clip(tmp_path):
-    directories = _write_statistics(tmp_path)
-
-    manifest = materialize_calibration_states(
-        tmp_path,
-        _cfg(),
-        {
-            "state_profile": "ann_training_with_common_clip",
-            "common_clip_required": True,
-        },
-        include_clip=True,
-        expected_num_hidden_layers=1,
+    stage_a_hashes = {
+        path.relative_to(tmp_path / "sites").as_posix(): path.read_bytes()
+        for path in (tmp_path / "sites").glob("**/*_state.pt")
+    }
+    first = tmp_path / "clip_profiles" / "phase_T_2_mtn_T_2"
+    cfg["phase"]["T"], cfg["mtn"]["T"] = 2, 2
+    materialize_clip_profile(tmp_path / "sites", first, cfg)
+    second = tmp_path / "clip_profiles" / "phase_T_4_mtn_T_8"
+    cfg["phase"]["T"], cfg["mtn"]["T"] = 4, 8
+    materialize_clip_profile(tmp_path / "sites", second, cfg)
+    assert (first / "clip_profile_manifest.json").exists()
+    assert (second / "clip_profile_manifest.json").exists()
+    assert all(
+        path.read_bytes() == stage_a_hashes[path.relative_to(tmp_path / "sites").as_posix()]
+        for path in (tmp_path / "sites").glob("**/*_state.pt")
     )
+    for index, directory in zip(SITE_IDS, directories):
+        relative = directory.relative_to(tmp_path / "sites")
+        assert (first / relative / "clip_state.pt").exists() == (index != 5)
+        assert (second / relative / "clip_state.pt").exists() == (index != 5)
 
-    assert manifest["state_profile"] == "ann_training_with_common_clip"
-    assert (tmp_path / "_global" / "final_rmsnorm" / "phase_state.pt").exists()
-    assert manifest["global_states"]["final_rmsnorm"]["phase_state_sha256"]
-    assert all((directory / "clip_state.pt").exists() == (index != 5) for index, directory in zip(SITE_IDS, directories))
-    summary = json.loads(
-        (directories[0] / "calibration_summary.json").read_text(encoding="utf-8")
+
+def test_mask_aware_role_specific_clip_classifies_site1_roles():
+    cfg = _cfg()
+    cfg["calibration"]["group_size"] = -1
+    states = build_site_states(_statistics(1), cfg, include_clip=False)
+    states["gif"]["mask_low_by_role"] = {
+        "q": torch.ones(4, dtype=torch.bool),
+        "k": torch.zeros(4, dtype=torch.bool),
+        "v": torch.tensor([True, False, True, False]),
+    }
+    clip = build_clip_state(
+        states["phase"], states["gif"], states["mtn"], phase_T=4, mtn_T=8
     )
-    assert summary["clip_state_present"] is True
-    assert summary["clip_valid"] is True
-
-
-def test_ann_training_calibration_is_identical_for_common_clip_switch(tmp_path):
-    roots = [tmp_path / "enabled", tmp_path / "disabled"]
-    states_by_variant = []
-    for root, enabled in zip(roots, (True, False)):
-        directories = _write_statistics(root)
-        cfg = _cfg()
-        cfg["replacement"] = {"common_clip_enabled": enabled}
-        manifest = materialize_calibration_states(
-            root,
-            cfg,
-            {
-                "common_clip_required": True,
-                "common_clip_generated": True,
-                "common_clip_application_control": "replacement.common_clip_enabled",
-            },
-            include_clip=True,
-            expected_num_hidden_layers=1,
-        )
-        assert manifest["common_clip_generated"] is True
-        assert all(
-            (directory / "clip_state.pt").exists() == (index != 5)
-            for index, directory in zip(SITE_IDS, directories)
-        )
-        states_by_variant.append(
-            {
-                name: torch.load(
-                    directories[0] / f"{name}_state.pt", weights_only=False
-                )
-                for name in ("phase", "gif", "mtn", "clip")
-            }
-        )
-    for name in states_by_variant[0]:
-        left, right = states_by_variant[0][name], states_by_variant[1][name]
-        assert left.keys() == right.keys()
-        for key in left:
-            if isinstance(left[key], torch.Tensor):
-                torch.testing.assert_close(left[key], right[key])
-            elif isinstance(left[key], dict):
-                assert left[key].keys() == right[key].keys()
-                for nested in left[key]:
-                    if isinstance(left[key][nested], torch.Tensor):
-                        torch.testing.assert_close(left[key][nested], right[key][nested])
-                    else:
-                        assert left[key][nested] == right[key][nested]
-            elif isinstance(left[key], tuple):
-                for left_value, right_value in zip(left[key], right[key]):
-                    torch.testing.assert_close(left_value, right_value)
-            else:
-                assert left[key] == right[key]
+    assert clip["clip_role_policy"] == "role_specific"
+    assert clip["clip_roles"] == ["q", "k", "v"]
+    assert clip["gif_group_classification_by_role"]["q"].item() == 0
+    assert clip["gif_group_classification_by_role"]["k"].item() == 1
+    assert clip["gif_group_classification_by_role"]["v"].item() == 2
 
 
 def test_site2_all_low_state_has_strict_low_only_contract():
@@ -264,3 +232,40 @@ def test_calibration_manifest_records_saliency_and_mask_provenance(tmp_path):
         assert by_index[site]["saliency_accumulator_dtype_by_role"] == {}
         assert by_index[site]["gif_mask_policy"] is None
         assert by_index[site]["gif_mask_roles"] == []
+
+
+def test_stage_a_validator_rejects_runtime_field_in_manifest(tmp_path):
+    _write_statistics(tmp_path)
+    materialize_calibration_states(
+        tmp_path, _cfg(), include_clip=False, expected_num_hidden_layers=1
+    )
+    path = tmp_path / "calibration_state_manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["phase_T"] = 4
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="runtime-dependent fields"):
+        validate_site_state_bundle(tmp_path, clip_policy="forbid_all")
+
+
+def test_clip_profile_validator_rejects_tampered_site_summary(tmp_path):
+    cfg = _cfg()
+    site_root = tmp_path / "sites"
+    _write_statistics(site_root)
+    materialize_calibration_states(
+        site_root, cfg, include_clip=False, expected_num_hidden_layers=1
+    )
+    profile_root = tmp_path / "phase_T_4_mtn_T_4"
+    materialize_clip_profile(site_root, profile_root, cfg)
+    summary_path = next(profile_root.glob("layer_*/site_*/calibration_summary.json"))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["clip_rule"] = "tampered"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    with pytest.raises(ValueError, match="manifest/site summary mismatch"):
+        validate_clip_profile(
+            site_root,
+            profile_root,
+            phase_T=4,
+            mtn_T=4,
+            group_size=-1,
+            num_samples=128,
+        )
