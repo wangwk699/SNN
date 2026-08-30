@@ -10,6 +10,8 @@ from .config import (
     conversion_calibration_stage,
     conversion_reuses_ann_training_artifacts,
     is_aware_ann_mode,
+    rotated_pre_finetuning_prefix_enabled,
+    evaluation_prefix_enabled,
     training_common_clip_enabled,
 )
 from .controller import SiteController
@@ -84,6 +86,28 @@ def final_ann_replacement_mode(cfg: dict[str, object]) -> str:
         raise ValueError(
             f"Unsupported ANN mode for final evaluation: {mode}"
         ) from exc
+
+
+def evaluation_depends_on_prefix_num_samples(
+    cfg: dict[str, object], *, base: bool = False,
+    rotated_pre_finetuning: bool = False, neuron: str = "ann",
+) -> bool:
+    """Only non-aware ANN evaluations using a swept Prefix need an N suffix."""
+    if base or neuron != "ann":
+        return False
+    if rotated_pre_finetuning:
+        return rotated_pre_finetuning_prefix_enabled(cfg)
+    if cfg["experiment"]["ann_mode"] == "vanilla":
+        return False
+    if cfg["experiment"]["ann_mode"] == "unaware":
+        return evaluation_prefix_enabled(cfg)
+    return False
+
+
+def append_evaluation_num_samples_if_needed(output_dir, cfg: dict[str, object], **context: object):
+    if evaluation_depends_on_prefix_num_samples(cfg, **context):
+        return output_dir / f"num_samples_{int(cfg['calibration']['num_samples'])}"
+    return output_dir
 
 
 def build_evaluation_controller(

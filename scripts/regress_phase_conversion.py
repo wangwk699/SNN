@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from _common import parser, setup
+from _common import apply_deployment_overrides, parser, setup
 from snn2.artifacts import write_json
 from snn2.data import encode_tldr_generation_prompt, load_selected_raw
 from snn2.evaluation import position_ids_from_attention_mask

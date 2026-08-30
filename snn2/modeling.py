@@ -10,7 +10,7 @@ from .model_integration import register_attention_backend
 from .rotation import load_rotation_state
 from .prefix_cache import load_prefix_key_values
 from .config import (
-    evaluation_prefix_enabled,
+    final_ann_evaluation_prefix_enabled,
     final_evaluation_prefix_artifact_stage,
     post_finetuning_prefix_enabled,
     rotated_pre_finetuning_prefix_enabled,
@@ -95,7 +95,7 @@ def prefix_ids_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: 
             return []
         path = layout.post_finetuning_prefix_dir / "prefix_state.json"
     elif stage == "final_evaluation":
-        if not evaluation_prefix_enabled(cfg):
+        if not final_ann_evaluation_prefix_enabled(cfg):
             return []
         artifact_stage = final_evaluation_prefix_artifact_stage(cfg)
         path = (

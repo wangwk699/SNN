@@ -24,7 +24,7 @@ def main():
         if args.stage in {"pre_finetuning", "ann_training", "rotated_pre_finetuning"}
         else "post_finetuning"
     )
-    config_scope = "policy_shared" if canonical_stage == "pre_finetuning" else "run"
+    config_scope = "ann_training_prefix" if canonical_stage == "pre_finetuning" else "post_finetuning_prefix"
     cfg, layout = setup(args.config, config_scope=config_scope)
     if canonical_stage == "pre_finetuning" and not requires_pre_finetuning_prefix(cfg):
         raise ValueError("vanilla does not use or require a Pre-finetuning Prefix")
@@ -33,7 +33,7 @@ def main():
             "This ANN mode reuses the pre-finetuning Prefix for SNN conversion; "
             "do not rediscover a post-finetuning Prefix."
         )
-    logs_dir = layout.policy_logs_dir if canonical_stage == "pre_finetuning" else layout.logs_dir
+    logs_dir = layout.ann_training_prefix_logs_dir if canonical_stage == "pre_finetuning" else layout.post_finetuning_prefix_logs_dir
     with StageRun(f"discover_prefix_{args.stage}", logs_dir, cfg["experiment"]) as run:
         if canonical_stage == "pre_finetuning":
             missing = []

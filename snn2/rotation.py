@@ -10,6 +10,10 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from .data import (
+    CANONICAL_PREPROCESSING_NUM_SAMPLES, CausalLMCollator,
+    encode_generation_prompt, tokenize_dataset,
+)
 from .data import CausalLMCollator, encode_generation_prompt, tokenize_dataset
 from .hadamard import (
     HadamardSpec,
@@ -643,11 +647,11 @@ def validate_rotation_regression_suite(
     calibration_manifest_sha256: str,
 ) -> dict[str, Any]:
     """Run all-token and prompt-end A/B/C comparisons before raising."""
-    expected_samples = int(cfg["calibration"]["num_samples"])
-    if expected_samples != 128 or len(calibration_dataset) != expected_samples:
+    expected_samples = CANONICAL_PREPROCESSING_NUM_SAMPLES
+    if len(calibration_dataset) != expected_samples:
         raise RuntimeError(
-            "Three-way rotation regression requires the existing 128-sample calibration selection; "
-            f"config={expected_samples}, dataset={len(calibration_dataset)}"
+            "Three-way rotation regression requires the canonical "
+            f"{expected_samples}-sample preprocessing selection; dataset={len(calibration_dataset)}"
         )
     _assert_regression_variants(model_a, model_b, model_c, controller_b, controller_c)
     for model in (model_a, model_b, model_c):
@@ -681,9 +685,9 @@ def validate_rotation_regression_suite(
             del logits
 
     manifest = json.loads(Path(calibration_manifest_path).read_text(encoding="utf-8"))
-    manifest_indices = [int(value) for value in manifest.get("indices", range(expected_samples))]
-    if len(manifest_indices) != expected_samples:
-        raise RuntimeError("Calibration manifest indices do not match the selected 128 rows")
+    if manifest.get("num_samples") != expected_samples or len(manifest.get("indices", [])) != expected_samples:
+        raise RuntimeError("Canonical calibration manifest indices do not match the fixed preprocessing selection")
+    manifest_indices = [int(value) for value in manifest["indices"]]
     prompt_accumulators = {name: _PromptEndDecisionAccumulator() for name in pair_names}
     prompt_batch_size = int(cfg["calibration"].get("batch_size", 1))
     old_padding_side = tokenizer.padding_side

@@ -442,7 +442,7 @@ def test_three_way_suite_finishes_all_pairs_before_raising(tmp_path):
         for index in range(128)
     )
     manifest = tmp_path / "calibration_manifest.json"
-    manifest.write_text(json.dumps({"indices": list(range(1000, 1128))}), encoding="utf-8")
+    manifest.write_text(json.dumps({"manifest_role": "canonical_preprocessing_calibration", "num_samples": 128, "sampling": "seeded_without_replacement", "duplicates_preserved": False, "indices": list(range(1000, 1128))}), encoding="utf-8")
     cfg = {
         "calibration": {"num_samples": 128, "batch_size": 32},
         "evaluation": {"tldr_input_length": 16},

@@ -327,6 +327,13 @@ def rotated_pre_finetuning_prefix_enabled(cfg: dict[str, Any]) -> bool:
     )
 
 
+
+def final_ann_evaluation_prefix_enabled(cfg: dict[str, Any]) -> bool:
+    """Whether final ANN evaluation actually loads a Prefix artifact."""
+    if cfg["experiment"]["ann_mode"] == "vanilla":
+        return False
+    return evaluation_prefix_enabled(cfg)
+
 def evaluation_prefix_enabled(cfg: dict[str, Any]) -> bool:
     return bool(
         cfg.get("evaluation", {}).get(

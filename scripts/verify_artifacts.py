@@ -9,7 +9,7 @@ from snn2.data import validate_prefix_discovery_state
 from snn2.config import (
     conversion_prefix_enabled,
     conversion_reuses_ann_training_artifacts,
-    evaluation_prefix_enabled,
+    final_ann_evaluation_prefix_enabled,
     requires_ann_training_calibration,
     requires_pre_finetuning_prefix,
     training_common_clip_enabled,
@@ -29,7 +29,7 @@ from snn2.sites import (
     SOFTMAX_SITE_ID,
     topology_metadata,
 )
-from snn2.evaluation import final_ann_replacement_mode, resolve_tldr_evaluation_layout
+from snn2.evaluation import append_evaluation_num_samples_if_needed, final_ann_replacement_mode, resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
 from snn2.state_validation import validate_clip_profile, validate_site_state_bundle
 from snn2.temporal_ops import (
@@ -602,11 +602,13 @@ def main():
             evaluation_files = ("results.json",)
             evaluation_subdir = None
 
-        def evaluation_paths(root):
+        def evaluation_paths(root, *, neuron="ann"):
             directory = root / "evaluation" / eval_dir_name
             if evaluation_subdir is not None:
                 directory = directory / evaluation_subdir
-            directory = directory / prefix_enabled_dirname(evaluation_prefix_enabled(cfg))
+            enabled = final_ann_evaluation_prefix_enabled(cfg) if neuron == "ann" else evaluation_prefix_enabled(cfg)
+            directory = directory / prefix_enabled_dirname(enabled)
+            directory = append_evaluation_num_samples_if_needed(directory, cfg, neuron=neuron)
             return [directory / name for name in evaluation_files]
 
         required.extend(evaluation_paths(layout.ann_dir))
@@ -809,7 +811,7 @@ def main():
 
             required.extend(
                 [
-                    path,
+                    *evaluation_paths(layout.snn_dir(neuron), neuron=neuron),
 
                     *evaluation_paths(layout.snn_dir(neuron)),
                 ]
@@ -839,7 +841,7 @@ def main():
                 != int({"phase": cfg["phase"]["T"], "gif": 2, "mtn": cfg["mtn"]["T"]}[neuron])
             ):
                 raise ValueError(
-                    f"Conversion has incompatible calibration timestep metadata: {neuron}"
+            metrics_path = evaluation_paths(layout.snn_dir(neuron), neuron=neuron)[0]
                 )
             metrics_path = evaluation_paths(layout.snn_dir(neuron))[0]
             metrics = read_json(metrics_path)
@@ -868,7 +870,8 @@ def main():
                 "full_split" if expected_full else "seeded_random_without_replacement"
             )
             for root in [layout.ann_dir, *(layout.snn_dir(neuron) for neuron in ("phase", "gif", "mtn"))]:
-                selection_path = evaluation_paths(root)[1]
+                neuron = "ann" if root == layout.ann_dir else "phase"
+                selection_path = evaluation_paths(root, neuron=neuron)[1]
                 selection = read_json(selection_path)
                 if len(selection.get("indices", [])) != expected_count:
                     raise ValueError(f"TL;DR selection size mismatch: {selection_path}")

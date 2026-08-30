@@ -204,6 +204,14 @@ class ArtifactLayout:
     @property
     def ann_training_prefix_dir(self) -> Path:
         return self.ann_training_prefix_base_dir / f'num_samples_{int(self._cfg["calibration"]["num_samples"])}'
+
+    @property
+    def ann_training_prefix_config_dir(self) -> Path:
+        return self.ann_training_prefix_dir / "config"
+
+    @property
+    def ann_training_prefix_logs_dir(self) -> Path:
+        return self.ann_training_prefix_dir / "logs"
     @property
     def rotated_pre_finetuning_dir(self) -> Path:
         """Shared artifacts for evaluating the rotated Base before ANN fine-tuning."""
@@ -320,6 +328,14 @@ class ArtifactLayout:
         return self.root / "post_finetuning"
 
     @property
+    def post_finetuning_prefix_config_dir(self) -> Path:
+        return self.post_finetuning_prefix_dir / "config"
+
+    @property
+    def post_finetuning_prefix_logs_dir(self) -> Path:
+        return self.post_finetuning_prefix_dir / "logs"
+
+    @property
     def post_finetuning_prefix_base_dir(self) -> Path:
         return self.post_finetuning_dir / "prefix"
 
@@ -401,6 +417,8 @@ class ArtifactLayout:
             ) / neuron
         if neuron == "phase":
             return result / phase_snn_dirname(self._cfg["phase"]["T"])
+            self.ann_training_prefix_config_dir,
+            self.ann_training_prefix_logs_dir,
         if neuron == "mtn":
             return result / mtn_snn_dirname(self._cfg["mtn"]["T"], self._cfg["mtn"]["K"])
         return result
@@ -414,6 +432,8 @@ class ArtifactLayout:
             self.config_dir,
             self.data_dir,
             self.canonical_preprocessing_calibration_dir,
+            self.post_finetuning_prefix_config_dir,
+            self.post_finetuning_prefix_logs_dir,
             self.shared_task_logs_dir,
             self.rotation_dir,
             self.ann_training_prefix_dir,

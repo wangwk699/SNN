@@ -13,6 +13,7 @@ from tqdm.auto import tqdm
 from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
 from snn2.conversion import validate_conversion_metadata
 from snn2.config import (
+    final_ann_evaluation_prefix_enabled,
     evaluation_prefix_enabled,
     final_evaluation_prefix_artifact_stage,
     rotated_pre_finetuning_prefix_enabled,
@@ -23,6 +24,7 @@ from snn2.data import (
     tldr_prompt_and_reference,
 )
 from snn2.evaluation import (
+    append_evaluation_num_samples_if_needed,
     activation_neuron_operators_per_temporal_forward,
     build_evaluation_controller,
     greedy_generate,
@@ -174,7 +176,7 @@ def main():
         else None
     )
     final_evaluation_prefix_enabled = (
-        evaluation_prefix_enabled(cfg)
+        (final_ann_evaluation_prefix_enabled(cfg) if args.neuron == "ann" else evaluation_prefix_enabled(cfg))
         if not args.base and not args.rotated_pre_finetuning
         else None
     )
@@ -659,19 +661,16 @@ def main():
                 model_output_dir = layout.snn_dir(args.neuron)       
 
             output_dir = (
-                model_output_dir
-                / "evaluation"
-                / "tldr"
-                / test_samples_dirname
+                model_output_dir / "evaluation" / "tldr" / test_samples_dirname
             )
             if not args.base:
                 output_dir = output_dir / prefix_enabled_dirname(
-                    bool(
-                        rotated_prefix_enabled
-                        if args.rotated_pre_finetuning
-                        else final_evaluation_prefix_enabled
-                    )
+                    bool(rotated_prefix_enabled if args.rotated_pre_finetuning else final_evaluation_prefix_enabled)
                 )
+            output_dir = append_evaluation_num_samples_if_needed(
+                output_dir, cfg, base=args.base,
+                rotated_pre_finetuning=args.rotated_pre_finetuning, neuron=args.neuron,
+            )
 
             _write_jsonl(
                 output_dir / "predictions.jsonl",
