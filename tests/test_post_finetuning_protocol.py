@@ -14,6 +14,7 @@ from snn2.config import (
     requires_pre_finetuning_prefix,
 )
 from snn2.conversion import validate_conversion_prefix
+from snn2.modeling import prefix_ids_for_stage
 
 
 def _cfg(mode, root="artifacts", common_clip_enabled=True):
@@ -253,3 +254,14 @@ def test_deployment_override_keeps_aware_training_root_and_changes_snn_path():
     assert layout.ann_checkpoint_dir == checkpoint
     assert layout.snn_dir("phase").parts[-2:] == ("phase", "phase_T_8")
     assert layout.snn_dir("mtn").parts[-2:] == ("mtn", "mtn_T_9_mtn_K_12")
+
+def test_vanilla_ann_and_snn_evaluation_prefix_stages_are_distinct(tmp_path):
+    cfg = _cfg("vanilla", tmp_path)
+    cfg["evaluation"] = {"prefix_enabled": True}
+    layout = ArtifactLayout(cfg)
+    state_path = layout.post_finetuning_prefix_dir / "prefix_state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(json.dumps({"prefix_token_ids": [17]}), encoding="utf-8")
+
+    assert prefix_ids_for_stage(cfg, layout, stage="final_ann_evaluation") == []
+    assert prefix_ids_for_stage(cfg, layout, stage="final_snn_evaluation") == [17]

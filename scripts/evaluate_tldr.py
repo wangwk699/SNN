@@ -239,15 +239,14 @@ def main():
         model.eval()
         tokenizer = load_tokenizer(cfg, source)
         tokenizer.padding_side = "left"
-        prefix_stage = (
-            "base_evaluation"
-            if args.base
-            else (
-                "rotated_pre_finetuning"
-                if args.rotated_pre_finetuning
-                else "final_evaluation"
-            )
-        )
+        if args.base:
+            prefix_stage = "base_evaluation"
+        elif args.rotated_pre_finetuning:
+            prefix_stage = "rotated_pre_finetuning"
+        elif args.neuron == "ann":
+            prefix_stage = "final_ann_evaluation"
+        else:
+            prefix_stage = "final_snn_evaluation"
         if (
             args.neuron == "ann"
             and not args.base

@@ -11,6 +11,7 @@ from .rotation import load_rotation_state
 from .prefix_cache import load_prefix_key_values
 from .config import (
     final_ann_evaluation_prefix_enabled,
+    evaluation_prefix_enabled,
     final_evaluation_prefix_artifact_stage,
     post_finetuning_prefix_enabled,
     rotated_pre_finetuning_prefix_enabled,
@@ -94,8 +95,13 @@ def prefix_ids_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: 
         if not post_finetuning_prefix_enabled(cfg):
             return []
         path = layout.post_finetuning_prefix_dir / "prefix_state.json"
-    elif stage == "final_evaluation":
-        if not final_ann_evaluation_prefix_enabled(cfg):
+    elif stage in {"final_ann_evaluation", "final_snn_evaluation"}:
+        enabled = (
+            final_ann_evaluation_prefix_enabled(cfg)
+            if stage == "final_ann_evaluation"
+            else evaluation_prefix_enabled(cfg)
+        )
+        if not enabled:
             return []
         artifact_stage = final_evaluation_prefix_artifact_stage(cfg)
         path = (
@@ -132,7 +138,7 @@ def prefix_key_values_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, 
         directory = layout.rotated_pre_finetuning_prefix_dir
     elif stage == "post_finetuning":
         directory = layout.post_finetuning_prefix_dir
-    elif stage == "final_evaluation":
+    elif stage in {"final_ann_evaluation", "final_snn_evaluation"}:
         directory = (
             layout.ann_training_prefix_dir
             if final_evaluation_prefix_artifact_stage(cfg) == "pre_finetuning"
@@ -142,7 +148,9 @@ def prefix_key_values_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, 
         raise ValueError(f"Unknown prefix stage: {stage}")
     path = directory / "prefixed_key_values.pt"
     if not path.exists():
-        raise FileNotFoundError(f"Prefix is enabled but fixed KV cache is missing: {path}. Re-run scripts/discover_prefix.py.")
+        raise FileNotFoundError(
+            f"Prefix is enabled but fixed KV cache is missing: {path}. Re-run scripts/discover_prefix.py."
+        )
     return load_prefix_key_values(path)
 
 def rotation_state(cfg: dict[str, Any], layout: ArtifactLayout):

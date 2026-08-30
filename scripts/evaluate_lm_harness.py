@@ -247,23 +247,20 @@ def main():
                 ),
             )
 
-        model_prefix_ids = prefix_ids_for_stage(
-            cfg, layout, stage=(
-                "base_evaluation" if args.base else (
-                    "rotated_pre_finetuning" if args.rotated_pre_finetuning else "final_evaluation"
-                )
-            )
-        )
+        if args.base:
+            prefix_stage = "base_evaluation"
+        elif args.rotated_pre_finetuning:
+            prefix_stage = "rotated_pre_finetuning"
+        elif args.neuron == "ann":
+            prefix_stage = "final_ann_evaluation"
+        else:
+            prefix_stage = "final_snn_evaluation"
+        model_prefix_ids = prefix_ids_for_stage(cfg, layout, stage=prefix_stage)
 
-        # Base + vanilla 时这里自然为 []
         proxy = EvaluationModelProxy(
             model,
             controller,
-            prefix_key_values_for_stage(cfg, layout, stage=(
-                "base_evaluation" if args.base else (
-                    "rotated_pre_finetuning" if args.rotated_pre_finetuning else "final_evaluation"
-                )
-            )),
+            prefix_key_values_for_stage(cfg, layout, stage=prefix_stage),
         )
 
         batch_size = int(
@@ -414,11 +411,7 @@ def main():
             "prefix_token_ids": (
                 model_prefix_ids
             ),
-            "prefix_stage": (
-                "base_evaluation" if args.base else (
-                    "rotated_pre_finetuning" if args.rotated_pre_finetuning else "final_evaluation"
-                )
-            ),
+            "prefix_stage": prefix_stage,
             "prefix_enabled": active_prefix_enabled,
             "prefix_source_stage": (
                 None if args.base or args.rotated_pre_finetuning

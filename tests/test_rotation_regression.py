@@ -101,11 +101,15 @@ def test_streaming_histogram_multiple_doublings_preserve_counts():
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA devices")
 def test_fuse_rmsnorm_scale_supports_cross_device_linear():
-    norm = torch.nn.Module()
-    norm.weight = torch.nn.Parameter(
-        torch.tensor([2.0, 3.0, 4.0], device="cuda:0")
-    )
-    linear = torch.nn.Linear(3, 2, bias=False, device="cuda:1")
+    try:
+        norm = torch.nn.Module()
+        norm.weight = torch.nn.Parameter(
+            torch.tensor([2.0, 3.0, 4.0], device="cuda:0")
+        )
+        linear = torch.nn.Linear(3, 2, bias=False, device="cuda:1")
+    except torch.cuda.OutOfMemoryError:
+        torch.cuda.empty_cache()
+        pytest.skip("requires allocatable memory on cuda:0 and cuda:1")
     original = linear.weight.detach().cpu().double()
 
     fuse_rmsnorm_scale(norm, [linear])

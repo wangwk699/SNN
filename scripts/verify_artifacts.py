@@ -10,6 +10,7 @@ from snn2.config import (
     conversion_prefix_enabled,
     conversion_reuses_ann_training_artifacts,
     final_ann_evaluation_prefix_enabled,
+    evaluation_prefix_enabled,
     requires_ann_training_calibration,
     requires_pre_finetuning_prefix,
     training_common_clip_enabled,
@@ -808,14 +809,7 @@ def main():
             )
 
             conversions[neuron] = path.exists()
-
-            required.extend(
-                [
-                    *evaluation_paths(layout.snn_dir(neuron), neuron=neuron),
-
-                    *evaluation_paths(layout.snn_dir(neuron)),
-                ]
-            )
+            required.extend(evaluation_paths(layout.snn_dir(neuron), neuron=neuron))
 
         missing = [
             str(path)
@@ -836,21 +830,22 @@ def main():
         for neuron in ("phase", "gif", "mtn"):
             metadata_path = layout.snn_conversion_dir(neuron) / "conversion_metadata.json"
             metadata = validate_conversion_metadata(cfg, layout, neuron)
-            if (
-                int(metadata.get("full_temporal_steps", -1))
-                != int({"phase": cfg["phase"]["T"], "gif": 2, "mtn": cfg["mtn"]["T"]}[neuron])
-            ):
-                raise ValueError(
+        for neuron in ("phase", "gif", "mtn"):
+            metadata = validate_conversion_metadata(cfg, layout, neuron)
+            expected_steps = {
+                "phase": int(cfg["phase"]["T"]),
+                "gif": 2,
+                "mtn": int(cfg["mtn"]["T"]),
+            }[neuron]
+            if int(metadata.get("full_temporal_steps", -1)) != expected_steps:
+                raise ValueError(f"{neuron} conversion metadata has incompatible temporal steps")
             metrics_path = evaluation_paths(layout.snn_dir(neuron), neuron=neuron)[0]
-                )
-            metrics_path = evaluation_paths(layout.snn_dir(neuron))[0]
             metrics = read_json(metrics_path)
             policy_source = metrics.get("snn2_metadata", metrics)
             validate_temporal_policy(policy_source, context=str(metrics_path))
             if (
                 policy_source.get("neuron") != neuron
-                or int(policy_source.get("full_temporal_steps", -1))
-                != int(metadata["full_temporal_steps"])
+                or int(policy_source.get("full_temporal_steps", -1)) != int(metadata["full_temporal_steps"])
             ):
                 raise ValueError(f"SNN metrics disagree with conversion: {metrics_path}")
             if "evaluation_forward_kind" in policy_source:
@@ -866,11 +861,12 @@ def main():
         if tldr_layout is not None:
             expected_count = int(tldr_layout["selected_test_samples"])
             expected_full = bool(tldr_layout["is_full_test"])
-            expected_sampling = (
-                "full_split" if expected_full else "seeded_random_without_replacement"
-            )
-            for root in [layout.ann_dir, *(layout.snn_dir(neuron) for neuron in ("phase", "gif", "mtn"))]:
-                neuron = "ann" if root == layout.ann_dir else "phase"
+            expected_sampling = "full_split" if expected_full else "seeded_random_without_replacement"
+            evaluation_roots = [
+                ("ann", layout.ann_dir),
+                *((neuron, layout.snn_dir(neuron)) for neuron in ("phase", "gif", "mtn")),
+            ]
+            for neuron, root in evaluation_roots:
                 selection_path = evaluation_paths(root, neuron=neuron)[1]
                 selection = read_json(selection_path)
                 if len(selection.get("indices", [])) != expected_count:
@@ -884,13 +880,8 @@ def main():
             "required_files": len(required),
             "calibration": calibration,
             "conversion_descriptors": conversions,
-
-            # Prefix verification metadata
-            "prefix_token_ids": prefix_token_ids,
             "prefix_length": len(prefix_token_ids),
-            "prefix_kv_required": bool(
-                prefix_token_ids
-            ),
+            "prefix_kv_required": bool(prefix_token_ids),
             **topology_metadata(),
         }
 
