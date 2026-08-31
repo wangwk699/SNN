@@ -71,6 +71,8 @@ def _verify_final_ann_forward_metadata(cfg, layout, path):
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "softmax_site5_clip_applied": False,
+        "global_final_norm_replacement": "phase_surrogate" if mode == "phase" else "identity",
+        "global_final_norm_clip_applied": False,
     }
     for key, value in required.items():
         if metadata.get(key) != value:
@@ -854,6 +856,10 @@ def main():
                     "controller_mode": f"deploy_{neuron}",
                     "temporal_execution": True,
                     "evaluation_common_clip_applied": False,
+                    "global_final_norm_replacement": {
+                        "phase": "temporal_phase", "mtn": "temporal_mtn", "gif": "identity"
+                    }[neuron],
+                    "global_final_norm_clip_applied": False,
                 }
                 if any(policy_source.get(key) != value for key, value in expected_forward.items()):
                     raise ValueError(f"SNN metrics have incompatible temporal forward metadata: {metrics_path}")

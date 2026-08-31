@@ -5,6 +5,11 @@ from snn2.controller import SiteController
 from snn2.neurons import Clipper, PhaseSurrogate
 from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE,
+    MTN_BASE_SCALE_CALIBRATION,
+    MTN_BASE_SCALE_MULTIPLIER,
+    PARAMETER_ACCUMULATOR_DTYPE,
+    PARAMETER_CHANNEL_POLICY,
+    PARAMETER_REDUCTION_POLICY,
     PHASE_TAU_CALIBRATION,
     NEURON_PARAMETER_CLAMP_MAX,
     NEURON_PARAMETER_CLAMP_MIN,
@@ -53,6 +58,21 @@ def _phase_state():
         "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
     }
 
+def _mtn_state():
+    return {
+        **_header("mtn"), **_layout(), "base_scale": torch.tensor([2.0]),
+        "base_scale_calibration": MTN_BASE_SCALE_CALIBRATION,
+        "base_scale_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "base_scale_accumulator_dtype": PARAMETER_ACCUMULATOR_DTYPE,
+        "base_scale_channel_policy": PARAMETER_CHANNEL_POLICY,
+        "base_scale_reduction_policy": PARAMETER_REDUCTION_POLICY,
+        "base_scale_multiplier": MTN_BASE_SCALE_MULTIPLIER,
+        "base_scale_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "base_scale_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+        "base_scale_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
+    }
+
+
 
 def _clip_state(*, roles=None):
     common = {
@@ -86,9 +106,52 @@ def _write(root, site_index, name, state, *, clip=False):
 def test_phase_state_is_runtime_t_independent_and_v0_is_derived():
     state = _phase_state()
     assert not {"T", "base", "v0", "max_spikes"}.intersection(state)
+
+
     for T in (1, 2, 4, 8):
         module = PhaseSurrogate(state, T=T)
         torch.testing.assert_close(module.v0, 0.5 * module.tau * 2.0 ** (-T))
+
+
+def _write_global(root, name, state):
+    directory = root / "_global" / "final_rmsnorm"
+    directory.mkdir(parents=True, exist_ok=True)
+    torch.save(state, directory / f"{name}_state.pt")
+
+
+def test_global_final_rmsnorm_phase_mtn_and_gif_topologies_are_clip_free(tmp_path):
+    _write_global(tmp_path, "phase", _phase_state())
+    _write_global(tmp_path, "mtn", _mtn_state())
+    x = torch.full((1, 1, 4), 2.0)
+    for common_clip_enabled in (False, True):
+        phase = SiteController(
+            mode="phase", site_root=tmp_path,
+            clip_root=tmp_path if common_clip_enabled else None,
+            common_clip_enabled=common_clip_enabled, phase_T=4, phase_surrogate_slope=1.0,
+        )
+        output = phase.apply_final_norm_neuron(x)
+        assert output.shape == x.shape
+        assert phase._final_norm_phase is not None
+        assert "clip" not in phase._modules.get("_global/final_rmsnorm", {})
+    gif_ann = SiteController(mode="gif", site_root=tmp_path)
+    assert gif_ann.apply_final_norm_neuron(x) is x
+    assert gif_ann._final_norm_phase is None and gif_ann._final_norm_mtn is None
+    phase_snn = SiteController(site_root=tmp_path, phase_T=2)
+    phase_snn.mode, phase_snn.temporal_steps = "deploy_phase", 2
+    phase_output = phase_snn.apply_final_norm_neuron(torch.cat((x, x), dim=0))
+    assert phase_output.shape == (2, 1, 4)
+    mtn_snn = SiteController(site_root=tmp_path, mtn_T=2, mtn_K=2, mtn_threshold_factor=0.75)
+    mtn_snn.mode, mtn_snn.temporal_steps = "deploy_mtn", 2
+    mtn_output = mtn_snn.apply_final_norm_neuron(torch.cat((x, x), dim=0))
+    assert mtn_snn._final_norm_mtn is not None
+    assert "clip" not in mtn_snn._modules.get("_global/final_rmsnorm", {})
+    assert mtn_output.shape == (2, 1, 4)
+    gif_snn = SiteController(site_root=tmp_path)
+    gif_snn.mode, gif_snn.temporal_steps = "deploy_gif", 2
+    temporal_x = torch.cat((x, x), dim=0)
+    assert gif_snn.apply_final_norm_neuron(temporal_x) is temporal_x
+
+
 
 
 def test_phase_controller_loads_stage_a_and_separate_stage_b(tmp_path):

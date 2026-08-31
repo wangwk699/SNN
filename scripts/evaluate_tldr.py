@@ -27,6 +27,7 @@ from snn2.evaluation import (
     append_evaluation_num_samples_if_needed,
     activation_neuron_operators_per_temporal_forward,
     build_evaluation_controller,
+    global_final_norm_evaluation_metadata,
     greedy_generate,
     deployment_policy_metadata,
     evaluation_calibration_metadata,
@@ -536,7 +537,7 @@ def main():
                     "site_count": SITE_COUNT,
                     "site_topology_version": SITE_TOPOLOGY_VERSION,
                     "per_temporal_forward_activation_neuron_operators": per_forward_operators,
-                    "global_final_norm_phase_neuron_present": args.neuron == "phase",
+                    **global_final_norm_evaluation_metadata(neuron=args.neuron, controller=controller),
                     "ann_training_common_clip_enabled": (
                         False
                         if args.base or args.rotated_pre_finetuning

@@ -15,6 +15,7 @@ from snn2.controller import SiteController
 from snn2.evaluation import (
     evaluation_calibration_metadata,
     evaluation_forward_metadata,
+    global_final_norm_evaluation_metadata,
 )
 from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE,
@@ -476,6 +477,10 @@ def _gif_eval_fixture(tmp_path):
             cfg,
             layout,
             neuron="ann",
+        ),
+        **global_final_norm_evaluation_metadata(
+            neuron="ann",
+            controller=controller,
         ),
     }
     path = tmp_path / "metrics.json"

@@ -11,6 +11,7 @@ from snn2.evaluation import (
     evaluation_calibration_metadata,
     evaluation_ann_common_clip_enabled,
     evaluation_forward_metadata,
+    global_final_norm_evaluation_metadata,
     final_ann_replacement_mode,
     resolve_tldr_evaluation_layout,
 )
@@ -18,21 +19,38 @@ from snn2.evaluation import (
 
 @pytest.mark.parametrize(
     ("neuron", "expected"),
-    [("phase", 281), ("gif", 280), ("mtn", 280), ("ann", 0)],
+    [("phase", 281), ("gif", 280), ("mtn", 281), ("ann", 0)],
 )
-def test_activation_neuron_operator_count_includes_global_phase(neuron, expected):
+def test_activation_neuron_operator_count_includes_global_phase_and_mtn(neuron, expected):
     assert activation_neuron_operators_per_temporal_forward(
         num_hidden_layers=28, neuron=neuron
     ) == expected
+
+
+
+@pytest.mark.parametrize(
+    ("neuron", "mode", "replacement"),
+    [
+        ("ann", "phase", "phase_surrogate"), ("ann", "gif", "identity"),
+        ("phase", "deploy_phase", "temporal_phase"),
+        ("mtn", "deploy_mtn", "temporal_mtn"), ("gif", "deploy_gif", "identity"),
+    ],
+)
+def test_global_final_norm_evaluation_metadata(neuron, mode, replacement):
+    metadata = global_final_norm_evaluation_metadata(
+        neuron=neuron, controller=SimpleNamespace(mode=mode)
+    )
+    assert metadata == {"global_final_norm_replacement": replacement, "global_final_norm_clip_applied": False}
+
+
 
 
 def test_activation_neuron_operator_count_rejects_unknown_neuron():
     with pytest.raises(ValueError, match="Unknown neuron"):
         activation_neuron_operators_per_temporal_forward(
             num_hidden_layers=28, neuron="unknown"
+
         )
-
-
 @pytest.mark.parametrize("mode", ["vanilla", "unaware"])
 def test_identity_final_ann_evaluation_has_no_calibration_metadata(mode):
     cfg = {"experiment": {"ann_mode": mode}, "calibration": {"group_size": -1}}

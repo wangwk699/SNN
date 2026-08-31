@@ -51,6 +51,20 @@ def deployment_policy_metadata(controller: SiteController | None) -> dict[str, o
         return {}
     return temporal_policy_metadata()
 
+def global_final_norm_evaluation_metadata(
+    *, neuron: str, controller: SiteController | None
+) -> dict[str, object]:
+    """Describe the clip-free global Final RMSNorm replacement actually in use."""
+    mode = None if controller is None else controller.mode
+    replacement = (
+        "phase_surrogate" if neuron == "ann" and mode == "phase" else
+        "temporal_phase" if neuron == "phase" else
+        "temporal_mtn" if neuron == "mtn" else
+        "identity"
+    )
+    return {"global_final_norm_replacement": replacement, "global_final_norm_clip_applied": False}
+
+
 
 def activation_neuron_operators_per_temporal_forward(
     *, num_hidden_layers: int, neuron: str
@@ -58,7 +72,7 @@ def activation_neuron_operators_per_temporal_forward(
     if neuron == "ann":
         return 0
     base = int(num_hidden_layers) * SITE_COUNT
-    if neuron == "phase":
+    if neuron in {"phase", "mtn"}:
         return base + 1
     if neuron == "gif":
         per_layer = sum(
@@ -66,8 +80,6 @@ def activation_neuron_operators_per_temporal_forward(
             for site in GIF_ACTIVE_SITE_IDS
         )
         return int(num_hidden_layers) * per_layer
-    if neuron == "mtn":
-        return base
     raise ValueError(f"Unknown neuron: {neuron}")
 
 
