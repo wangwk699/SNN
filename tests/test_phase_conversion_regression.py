@@ -11,7 +11,7 @@ from snn2.artifacts import sha256_file
 from snn2.controller import SiteController
 from snn2.evaluation import build_evaluation_controller
 from snn2.neurons import PhaseSurrogate
-from snn2.phase_statistics import PHASE_TAU_CHANNEL_POLICY, PHASE_TAU_REDUCTION_POLICY
+from snn2.phase_statistics import PHASE_TAU_CHANNEL_POLICY, PHASE_TAU_REDUCTION_POLICY, NEURON_PARAMETER_CLAMP_MIN, NEURON_PARAMETER_CLAMP_MAX, NEURON_PARAMETER_CLAMP_POLICY
 from snn2.phase_conversion_regression import (
     PhaseConversionRegressionRecorder,
     summarize_first_divergence,
@@ -41,6 +41,9 @@ def _phase_state():
         "tau": torch.tensor([2.0]),
         "tau_calibration": PHASE_TAU_CALIBRATION,
         "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "tau_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "tau_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+        "tau_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
         "tau_accumulator_dtype": "float32",
         "tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
         "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
@@ -94,12 +97,12 @@ def test_final_norm_bypass_only_changes_deploy_phase_regression_path():
     controller = SiteController(mode="identity")
     controller.mode = "deploy_phase"
     controller.temporal_steps = 4
-    controller.regression_bypass_final_norm_phase = True
-    assert controller.apply_final_norm_phase(value) is value
+    controller.regression_bypass_final_norm_neuron = True
+    assert controller.apply_final_norm_neuron(value) is value
 
     identity = SiteController(mode="identity")
-    identity.regression_bypass_final_norm_phase = True
-    assert identity.apply_final_norm_phase(value) is value
+    identity.regression_bypass_final_norm_neuron = True
+    assert identity.apply_final_norm_neuron(value) is value
 
 
 @pytest.mark.parametrize(

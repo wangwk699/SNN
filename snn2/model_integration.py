@@ -366,7 +366,7 @@ def install_model_integration(
     handles.append(parts.embedding.register_forward_hook(temporal_embedding_hook))
     handles.append(
         parts.final_norm.register_forward_hook(
-            lambda _module, _inputs, output: controller.apply_final_norm_phase(output)
+            lambda _module, _inputs, output: controller.apply_final_norm_neuron(output)
         )
     )
 

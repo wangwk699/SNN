@@ -248,6 +248,9 @@ def validate_conversion_metadata(
     validate_temporal_policy(metadata, context=str(path))
     prefix, bundle, manifest_path, training_provenance = _source_bundle(cfg, layout)
     reused = conversion_reuses_ann_training_artifacts(cfg)
+    final_norm_states = read_json(manifest_path).get("global_states", {}).get("final_rmsnorm")
+    if not isinstance(final_norm_states, dict):
+        raise ValueError("Conversion calibration is missing Final RMSNorm global states")
     ann_config = layout.ann_checkpoint_dir / "config.json"
     rotation_enabled = bool(cfg["rotation"]["enabled"])
     rotation_path = layout.rotation_dir / "rotation_state.pt"
@@ -284,6 +287,10 @@ def validate_conversion_metadata(
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
         "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
+        "final_norm_phase_state_sha256": final_norm_states.get("phase_state_sha256"),
+        "final_norm_mtn_state_sha256": final_norm_states.get("mtn_state_sha256"),
+        "final_norm_gif_state_present": False,
+        "final_norm_clip_state_present": False,
     }
     mismatched = {
         key: {"expected": value, "actual": metadata.get(key)}
@@ -320,6 +327,9 @@ def create_conversion(
     rotation_path = layout.rotation_dir / "rotation_state.pt"
     if rotation_enabled and not rotation_path.exists():
         raise FileNotFoundError(rotation_path)
+    final_norm_states = read_json(manifest_path).get("global_states", {}).get("final_rmsnorm")
+    if not isinstance(final_norm_states, dict):
+        raise ValueError("Conversion calibration is missing Final RMSNorm global states")
     metadata = {
         "format_version": CONVERSION_METADATA_FORMAT_VERSION,
         "experiment": cfg["experiment"],
@@ -357,6 +367,10 @@ def create_conversion(
         "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
         "prefix_root": prefix["prefix_root"],
         "calibration_validation": validation,
+        "final_norm_phase_state_sha256": final_norm_states.get("phase_state_sha256"),
+        "final_norm_mtn_state_sha256": final_norm_states.get("mtn_state_sha256"),
+        "final_norm_gif_state_present": final_norm_states.get("gif_state_present"),
+        "final_norm_clip_state_present": final_norm_states.get("clip_state_present"),
         "training_artifact_provenance": training_provenance,
         **temporal_policy_metadata(),
         **topology_metadata(),

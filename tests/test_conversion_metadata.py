@@ -123,6 +123,7 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         rotation_path.parent.mkdir(parents=True)
         rotation_path.write_bytes(b"rotation-v1")
     manifest = layout.post_finetuning_site_dir / "calibration_state_manifest.json"
+    final_norm = json.loads(manifest.read_text(encoding="utf-8"))["global_states"]["final_rmsnorm"]
     metadata = {
         "format_version": CONVERSION_METADATA_FORMAT_VERSION,
         "deployment_neuron": "gif",
@@ -159,6 +160,10 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
         "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
+        "final_norm_phase_state_sha256": final_norm["phase_state_sha256"],
+        "final_norm_mtn_state_sha256": final_norm["mtn_state_sha256"],
+        "final_norm_gif_state_present": False,
+        "final_norm_clip_state_present": False,
         **temporal_policy_metadata(),
     }
     path = output / "conversion_metadata.json"
@@ -166,7 +171,7 @@ def _prepare(tmp_path, *, rotation_enabled=False):
     return layout, path
 
 
-def test_conversion_metadata_v11_is_accepted(tmp_path):
+def test_conversion_metadata_current_schema_is_accepted(tmp_path):
     layout, _ = _prepare(tmp_path)
     metadata = validate_conversion_metadata(_cfg(), layout, "gif")
     assert metadata["ordinary_gif_high_qmax"] == 30

@@ -1,12 +1,17 @@
 import torch
 
-from snn2.calibration import build_phase_state
+from snn2.calibration import build_mtn_state, build_phase_state
 from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE,
     PHASE_TAU_CALIBRATION,
     PHASE_TAU_CHANNEL_POLICY,
     PHASE_TAU_EMA_FACTOR,
     PHASE_TAU_REDUCTION_POLICY,
+    MTN_BASE_SCALE_CALIBRATION,
+    NEURON_PARAMETER_CLAMP_MAX,
+    NEURON_PARAMETER_CLAMP_MIN,
+    NEURON_PARAMETER_CLAMP_POLICY,
+    PARAMETER_ACCUMULATOR_DTYPE,
 )
 from snn2.stats import StatisticsStore
 from snn2.temporal_ops import STATISTICS_FORMAT_VERSION
@@ -94,3 +99,26 @@ def test_role_saliency_preserves_accumulator_precision():
     store.update_saliency(0, 3, torch.ones(1, 2, 3, 4, dtype=torch.float64), source="spikellm_qk_k_fp64")
     matmul = next(iter(store.items.values()))
     assert matmul.saliency_sum_by_role["default"].dtype == torch.float64
+
+
+def test_phase_and_mtn_materialize_shared_ema_with_post_multiplier_clamp():
+    store = StatisticsStore()
+    store.update(0, 1, torch.ones(1, 1, 3))
+    statistics = next(iter(store.items.values())).state_dict()
+    statistics["phase_ema_abs_max"] = torch.tensor([1e-4, 1.0, 2e4], dtype=torch.float32)
+    statistics["phase_ema_updates"] = torch.ones(3, dtype=torch.long)
+    # Deliberately disagree with extrema so MTN cannot silently use that legacy path.
+    statistics["value_min"] = torch.tensor([-9e5, -9e5, -9e5])
+    statistics["value_max"] = torch.tensor([9e5, 9e5, 9e5])
+    phase = build_phase_state(statistics, _cfg(1))
+    mtn = build_mtn_state(statistics, _cfg(1))
+    torch.testing.assert_close(phase["tau"], torch.tensor([
+        NEURON_PARAMETER_CLAMP_MIN, 1.0, NEURON_PARAMETER_CLAMP_MAX
+    ]))
+    torch.testing.assert_close(mtn["base_scale"], torch.tensor([
+        NEURON_PARAMETER_CLAMP_MIN, 2.0, NEURON_PARAMETER_CLAMP_MAX
+    ]))
+    assert phase["tau_clamp_policy"] == NEURON_PARAMETER_CLAMP_POLICY
+    assert mtn["base_scale_calibration"] == MTN_BASE_SCALE_CALIBRATION
+    assert mtn["base_scale_accumulator_dtype"] == PARAMETER_ACCUMULATOR_DTYPE
+    assert mtn["base_scale_clamp_policy"] == NEURON_PARAMETER_CLAMP_POLICY

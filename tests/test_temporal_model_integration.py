@@ -32,7 +32,7 @@ class _BypassController:
         self.applied_shapes.append(tuple(value.shape))
         return value
 
-    def apply_final_norm_phase(self, value):
+    def apply_final_norm_neuron(self, value):
         return value
 
     def record_saliency(self, *args):

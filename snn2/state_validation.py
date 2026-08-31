@@ -393,6 +393,21 @@ def validate_site_state_bundle(
         PhaseSurrogate(torch.load(global_path, map_location="cpu", weights_only=False), T=1)
     except Exception as exc:
         raise ValueError(f"Invalid final RMSNorm Phase state at {global_path}: {exc}") from exc
+    mtn_relative_path, mtn_hash = global_entry.get("mtn_state_path"), global_entry.get("mtn_state_sha256")
+    if not isinstance(mtn_relative_path, str) or not isinstance(mtn_hash, str):
+        raise ValueError("Final RMSNorm MTN state metadata is incomplete")
+    final_mtn_path = root / mtn_relative_path
+    if not final_mtn_path.exists() or sha256_file(final_mtn_path) != mtn_hash:
+        raise ValueError(f"Final RMSNorm MTN state hash mismatch: {final_mtn_path}")
+    try:
+        MultiThresholdNeuron(torch.load(final_mtn_path, map_location="cpu", weights_only=False), T=1, K=1, threshold_factor=0.75)
+    except Exception as exc:
+        raise ValueError(f"Invalid final RMSNorm MTN state at {final_mtn_path}: {exc}") from exc
+    global_directory = root / "_global" / "final_rmsnorm"
+    forbidden_global = [name for name in ("gif_state.pt", "clip_state.pt") if (global_directory / name).exists()]
+    if forbidden_global or global_entry.get("gif_state_present") is not False or global_entry.get("clip_state_present") is not False:
+        raise ValueError(f"Final RMSNorm must be GIF/Clip-free: {forbidden_global}")
+
     if len(gif_steps) != 1:
         raise ValueError(f"Inconsistent temporal steps across GIF site states: {sorted(gif_steps)}")
     return {
@@ -402,4 +417,5 @@ def validate_site_state_bundle(
         "temporal_steps": {"gif": next(iter(gif_steps))},
         "manifest": manifest,
         "final_norm_phase_state": str(global_path),
+        "final_norm_mtn_state": str(final_mtn_path),
     }

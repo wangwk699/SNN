@@ -45,8 +45,9 @@ class SiteController:
         self._modules: dict[str, dict[str, torch.nn.Module]] = {}
         self.temporal_steps: int | None = None
         self._final_norm_phase: PhaseSurrogate | None = None
+        self._final_norm_mtn: MultiThresholdNeuron | None = None
         self.regression_recorder = None
-        self.regression_bypass_final_norm_phase = False
+        self.regression_bypass_final_norm_neuron = False
 
     def set_regression_recorder(self, recorder) -> None:
         self.regression_recorder = recorder
@@ -229,28 +230,47 @@ class SiteController:
             return output
         raise ValueError(f"Unknown controller mode: {self.mode}")
 
-    def apply_final_norm_phase(self, x: torch.Tensor) -> torch.Tensor:
-        recorder = self.regression_recorder
-        if recorder is not None:
-            self.record_regression("final_norm/before_global_phase", x)
-        if self.mode != "deploy_phase" or self.regression_bypass_final_norm_phase:
-            if recorder is not None:
-                self.record_regression("final_norm/after_global_phase", x)
+    def apply_final_norm_neuron(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply the clip-free global final-RMSNorm neuron for the active topology."""
+        self.record_regression("final_norm/before_global_neuron", x)
+        if self.regression_bypass_final_norm_neuron or self.mode in {"identity", "none", "collect", "gif", "deploy_gif"}:
+            self.record_regression("final_norm/after_global_identity", x)
             return x
-        if self.site_root is None or self.temporal_steps is None:
-            raise RuntimeError("Final RMSNorm Phase deployment requires initialized site states")
-        if self._final_norm_phase is None:
-            path = self.site_root / "_global" / "final_rmsnorm" / "phase_state.pt"
-            state = torch.load(path, map_location="cpu", weights_only=False)
-            self._final_norm_phase = PhaseSurrogate(state, T=int(self.phase_T))
-        first_buffer = next(self._final_norm_phase.buffers(), None)
+        if self.site_root is None:
+            raise RuntimeError("Final RMSNorm neuron requires initialized site states")
+        root = self.site_root / "_global" / "final_rmsnorm"
+        if self.mode == "phase":
+            if self._final_norm_phase is None:
+                state = torch.load(root / "phase_state.pt", map_location="cpu", weights_only=False)
+                self._final_norm_phase = PhaseSurrogate(state, T=int(self.phase_T), surrogate_slope=self.phase_surrogate_slope)
+            module, temporal = self._final_norm_phase, False
+        elif self.mode == "deploy_phase":
+            if self._final_norm_phase is None:
+                state = torch.load(root / "phase_state.pt", map_location="cpu", weights_only=False)
+                self._final_norm_phase = PhaseSurrogate(state, T=int(self.phase_T))
+            module, temporal = self._final_norm_phase, True
+        elif self.mode == "deploy_mtn":
+            if self._final_norm_mtn is None:
+                state = torch.load(root / "mtn_state.pt", map_location="cpu", weights_only=False)
+                self._final_norm_mtn = MultiThresholdNeuron(state, T=int(self.mtn_T), K=int(self.mtn_K), threshold_factor=float(self.mtn_threshold_factor))
+            module, temporal = self._final_norm_mtn, True
+        else:
+            self.record_regression("final_norm/after_global_identity", x)
+            return x
+        first_buffer = next(module.buffers(), None)
         if first_buffer is not None and first_buffer.device != x.device:
-            self._final_norm_phase.to(x.device)
-        temporal = to_temporal(x, self.temporal_steps)
-        output = self._final_norm_phase.temporal(temporal)
-        if output.shape != temporal.shape or output.dtype != x.dtype or output.device != x.device:
-            raise ValueError("Final RMSNorm Phase neuron changed shape, dtype, or device")
-        output = from_temporal(output)
-        if recorder is not None:
-            self.record_regression("final_norm/after_global_phase", output)
+            module.to(x.device)
+        if temporal:
+            if self.temporal_steps is None:
+                raise RuntimeError("Temporal Final RMSNorm neuron requires deployment initialization")
+            incoming = to_temporal(x, self.temporal_steps)
+            output = module.temporal(incoming)
+            if output.shape != incoming.shape:
+                raise ValueError("Final RMSNorm neuron changed temporal shape")
+            output = from_temporal(output)
+        else:
+            output = module(x)
+        if output.shape != x.shape or output.dtype != x.dtype or output.device != x.device:
+            raise ValueError("Final RMSNorm neuron changed shape, dtype, or device")
+        self.record_regression("final_norm/after_global_neuron", output)
         return output

@@ -53,6 +53,15 @@ from .prefix_cache import prefix_length
 from .phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE,
     PHASE_TAU_CALIBRATION,
+    MTN_BASE_SCALE_CALIBRATION,
+    MTN_BASE_SCALE_MULTIPLIER,
+    NEURON_PARAMETER_CLAMP_MAX,
+    NEURON_PARAMETER_CLAMP_MIN,
+    NEURON_PARAMETER_CLAMP_POLICY,
+    PARAMETER_ACCUMULATOR_DTYPE,
+    PARAMETER_CALIBRATION,
+    PARAMETER_CHANNEL_POLICY,
+    PARAMETER_REDUCTION_POLICY,
     PHASE_TAU_CHANNEL_POLICY,
     PHASE_TAU_EMA_FACTOR,
     PHASE_TAU_REDUCTION_POLICY,
@@ -254,22 +263,25 @@ def _layout_metadata(statistics: dict[str, Any], configured_group: int) -> dict[
     }
 
 
-def build_phase_state(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+def grouped_parameter_ema_abs_max(
+    statistics: dict[str, Any], cfg: dict[str, Any]
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Return shared Phase/MTN EMA values after the established layout grouping."""
     _validate_statistics(statistics)
-    phase_stat = statistics.get("phase_ema_abs_max")
-    updates = statistics.get("phase_ema_updates")
-    if not isinstance(phase_stat, torch.Tensor) or not isinstance(updates, torch.Tensor):
-        raise ValueError("Phase EMA statistics are missing")
-    if phase_stat.numel() != updates.numel() or not torch.any(updates > 0):
-        raise ValueError("Phase EMA statistics have invalid update metadata")
-    if phase_stat.dtype != torch.float32:
-        raise ValueError("Phase EMA accumulator must use float32")
-    configured_group = int(cfg["calibration"]["group_size"])
-    layout = _layout_metadata(statistics, configured_group)
+    values, updates = statistics.get("phase_ema_abs_max"), statistics.get("phase_ema_updates")
+    if not isinstance(values, torch.Tensor) or not isinstance(updates, torch.Tensor):
+        raise ValueError("Shared parameter EMA statistics are missing")
+    if values.dtype != torch.float32 or values.numel() != updates.numel() or not torch.any(updates > 0):
+        raise ValueError("Shared parameter EMA statistics are invalid")
+    layout = _layout_metadata(statistics, int(cfg["calibration"]["group_size"]))
     if statistics["layout_kind"] == "attention_softmax":
-        tau = phase_stat.float().reshape(int(layout["num_heads"]), 1)
-    else:
-        tau = group_reduce_last_dim(phase_stat.float(), configured_group, "max")
+        return values.float().reshape(int(layout["num_heads"]), 1), layout
+    return group_reduce_last_dim(values.float(), int(cfg["calibration"]["group_size"]), "max"), layout
+
+
+def build_phase_state(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    grouped_ema, layout = grouped_parameter_ema_abs_max(statistics, cfg)
+    tau = grouped_ema.clamp(NEURON_PARAMETER_CLAMP_MIN, NEURON_PARAMETER_CLAMP_MAX)
     return {
         "state_kind": "phase",
         "format_version": SITE_STATE_FORMAT_VERSION,
@@ -281,7 +293,31 @@ def build_phase_state(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[s
         "tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
         "tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
         "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+        "tau_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "tau_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+        "tau_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
     }
+
+def build_mtn_state(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    grouped_ema, layout = grouped_parameter_ema_abs_max(statistics, cfg)
+    base_scale = (MTN_BASE_SCALE_MULTIPLIER * grouped_ema).clamp(
+        NEURON_PARAMETER_CLAMP_MIN, NEURON_PARAMETER_CLAMP_MAX
+    )
+    return {
+        "state_kind": "mtn", "format_version": SITE_STATE_FORMAT_VERSION,
+        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION, **layout,
+        "base_scale": base_scale.float(),
+        "base_scale_calibration": MTN_BASE_SCALE_CALIBRATION,
+        "base_scale_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "base_scale_accumulator_dtype": PARAMETER_ACCUMULATOR_DTYPE,
+        "base_scale_channel_policy": PARAMETER_CHANNEL_POLICY,
+        "base_scale_reduction_policy": PARAMETER_REDUCTION_POLICY,
+        "base_scale_multiplier": MTN_BASE_SCALE_MULTIPLIER,
+        "base_scale_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "base_scale_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+        "base_scale_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
+    }
+
 
 
 def _gif_group_classification(mask_low: torch.Tensor, layout: dict[str, Any]) -> torch.Tensor:
@@ -557,13 +593,7 @@ def build_site_states(
                     "saliency_score": scores["default"],
                 })
 
-    mtn_state = {
-        "state_kind": "mtn",
-        "format_version": SITE_STATE_FORMAT_VERSION,
-        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
-        **layout,
-        "base_scale": (2.0 * absolute).float(),
-    }
+    mtn_state = build_mtn_state(statistics, cfg)
     return {"phase": phase_state, "gif": gif_state, "mtn": mtn_state}
 
 
@@ -648,11 +678,13 @@ def materialize_calibration_states(
             f"Final RMSNorm Phase statistics are missing: {global_statistics}"
         )
     global_directory = global_statistics.parent
-    final_phase_state = build_phase_state(
-        torch.load(global_statistics, map_location="cpu", weights_only=False), cfg
-    )
+    final_statistics = torch.load(global_statistics, map_location="cpu", weights_only=False)
+    final_phase_state = build_phase_state(final_statistics, cfg)
+    final_mtn_state = build_mtn_state(final_statistics, cfg)
     final_phase_path = global_directory / "phase_state.pt"
+    final_mtn_path = global_directory / "mtn_state.pt"
     torch.save(final_phase_state, final_phase_path)
+    torch.save(final_mtn_state, final_mtn_path)
     manifest["global_states"] = {
         "final_rmsnorm": {
             "phase_state_path": str(final_phase_path.relative_to(root)),
@@ -661,6 +693,18 @@ def materialize_calibration_states(
             "configured_group_size": final_phase_state["configured_group_size"],
             "effective_group_size": final_phase_state["group_size"],
             "tau_shape": list(final_phase_state["tau"].shape),
+            "phase_tau_calibration": final_phase_state["tau_calibration"],
+            "phase_tau_clamp_min": final_phase_state["tau_clamp_min"],
+            "phase_tau_clamp_max": final_phase_state["tau_clamp_max"],
+            "mtn_state_path": str(final_mtn_path.relative_to(root)),
+            "mtn_state_sha256": sha256_file(final_mtn_path),
+            "base_scale_shape": list(final_mtn_state["base_scale"].shape),
+            "mtn_base_scale_calibration": final_mtn_state["base_scale_calibration"],
+            "mtn_base_scale_multiplier": final_mtn_state["base_scale_multiplier"],
+            "mtn_base_scale_clamp_min": final_mtn_state["base_scale_clamp_min"],
+            "mtn_base_scale_clamp_max": final_mtn_state["base_scale_clamp_max"],
+            "gif_state_present": False,
+            "clip_state_present": False,
         }
     }
     expected = int(cfg["calibration"]["expected_sites_per_layer"])

@@ -11,6 +11,13 @@ from snn2.neurons import (
 )
 from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE,
+    MTN_BASE_SCALE_CALIBRATION,
+    MTN_BASE_SCALE_MULTIPLIER,
+    NEURON_PARAMETER_CLAMP_MAX,
+    NEURON_PARAMETER_CLAMP_MIN,
+    NEURON_PARAMETER_CLAMP_POLICY,
+    PARAMETER_ACCUMULATOR_DTYPE,
+    PARAMETER_CHANNEL_POLICY,
     PHASE_TAU_CALIBRATION,
     PHASE_TAU_CHANNEL_POLICY,
     PHASE_TAU_EMA_FACTOR,
@@ -52,6 +59,9 @@ def _phase_state(kind="last_dim_grouped"):
         "tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
         "tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
         "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+        "tau_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "tau_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+        "tau_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
     }
 
 
@@ -160,7 +170,17 @@ def test_softmax_gif_rejects_legacy_q16_state():
 
 def test_mtn_and_clip_support_attention_grouped_parameters():
     layout = _layout("attention_head_grouped")
-    mtn = MultiThresholdNeuron({**_header("mtn"), **layout, "base_scale": torch.ones(2, 2)}, T=2, K=2, threshold_factor=0.75)
+    mtn = MultiThresholdNeuron({**_header("mtn"), **layout, "base_scale": torch.ones(2, 2),
+        "base_scale_calibration": MTN_BASE_SCALE_CALIBRATION,
+        "base_scale_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "base_scale_accumulator_dtype": PARAMETER_ACCUMULATOR_DTYPE,
+        "base_scale_channel_policy": PARAMETER_CHANNEL_POLICY,
+        "base_scale_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+        "base_scale_multiplier": MTN_BASE_SCALE_MULTIPLIER,
+        "base_scale_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "base_scale_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+        "base_scale_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
+    }, T=2, K=2, threshold_factor=0.75)
     incoming = torch.rand(2, 1, 2, 3, 4)
     assert mtn.temporal(incoming).shape == incoming.shape
     clip = Clipper({

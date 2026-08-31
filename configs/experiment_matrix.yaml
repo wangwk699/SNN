@@ -53,14 +53,14 @@ experiments:
       expected_sites_per_layer: 10
       device_map: auto
     deployment:
-      temporal_implementation: sparse_llm_temporal_v7_two_stage_calibration
+      temporal_implementation: sparse_llm_temporal_v8_final_norm_phase_mtn_ema_clamp
       temporal_layout: time_major_flattened_TB
       linear_bias_policy: first_timestep_once
       prefix_temporal_policy: uniform_kv_divide_by_T
       embedding_temporal_policy: uniform_embedding_divide_by_T
       softmax_prefix_neuron_policy: full_softmax_tensor_including_prefix
       softmax_site5_gif_policy: spikellm_nbits16_sentinel_identity
-      phase_final_norm_policy: phase_neuron_after_final_temporal_rmsnorm
+      final_norm_neuron_policy: phase_ann_surrogate_phase_snn_temporal_mtn_snn_temporal_gif_identity_clip_forbidden_v1
       phase_tau_calibration: ema_channel_abs_max_then_group_max
       phase_tau_ema_factor: 0.99
       phase_tau_accumulator_dtype: float32
@@ -214,14 +214,14 @@ experiments:
       expected_sites_per_layer: 10
       device_map: auto
     deployment:
-      temporal_implementation: sparse_llm_temporal_v7_two_stage_calibration
+      temporal_implementation: sparse_llm_temporal_v8_final_norm_phase_mtn_ema_clamp
       temporal_layout: time_major_flattened_TB
       linear_bias_policy: first_timestep_once
       prefix_temporal_policy: uniform_kv_divide_by_T
       embedding_temporal_policy: uniform_embedding_divide_by_T
       softmax_prefix_neuron_policy: full_softmax_tensor_including_prefix
       softmax_site5_gif_policy: spikellm_nbits16_sentinel_identity
-      phase_final_norm_policy: phase_neuron_after_final_temporal_rmsnorm
+      final_norm_neuron_policy: phase_ann_surrogate_phase_snn_temporal_mtn_snn_temporal_gif_identity_clip_forbidden_v1
       phase_tau_calibration: ema_channel_abs_max_then_group_max
       phase_tau_ema_factor: 0.99
       phase_tau_accumulator_dtype: float32
@@ -377,14 +377,14 @@ experiments:
       expected_sites_per_layer: 10
       device_map: auto
     deployment:
-      temporal_implementation: sparse_llm_temporal_v7_two_stage_calibration
+      temporal_implementation: sparse_llm_temporal_v8_final_norm_phase_mtn_ema_clamp
       temporal_layout: time_major_flattened_TB
       linear_bias_policy: first_timestep_once
       prefix_temporal_policy: uniform_kv_divide_by_T
       embedding_temporal_policy: uniform_embedding_divide_by_T
       softmax_prefix_neuron_policy: full_softmax_tensor_including_prefix
       softmax_site5_gif_policy: spikellm_nbits16_sentinel_identity
-      phase_final_norm_policy: phase_neuron_after_final_temporal_rmsnorm
+      final_norm_neuron_policy: phase_ann_surrogate_phase_snn_temporal_mtn_snn_temporal_gif_identity_clip_forbidden_v1
       phase_tau_calibration: ema_channel_abs_max_then_group_max
       phase_tau_ema_factor: 0.99
       phase_tau_accumulator_dtype: float32

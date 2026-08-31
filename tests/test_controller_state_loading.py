@@ -6,6 +6,9 @@ from snn2.neurons import Clipper, PhaseSurrogate
 from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE,
     PHASE_TAU_CALIBRATION,
+    NEURON_PARAMETER_CLAMP_MAX,
+    NEURON_PARAMETER_CLAMP_MIN,
+    NEURON_PARAMETER_CLAMP_POLICY,
     PHASE_TAU_CHANNEL_POLICY,
     PHASE_TAU_EMA_FACTOR,
     PHASE_TAU_REDUCTION_POLICY,
@@ -43,6 +46,9 @@ def _phase_state():
         "tau_calibration": PHASE_TAU_CALIBRATION,
         "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
         "tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
+        "tau_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "tau_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+        "tau_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
         "tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
         "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
     }

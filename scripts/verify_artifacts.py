@@ -764,6 +764,9 @@ def main():
             layout.conversion_site_dir,
             clip_policy="forbid_all",
         )
+        validate_site_state_bundle(
+            layout.conversion_site_dir, clip_policy="forbid_all"
+        )
         source_manifest = read_json(
             layout.conversion_site_dir / "calibration_state_manifest.json"
         )

@@ -8,6 +8,12 @@ import torch
 
 from .artifacts import write_json
 from .phase_statistics import (
+    PARAMETER_ACCUMULATOR_DTYPE,
+    PARAMETER_CALIBRATION,
+    PARAMETER_CHANNEL_POLICY,
+    PARAMETER_CONSUMERS,
+    PARAMETER_EMA_FACTOR,
+    PARAMETER_REDUCTION_POLICY,
     PHASE_TAU_ACCUMULATOR_DTYPE,
     PHASE_TAU_CALIBRATION,
     PHASE_TAU_CHANNEL_POLICY,
@@ -209,6 +215,12 @@ class SiteStatistics:
             "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
             "phase_tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
             "phase_tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+            "parameter_calibration": PARAMETER_CALIBRATION,
+            "parameter_ema_factor": PARAMETER_EMA_FACTOR,
+            "parameter_accumulator_dtype": PARAMETER_ACCUMULATOR_DTYPE,
+            "parameter_channel_policy": PARAMETER_CHANNEL_POLICY,
+            "parameter_reduction_policy": PARAMETER_REDUCTION_POLICY,
+            "parameter_consumers": PARAMETER_CONSUMERS,
         }
 
     def summary(self) -> dict[str, Any]:
@@ -246,6 +258,12 @@ class SiteStatistics:
             "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
             "phase_tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
             "phase_tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+            "parameter_calibration": PARAMETER_CALIBRATION,
+            "parameter_ema_factor": PARAMETER_EMA_FACTOR,
+            "parameter_accumulator_dtype": PARAMETER_ACCUMULATOR_DTYPE,
+            "parameter_channel_policy": PARAMETER_CHANNEL_POLICY,
+            "parameter_reduction_policy": PARAMETER_REDUCTION_POLICY,
+            "parameter_consumers": PARAMETER_CONSUMERS,
             "phase_ema_updates_min_seen": int(self.phase_ema_updates.min()),
             "phase_ema_updates_max": int(self.phase_ema_updates.max()),
         }

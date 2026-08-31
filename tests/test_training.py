@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from snn2.artifacts import sha256_file
 
+from snn2.temporal_ops import STATISTICS_FORMAT_VERSION
 from snn2.training import (
     capture_training_artifact_provenance,
     ann_training_common_clip_metadata,
@@ -63,7 +64,7 @@ def _provenance_fixture(tmp_path):
 
 
 def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
-    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": 3}})
+    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": STATISTICS_FORMAT_VERSION}})
     monkeypatch.setattr("snn2.training.validate_clip_profile", lambda *args, **kwargs: {})
     cfg, layout = _provenance_fixture(tmp_path)
     captured = capture_training_artifact_provenance(
@@ -85,7 +86,7 @@ def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
 def test_training_artifact_provenance_rejects_mid_training_changes(
     monkeypatch, tmp_path, relative_path, replacement
 ):
-    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": 3}})
+    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": STATISTICS_FORMAT_VERSION}})
     monkeypatch.setattr("snn2.training.validate_clip_profile", lambda *args, **kwargs: {})
     cfg, layout = _provenance_fixture(tmp_path)
     captured = capture_training_artifact_provenance(

@@ -8,6 +8,13 @@ from torch import nn
 
 from .phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE,
+    MTN_BASE_SCALE_CALIBRATION,
+    MTN_BASE_SCALE_MULTIPLIER,
+    NEURON_PARAMETER_CLAMP_MAX,
+    NEURON_PARAMETER_CLAMP_MIN,
+    NEURON_PARAMETER_CLAMP_POLICY,
+    PARAMETER_ACCUMULATOR_DTYPE,
+    PARAMETER_CHANNEL_POLICY,
     PHASE_TAU_CALIBRATION,
     PHASE_TAU_CHANNEL_POLICY,
     PHASE_TAU_EMA_FACTOR,
@@ -203,6 +210,8 @@ class PhaseSurrogate(nn.Module):
             or state.get("tau_reduction_policy") != PHASE_TAU_REDUCTION_POLICY
         ):
             raise ValueError("Incompatible grouped Phase tau calibration; re-run Stage A")
+        if state.get("tau_clamp_min") != NEURON_PARAMETER_CLAMP_MIN or state.get("tau_clamp_max") != NEURON_PARAMETER_CLAMP_MAX or state.get("tau_clamp_policy") != NEURON_PARAMETER_CLAMP_POLICY:
+            raise ValueError("Phase state is missing materialized clamp provenance; re-run Stage A")
         self.T = int(T)
         if self.T <= 0:
             raise ValueError("Phase T must be positive")
@@ -213,6 +222,8 @@ class PhaseSurrogate(nn.Module):
         self.register_buffer("tau", state["tau"].float())
         self.register_buffer("v0", (0.5 * self.tau * 2.0 ** (-self.T)).float())
         _require_parameter_shape("Phase tau", self.tau, self.layout)
+        if not torch.isfinite(self.tau).all() or torch.any(self.tau < NEURON_PARAMETER_CLAMP_MIN) or torch.any(self.tau > NEURON_PARAMETER_CLAMP_MAX):
+            raise ValueError("Phase tau must be finite and materialized within the clamp range")
 
     def encode(self, x: torch.Tensor, return_temporal: bool) -> torch.Tensor:
         sign = x.sign().detach()
@@ -416,8 +427,20 @@ class MultiThresholdNeuron(nn.Module):
         forbidden = {"T", "K", "threshold_factor"} & state.keys()
         if forbidden:
             raise ValueError(
-                f"Legacy pre-A/B MTN state contains runtime fields {sorted(forbidden)}; re-run Stage A"
-            )
+                f"Legacy pre-A/B MTN state contains runtime fields {sorted(forbidden)}; re-run Stage A")
+        expected = {
+            "base_scale_calibration": MTN_BASE_SCALE_CALIBRATION,
+            "base_scale_ema_factor": PHASE_TAU_EMA_FACTOR,
+            "base_scale_accumulator_dtype": PARAMETER_ACCUMULATOR_DTYPE,
+            "base_scale_channel_policy": PARAMETER_CHANNEL_POLICY,
+            "base_scale_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+            "base_scale_multiplier": MTN_BASE_SCALE_MULTIPLIER,
+            "base_scale_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+            "base_scale_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+            "base_scale_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
+        }
+        if any(state.get(key) != value for key, value in expected.items()):
+            raise ValueError("Incompatible MTN EMA/clamp calibration; re-run Stage A")
         self.T, self.K = int(T), int(K)
         self.threshold_factor = float(threshold_factor)
         if self.T <= 0 or self.K <= 0:
@@ -426,6 +449,8 @@ class MultiThresholdNeuron(nn.Module):
             raise ValueError("MTN threshold_factor must be positive and finite")
         self.layout = _state_layout(state)
         self.register_buffer("base_scale", state["base_scale"].float())
+        if not torch.isfinite(self.base_scale).all() or torch.any(self.base_scale < NEURON_PARAMETER_CLAMP_MIN) or torch.any(self.base_scale > NEURON_PARAMETER_CLAMP_MAX):
+            raise ValueError("MTN base_scale must be finite and materialized within the clamp range")
         _require_parameter_shape("MTN base_scale", self.base_scale, self.layout)
 
     def temporal(self, incoming: torch.Tensor) -> torch.Tensor:

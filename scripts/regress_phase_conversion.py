@@ -66,7 +66,7 @@ def _controller(cfg, layout, graph: str, *, bypass_final_norm_phase: bool):
             "phase",
             clip_bundle_policy="forbid_all",
         )
-        controller.regression_bypass_final_norm_phase = bool(bypass_final_norm_phase)
+        controller.regression_bypass_final_norm_neuron = bool(bypass_final_norm_phase)
     else:
         raise ValueError(graph)
     return controller

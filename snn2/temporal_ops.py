@@ -7,6 +7,14 @@ import torch
 import torch.nn.functional as F
 
 from .phase_statistics import (
+    MTN_BASE_SCALE_CALIBRATION,
+    NEURON_PARAMETER_CLAMP_MAX,
+    NEURON_PARAMETER_CLAMP_MIN,
+    PARAMETER_ACCUMULATOR_DTYPE,
+    PARAMETER_CALIBRATION,
+    PARAMETER_CHANNEL_POLICY,
+    PARAMETER_EMA_FACTOR,
+    PARAMETER_REDUCTION_POLICY,
     PHASE_TAU_ACCUMULATOR_DTYPE,
     PHASE_TAU_CALIBRATION,
     PHASE_TAU_CHANNEL_POLICY,
@@ -15,19 +23,19 @@ from .phase_statistics import (
 )
 
 
-TEMPORAL_IMPLEMENTATION_VERSION = 7
-TEMPORAL_IMPLEMENTATION = "sparse_llm_temporal_v7_two_stage_calibration"
+TEMPORAL_IMPLEMENTATION_VERSION = 8
+TEMPORAL_IMPLEMENTATION = "sparse_llm_temporal_v8_final_norm_phase_mtn_ema_clamp"
 TEMPORAL_LAYOUT = "time_major_flattened_TB"
 TEMPORAL_LINEAR_BIAS_POLICY = "first_timestep_once"
 PREFIX_TEMPORAL_POLICY = "uniform_kv_divide_by_T"
 
 EMBEDDING_TEMPORAL_POLICY = "uniform_embedding_divide_by_T"
 SOFTMAX_PREFIX_NEURON_POLICY = "full_softmax_tensor_including_prefix"
-PHASE_FINAL_NORM_POLICY = "phase_neuron_after_final_temporal_rmsnorm"
-SITE_STATE_FORMAT_VERSION = 9
-STATISTICS_FORMAT_VERSION = 3
-CALIBRATION_MANIFEST_FORMAT_VERSION = 11
-CONVERSION_METADATA_FORMAT_VERSION = 12
+FINAL_NORM_NEURON_POLICY = "phase_ann_surrogate_phase_snn_temporal_mtn_snn_temporal_gif_identity_clip_forbidden_v1"
+SITE_STATE_FORMAT_VERSION = 10
+STATISTICS_FORMAT_VERSION = 4
+CALIBRATION_MANIFEST_FORMAT_VERSION = 12
+CONVERSION_METADATA_FORMAT_VERSION = 13
 
 CALIBRATION_GROUPING_POLICY = "site234_logical_per_head_site6_merged_last_dim_v2"
 SOFTMAX_SITE5_GROUPING_POLICY = "per_head_full_variable_key_axis"
@@ -64,7 +72,7 @@ def temporal_policy_metadata() -> dict[str, Any]:
         "prefix_temporal_policy": PREFIX_TEMPORAL_POLICY,
         "embedding_temporal_policy": EMBEDDING_TEMPORAL_POLICY,
         "softmax_prefix_neuron_policy": SOFTMAX_PREFIX_NEURON_POLICY,
-        "phase_final_norm_policy": PHASE_FINAL_NORM_POLICY,
+        "final_norm_neuron_policy": FINAL_NORM_NEURON_POLICY,
         "phase_tau_calibration": PHASE_TAU_CALIBRATION,
         "phase_tau_ema_factor": PHASE_TAU_EMA_FACTOR,
         "phase_tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
@@ -76,6 +84,14 @@ def temporal_policy_metadata() -> dict[str, Any]:
         "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
         "gif_saliency_selection_policy": GIF_SALIENCY_SELECTION_POLICY,
         "gif_saliency_tie_policy": GIF_SALIENCY_TIE_POLICY,
+        "phase_parameter_calibration": PARAMETER_CALIBRATION,
+        "mtn_parameter_calibration": MTN_BASE_SCALE_CALIBRATION,
+        "parameter_ema_factor": PARAMETER_EMA_FACTOR,
+        "parameter_accumulator_dtype": PARAMETER_ACCUMULATOR_DTYPE,
+        "parameter_channel_policy": PARAMETER_CHANNEL_POLICY,
+        "parameter_reduction_policy": PARAMETER_REDUCTION_POLICY,
+        "parameter_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "parameter_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
         "gif_linear_saliency_dtype": GIF_LINEAR_SALIENCY_DTYPE,
         "gif_matmul_saliency_dtype": GIF_MATMUL_SALIENCY_DTYPE,
         "ordinary_gif_high_qmax": GIF_HIGH_QMAX,
