@@ -493,6 +493,47 @@ def _gif_eval_fixture(tmp_path):
     return cfg, layout, path, metadata
 
 
+def _snn_forward_metadata(neuron):
+    return {
+        "evaluation_forward_kind": f"temporal_{neuron}_snn",
+        "controller_mode": f"deploy_{neuron}",
+        "temporal_execution": True,
+        "evaluation_common_clip_applied": False,
+        "global_final_norm_replacement": {
+            "phase": "temporal_phase",
+            "mtn": "temporal_mtn",
+            "gif": "identity",
+        }[neuron],
+        "global_final_norm_clip_applied": False,
+    }
+
+
+@pytest.mark.parametrize("field", [
+    "evaluation_forward_kind",
+    "controller_mode",
+    "temporal_execution",
+    "evaluation_common_clip_applied",
+    "global_final_norm_replacement",
+    "global_final_norm_clip_applied",
+])
+def test_snn_forward_metadata_rejects_missing_required_field(field):
+    metadata = _snn_forward_metadata("mtn")
+    del metadata[field]
+
+    with pytest.raises(ValueError, match="missing="):
+        _VERIFY._validate_snn_forward_metadata(
+            metadata, neuron="mtn", metrics_path="metrics.json"
+        )
+
+
+def test_snn_forward_metadata_rejects_mtn_global_final_norm_mismatch():
+    metadata = _snn_forward_metadata("mtn")
+    metadata["global_final_norm_replacement"] = "identity"
+
+    with pytest.raises(ValueError, match="mismatched="):
+        _VERIFY._validate_snn_forward_metadata(metadata, neuron="mtn", metrics_path="metrics.json")
+
+
 def test_verify_final_ann_forward_metadata_accepts_current_gif_provenance(
     tmp_path,
 ):

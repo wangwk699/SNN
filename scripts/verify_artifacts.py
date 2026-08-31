@@ -50,6 +50,29 @@ def _evaluation_metadata(path):
     payload = read_json(path)
     return payload.get("snn2_metadata", payload)
 
+def _validate_snn_forward_metadata(policy_source, *, neuron, metrics_path):
+    expected_forward = {
+        "evaluation_forward_kind": f"temporal_{neuron}_snn",
+        "controller_mode": f"deploy_{neuron}",
+        "temporal_execution": True,
+        "evaluation_common_clip_applied": False,
+        "global_final_norm_replacement": {
+            "phase": "temporal_phase", "mtn": "temporal_mtn", "gif": "identity"
+        }[neuron],
+        "global_final_norm_clip_applied": False,
+    }
+    missing = [key for key in expected_forward if key not in policy_source]
+    mismatched = {
+        key: {"expected": expected, "actual": policy_source.get(key)}
+        for key, expected in expected_forward.items()
+        if key in policy_source and policy_source[key] != expected
+    }
+    if missing or mismatched:
+        raise ValueError(
+            "SNN metrics have incompatible temporal forward metadata: "
+            f"{metrics_path}: missing={missing}, mismatched={mismatched}"
+        )
+
 
 def _verify_final_ann_forward_metadata(cfg, layout, path):
     metadata = _evaluation_metadata(path)
@@ -850,19 +873,9 @@ def main():
                 or int(policy_source.get("full_temporal_steps", -1)) != int(metadata["full_temporal_steps"])
             ):
                 raise ValueError(f"SNN metrics disagree with conversion: {metrics_path}")
-            if "evaluation_forward_kind" in policy_source:
-                expected_forward = {
-                    "evaluation_forward_kind": f"temporal_{neuron}_snn",
-                    "controller_mode": f"deploy_{neuron}",
-                    "temporal_execution": True,
-                    "evaluation_common_clip_applied": False,
-                    "global_final_norm_replacement": {
-                        "phase": "temporal_phase", "mtn": "temporal_mtn", "gif": "identity"
-                    }[neuron],
-                    "global_final_norm_clip_applied": False,
-                }
-                if any(policy_source.get(key) != value for key, value in expected_forward.items()):
-                    raise ValueError(f"SNN metrics have incompatible temporal forward metadata: {metrics_path}")
+            _validate_snn_forward_metadata(
+                policy_source, neuron=neuron, metrics_path=metrics_path
+            )
 
         if tldr_layout is not None:
             expected_count = int(tldr_layout["selected_test_samples"])
