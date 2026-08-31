@@ -2,18 +2,17 @@
 set -euo pipefail
 
 PROJECT_ROOT="/home/wangwenkang/SNN"
-SOURCE_CFG="configs/generated/exp1_qwen3_1_7b_tldr__phase_aware.yaml"
+SOURCE_CFG="configs/generated/exp1_qwen3_1_7b_tldr__gif_aware.yaml"
 
 # Learning rates to run sequentially.
 LEARNING_RATES=(
   2.0e-05
-  1.0e-05
-  8.0e-05
+  1.0e-06
 )
 
 # CUDA_VISIBLE_DEVICES is provided externally.
 # Example:
-#   CUDA_VISIBLE_DEVICES=4,5 ./ann_training/train_and_evaluate_qwen3_1_7b_phase_aware_LEARNING_RATE.sh
+#   CUDA_VISIBLE_DEVICES=4,5,6,7 ./ann_training/train_and_evaluate_qwen3_1_7b_gif_aware_LEARNING_RATE.sh
 gpu_devices="${CUDA_VISIBLE_DEVICES:-2,3}"
 
 cd "$PROJECT_ROOT"
@@ -46,7 +45,7 @@ done
 export CUDA_VISIBLE_DEVICES="$gpu_devices"
 
 echo "============================================================"
-echo "Qwen3-1.7B Phase-Aware ANN Training + Evaluation"
+echo "Qwen3-1.7B GIF-Aware ANN Training + Evaluation"
 echo "============================================================"
 echo "Project root          : $PROJECT_ROOT"
 echo "Source config         : $SOURCE_CFG"
@@ -174,7 +173,7 @@ run_one_learning_rate() {
   fi
 
   lock_key="${normalized_learning_rate//[^0-9A-Za-z_.-]/_}"
-  lock_file="/tmp/snn-qwen3-1.7b-phase-aware-lr-${lock_key}.lock"
+  lock_file="/tmp/snn-qwen3-1.7b-gif-aware-lr-${lock_key}.lock"
 
   # Prevent concurrent writers for the same learning rate.
   exec 9>"$lock_file"
@@ -186,7 +185,7 @@ run_one_learning_rate() {
   fi
 
   # Create an independent config for this learning rate.
-  run_cfg="$(mktemp "/tmp/snn-qwen3-1.7b-phase-aware-${lock_key}.XXXXXX.yaml")"
+  run_cfg="$(mktemp "/tmp/snn-qwen3-1.7b-gif-aware-${lock_key}.XXXXXX.yaml")"
 
   echo "Per-instance config: $run_cfg"
 
