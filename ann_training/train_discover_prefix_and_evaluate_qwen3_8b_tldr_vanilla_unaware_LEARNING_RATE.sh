@@ -16,7 +16,7 @@ LEARNING_RATES=(
 # CUDA_VISIBLE_DEVICES is provided externally.
 # Example:
 #   CUDA_VISIBLE_DEVICES=4,5,6,7 \
-#     ./ann_training/train_qwen3_8b_tldr_vanilla_unaware_LEARNING_RATE.sh
+#     ./ann_training/train_discover_prefix_and_evaluate_qwen3_8b_tldr_vanilla_unaware_LEARNING_RATE.sh
 gpu_devices="${CUDA_VISIBLE_DEVICES:-}"
 
 cd "$PROJECT_ROOT"
@@ -135,6 +135,8 @@ run_one_experiment() {
   local lock_file
   local run_cfg
   local train_status
+  local discover_status
+  local evaluate_status
 
   cfg_name="$(basename "$source_cfg" .yaml)"
   normalized_learning_rate="$(normalize_learning_rate "$learning_rate")"
@@ -187,11 +189,46 @@ run_one_experiment() {
   train_status=$?
   set -e
 
+  if (( train_status != 0 )); then
+    cleanup_run_cfg
+    flock -u 9
+    exec 9>&-
+    return "$train_status"
+  fi
+
+  echo "[DISCOVER_PREFIX] config=$source_cfg learning_rate=$learning_rate"
+  set +e
+  python scripts/discover_prefix.py \
+    --config "$run_cfg" \
+    --stage post_finetuning
+  discover_status=$?
+  set -e
+
+  if (( discover_status != 0 )); then
+    echo "[FAILED] Prefix discovery failed; skipping ANN evaluation for config=$source_cfg, learning_rate=$learning_rate" >&2
+    cleanup_run_cfg
+    flock -u 9
+    exec 9>&-
+    return "$discover_status"
+  fi
+
+  echo "[WAIT] Waiting 10 seconds before ANN evaluation."
+  sleep 10
+
+  echo "[EVALUATE] config=$source_cfg learning_rate=$learning_rate GPUs=$CUDA_VISIBLE_DEVICES NGPU=$NGPU"
+  set +e
+  accelerate launch --num_processes "$NGPU" \
+    scripts/evaluate_tldr.py \
+    --config "$run_cfg" \
+    --neuron ann
+  evaluate_status=$?
+  set -e
+
   cleanup_run_cfg
   flock -u 9
   exec 9>&-
 
-  return "$train_status"
+  return "$evaluate_status"
 }
 
 declare -a FAILED_EXPERIMENTS=()

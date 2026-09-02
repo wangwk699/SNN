@@ -6,13 +6,12 @@ SOURCE_CFG="configs/generated/exp1_qwen3_1_7b_tldr__gif_aware.yaml"
 
 # Learning rates to run sequentially.
 LEARNING_RATES=(
-  2.0e-05
-  1.0e-06
+  5.0e-05
 )
 
 # CUDA_VISIBLE_DEVICES is provided externally.
 # Example:
-#   CUDA_VISIBLE_DEVICES=4,5,6,7 ./ann_training/train_and_evaluate_qwen3_1_7b_gif_aware_LEARNING_RATE.sh
+#   CUDA_VISIBLE_DEVICES=6,7 ./ann_training/train_and_evaluate_qwen3_1_7b_gif_aware_LEARNING_RATE.sh
 gpu_devices="${CUDA_VISIBLE_DEVICES:-2,3}"
 
 cd "$PROJECT_ROOT"

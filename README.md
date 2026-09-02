@@ -39,6 +39,8 @@ Aware final ANN evaluation 同时镜像训练期 common Clip 开关；SNN evalua
 
 `vanilla` 和 `unaware` 在 ANN 微调后生成 Post-finetuning Prefix，并只运行 Post-finetuning Stage A。`phase_aware` 和 `gif_aware` 复用 ANN 微调前固定的 Prefix、Stage A 与训练所选 Stage B profile；conversion/deployment 始终只读取 Stage A，绝不加载 Clip。
 
+`vanilla` 的 final ANN `--neuron ann` 始终是无 Prefix 的 identity 评估；即使已生成 Post-finetuning Prefix，运行时也不会加载它。该 Prefix 用于 vanilla 后续的 Post-finetuning conversion calibration、SNN conversion，以及 Phase/GIF/MTN SNN evaluation。`unaware` 的 final ANN evaluation 则仍由 `evaluation.prefix_enabled` 决定是否加载其 Post-finetuning Prefix。
+
 Stage A 的 site 目录只包含 statistics 与 T/K-independent Phase/GIF/MTN state。Stage B 位于独立的 `clip_profiles/phase_T_<P>_mtn_T_<M>/`，并通过 Stage A manifest 哈希绑定来源。训练和 final aware ANN evaluation 分别传入 Stage A root 与 Stage B Clip root；两者都冻结并校验 provenance。
 
 其中 GIF 内部量化使用的整数范围 clamp 属于 GIF 自身算法，不属于 ANN-aware training 中的 common Clip。
