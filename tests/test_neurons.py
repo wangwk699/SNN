@@ -7,6 +7,7 @@ from snn2.neurons import (
     PhaseSurrogate,
     SoftmaxIdentityGIF,
     StaticGIF,
+    _mask_values,
     gif_module_from_state,
 )
 from snn2.phase_statistics import (
@@ -25,6 +26,7 @@ from snn2.phase_statistics import (
 )
 from snn2.temporal_ops import (
     GIF_INTEGER_DECOMPOSITION,
+    GIF_LOW_QMAX,
     SITE_STATE_FORMAT_VERSION,
     SOFTMAX_SITE5_GIF_POLICY,
     TEMPORAL_IMPLEMENTATION_VERSION,
@@ -317,3 +319,126 @@ def test_all_low_gif_rejects_high_or_mask_fields(field, value):
     state[field] = value
     with pytest.raises(ValueError, match="Invalid all-low GIF state"):
         gif_module_from_state(state)
+
+
+def _legacy_static_gif_forward(module, x, *, role=None):
+    low, _, _ = module._quantize(
+        x, module.low_scale, module.low_zero, qmin=0, qmax=GIF_LOW_QMAX
+    )
+    high, _, _ = module._quantize(
+        x, module.high_scale, module.high_zero, qmin=0, qmax=module.high_qmax
+    )
+    return torch.where(_mask_values(x, module._mask(role), module.layout), low, high)
+
+
+@pytest.mark.parametrize(
+    ("kind", "shape"),
+    [
+        ("last_dim_grouped", (2, 3, 4)),
+        ("attention_head_grouped", (1, 2, 3, 4)),
+        ("attention_head_grouped", (2, 3, 8)),
+    ],
+)
+def test_phase_ann_streaming_matches_legacy_forward_and_input_gradient(kind, shape):
+    torch.manual_seed(17)
+    module = PhaseSurrogate(_phase_state(kind), T=4, surrogate_slope=1.0)
+    x = torch.randn(*shape)
+    x_reference = x.detach().clone().requires_grad_(True)
+    x_optimized = x.detach().clone().requires_grad_(True)
+    reference = module.encode(x_reference, return_temporal=False)
+    optimized = module(x_optimized)
+    torch.testing.assert_close(optimized, reference, rtol=1e-6, atol=1e-7)
+    grad = torch.randn_like(reference)
+    reference.backward(grad)
+    optimized.backward(grad)
+    torch.testing.assert_close(x_optimized.grad, x_reference.grad, rtol=1e-6, atol=1e-7)
+
+
+def test_phase_temporal_still_matches_legacy_encode_reference():
+    torch.manual_seed(23)
+    module = PhaseSurrogate(_phase_state("attention_head_grouped"), T=4)
+    incoming = torch.randn(4, 1, 2, 3, 4)
+    assert torch.equal(
+        module.temporal(incoming),
+        module.encode(incoming.sum(dim=0), return_temporal=True),
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "shape"),
+    [
+        ("last_dim_grouped", (2, 3, 4)),
+        ("attention_head_grouped", (1, 2, 3, 4)),
+        ("attention_head_grouped", (2, 3, 8)),
+    ],
+)
+def test_static_gif_ann_mixed_quant_matches_legacy_forward_and_input_gradient(kind, shape):
+    torch.manual_seed(29)
+    state = _gif_state(kind)
+    if kind == "last_dim_grouped":
+        state["mask_low"] = torch.tensor([True, False, True, False])
+    else:
+        state["mask_low"] = torch.tensor(
+            [[True, False, True, False], [False, True, False, True]]
+        )
+    module = StaticGIF(state)
+    x = torch.tensor([-2.1, -0.04, 0.14, 0.76, 2.4], dtype=torch.float32)
+    x = x.repeat((int(torch.tensor(shape).prod().item()) + x.numel() - 1) // x.numel())
+    x = x[: int(torch.tensor(shape).prod().item())].reshape(shape)
+    x_reference = x.detach().clone().requires_grad_(True)
+    x_optimized = x.detach().clone().requires_grad_(True)
+    reference = _legacy_static_gif_forward(module, x_reference)
+    optimized = module(x_optimized)
+    torch.testing.assert_close(optimized, reference, rtol=1e-6, atol=1e-7)
+    grad = torch.randn_like(reference)
+    reference.backward(grad)
+    optimized.backward(grad)
+    torch.testing.assert_close(x_optimized.grad, x_reference.grad, rtol=1e-6, atol=1e-7)
+
+
+def test_static_gif_ann_mixed_quant_matches_legacy_multi_role_masks():
+    state = _gif_state()
+    state.pop("mask_low")
+    state.update(
+        {
+            "mask_policy": "multi_role",
+            "mask_roles": ["q", "k"],
+            "mask_low_by_role": {
+                "q": torch.tensor([True, False, True, False]),
+                "k": torch.tensor([False, True, False, True]),
+            },
+        }
+    )
+    module = StaticGIF(state)
+    x = torch.tensor([[[-0.2, 0.13, 0.84, 2.2]]])
+    for role in ("q", "k"):
+        torch.testing.assert_close(
+            module(x, role=role), _legacy_static_gif_forward(module, x, role=role)
+        )
+
+
+def test_static_gif_temporal_still_matches_legacy_reference():
+    torch.manual_seed(31)
+    module = StaticGIF(_gif_state())
+    incoming = torch.randn(2, 2, 3, 4)
+    x = incoming.sum(dim=0)
+    _, low_q, low_zero = module._quantize(
+        x, module.low_scale, module.low_zero, qmin=0, qmax=GIF_LOW_QMAX
+    )
+    _, high_q, high_zero = module._quantize(
+        x, module.high_scale, module.high_zero, qmin=0, qmax=module.high_qmax
+    )
+    mask = _mask_values(x, module._mask(None), module.layout)
+    scale_low = module.low_scale.repeat_interleave(2).view(1, 1, 4)
+    scale_high = module.high_scale.repeat_interleave(2).view(1, 1, 4)
+    outputs = []
+    for timestep, chunk in enumerate(module.integer_chunks(high_q)):
+        high_output = chunk * scale_high
+        if timestep == 0:
+            high_output = high_output - high_zero * scale_high
+            low_output = (low_q - low_zero) * scale_low
+        else:
+            low_output = torch.zeros_like(x, dtype=torch.float32)
+        outputs.append(torch.where(mask, low_output, high_output))
+    reference = torch.stack(outputs, dim=0).to(x.dtype)
+    torch.testing.assert_close(module.temporal(incoming), reference, rtol=1e-6, atol=1e-7)

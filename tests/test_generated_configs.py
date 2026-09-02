@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 import copy
+import json
 
 from scripts.materialize_configs import materialize_configs
 from snn2.config import validate_config
@@ -146,3 +147,47 @@ def test_generated_configs_define_final_ann_forward_semantics(generated_configs)
     for path in generated_configs:
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert final_ann_replacement_mode(cfg) == expected[cfg["experiment"]["ann_mode"]]
+
+
+def test_qwen3_8b_memory_optimized_training_configuration(generated_configs):
+    qwen3_8b = [
+        yaml.safe_load(path.read_text(encoding="utf-8"))
+        for path in generated_configs
+        if path.stem.startswith("exp1_qwen3_8b_tldr__")
+    ]
+    assert len(qwen3_8b) == 4
+    for cfg in qwen3_8b:
+        training = cfg["training"]
+        assert training["gradient_checkpointing"] is True
+        assert training["deepspeed_config"] == "configs/deepspeed_zero3_cpu_offload.json"
+        assert training["per_device_train_batch_size"] == 1
+        assert training["gradient_accumulation_steps"] == 16
+        assert cfg["data"]["max_seq_length"] == 2048
+        assert training["bf16"] is True
+        assert training["fp16"] is False
+
+
+def test_deepspeed_zero3_cpu_offload_is_optimizer_only():
+    config = json.loads(
+        (ROOT / "configs" / "deepspeed_zero3_cpu_offload.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    zero = config["zero_optimization"]
+    assert zero["stage"] == 3
+    assert zero["offload_optimizer"] == {"device": "cpu", "pin_memory": True}
+    assert "offload_param" not in zero
+    assert zero["overlap_comm"] is True
+    assert zero["contiguous_gradients"] is True
+    assert zero["stage3_gather_16bit_weights_on_model_save"] is True
+    assert config["bf16"]["enabled"] is True
+    assert config["fp16"]["enabled"] is False
+
+
+def test_non_qwen3_8b_training_memory_settings_remain_unchanged(generated_configs):
+    for path in generated_configs:
+        if path.stem.startswith("exp1_qwen3_8b_tldr__"):
+            continue
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert cfg["training"]["gradient_checkpointing"] is False
+        assert cfg["training"]["deepspeed_config"] == "configs/deepspeed_zero3.json"

@@ -244,8 +244,29 @@ class PhaseSurrogate(nn.Module):
         temporal = torch.stack(outputs, dim=0)
         return temporal if return_temporal else temporal.sum(dim=0)
 
+    def _forward_ann_streaming(self, x: torch.Tensor) -> torch.Tensor:
+        sign = x.sign().detach()
+        tau = _parameter_values(x, self.tau, self.layout)
+        v0 = _parameter_values(x, self.v0, self.layout)
+        membrane = x.abs() + v0
+        accumulated = None
+        for timestep in range(self.T):
+            amplitude = tau * 2.0 ** (-(timestep + 1))
+            distance = membrane - amplitude
+            spike = (
+                (distance > 0).to(distance.dtype)
+                if self.slope is None
+                else HeavisideSigmoid.apply(distance, self.slope)
+            )
+            contribution = sign * amplitude * spike
+            accumulated = contribution if accumulated is None else accumulated + contribution
+            membrane = membrane - amplitude * spike
+        if accumulated is None:
+            raise RuntimeError("Phase ANN streaming forward produced no timestep output")
+        return accumulated
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.encode(x, return_temporal=False)
+        return self._forward_ann_streaming(x)
 
     def temporal(self, incoming: torch.Tensor) -> torch.Tensor:
         if incoming.shape[0] != self.T:
@@ -347,19 +368,27 @@ class StaticGIF(nn.Module):
             raise ValueError("Single-mask GIF does not accept a role")
         return self.mask_low
 
-    def forward(self, x: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
-        low, _, _ = self._quantize(
-            x, self.low_scale, self.low_zero, qmin=0, qmax=GIF_LOW_QMAX
-        )
-        high, _, _ = self._quantize(
-            x,
-            self.high_scale,
-            self.high_zero,
-            qmin=0,
-            qmax=self.high_qmax,
-        )
+    def _forward_ann_mixed_quant(
+        self, x: torch.Tensor, *, role: str | None = None
+    ) -> torch.Tensor:
         mask = _mask_values(x, self._mask(role), self.layout)
-        return torch.where(mask, low, high)
+        low_scale = _parameter_values(x, self.low_scale, self.layout).clamp_min(1e-8)
+        high_scale = _parameter_values(x, self.high_scale, self.layout).clamp_min(1e-8)
+        low_zero = _parameter_values(x, self.low_zero, self.layout)
+        high_zero = _parameter_values(x, self.high_zero, self.layout)
+        scale = torch.where(mask, low_scale, high_scale)
+        zero = torch.where(mask, low_zero, high_zero)
+        q = self.round_ste(x.float() / scale.float()) + zero.float()
+        qmax = torch.where(
+            mask,
+            torch.as_tensor(GIF_LOW_QMAX, dtype=q.dtype, device=q.device),
+            torch.as_tensor(self.high_qmax, dtype=q.dtype, device=q.device),
+        )
+        q = torch.minimum(torch.clamp_min(q, 0.0), qmax)
+        return ((q - zero.float()) * scale.float()).to(x.dtype)
+
+    def forward(self, x: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
+        return self._forward_ann_mixed_quant(x, role=role)
 
     @property
     def temporal_steps(self) -> int:
