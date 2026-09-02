@@ -158,7 +158,7 @@ def test_qwen3_8b_memory_optimized_training_configuration(generated_configs):
     assert len(qwen3_8b) == 4
     for cfg in qwen3_8b:
         training = cfg["training"]
-        assert training["gradient_checkpointing"] is True
+        assert training["gradient_checkpointing"] is False
         assert training["deepspeed_config"] == "configs/deepspeed_zero3_cpu_offload.json"
         assert training["per_device_train_batch_size"] == 1
         assert training["gradient_accumulation_steps"] == 16

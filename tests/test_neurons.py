@@ -442,3 +442,33 @@ def test_static_gif_temporal_still_matches_legacy_reference():
         outputs.append(torch.where(mask, low_output, high_output))
     reference = torch.stack(outputs, dim=0).to(x.dtype)
     torch.testing.assert_close(module.temporal(incoming), reference, rtol=1e-6, atol=1e-7)
+
+
+def test_static_gif_ann_mixed_quant_matches_legacy_clamp_boundary_gradients():
+    state = _gif_state()
+    state["mask_low"] = torch.tensor([True, False, True, False])
+    module = StaticGIF(state)
+    x = torch.tensor(
+        [
+            [[-0.10, -0.05, 0.00, 0.00]],
+            [[0.70, 0.75, 1.50, 1.50]],
+            [[1.60, 1.55, 1.50, 1.50]],
+        ],
+        dtype=torch.float32,
+    )
+    x_reference = x.detach().clone().requires_grad_(True)
+    x_optimized = x.detach().clone().requires_grad_(True)
+    reference = _legacy_static_gif_forward(module, x_reference)
+    optimized = module(x_optimized)
+    torch.testing.assert_close(optimized, reference, rtol=0, atol=0)
+    grad = torch.tensor(
+        [
+            [[0.5, -1.0, 2.0, -0.5]],
+            [[1.5, 0.25, -0.75, 2.0]],
+            [[-2.0, 1.25, 0.75, -1.5]],
+        ],
+        dtype=torch.float32,
+    )
+    reference.backward(grad)
+    optimized.backward(grad)
+    torch.testing.assert_close(x_optimized.grad, x_reference.grad, rtol=0, atol=0)

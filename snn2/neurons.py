@@ -384,7 +384,11 @@ class StaticGIF(nn.Module):
             torch.as_tensor(GIF_LOW_QMAX, dtype=q.dtype, device=q.device),
             torch.as_tensor(self.high_qmax, dtype=q.dtype, device=q.device),
         )
-        q = torch.minimum(torch.clamp_min(q, 0.0), qmax)
+        q = torch.clamp(
+            q,
+            min=torch.zeros((), dtype=q.dtype, device=q.device),
+            max=qmax,
+        )
         return ((q - zero.float()) * scale.float()).to(x.dtype)
 
     def forward(self, x: torch.Tensor, *, role: str | None = None) -> torch.Tensor:
