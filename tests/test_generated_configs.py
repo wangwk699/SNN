@@ -173,6 +173,17 @@ def test_deepspeed_zero3_cpu_offload_is_optimizer_only():
             encoding="utf-8"
         )
     )
+    optimizer = config["optimizer"]
+    assert optimizer["type"] == "AdamW"
+    assert optimizer["params"] == {
+        "lr": "auto",
+        "betas": "auto",
+        "eps": "auto",
+        "weight_decay": "auto",
+    }
+    assert "torch_adam" not in optimizer["params"]
+    assert "zero_force_ds_cpu_optimizer" not in config
+
     zero = config["zero_optimization"]
     assert zero["stage"] == 3
     assert zero["offload_optimizer"] == {"device": "cpu", "pin_memory": True}
