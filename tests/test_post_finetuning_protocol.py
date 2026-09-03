@@ -197,8 +197,12 @@ def test_post_finetuning_calibration_config_logs_and_sites_are_group_isolated(mo
     assert first.post_finetuning_conversion_calibration_config_dir != second.post_finetuning_conversion_calibration_config_dir
     assert first.post_finetuning_conversion_calibration_logs_dir != second.post_finetuning_conversion_calibration_logs_dir
     assert first.post_finetuning_site_dir != second.post_finetuning_site_dir
-    assert first.ann_checkpoint_dir == second.ann_checkpoint_dir
-    assert first.post_finetuning_prefix_dir == second.post_finetuning_prefix_dir
+    if mode in {"phase_aware", "gif_aware"}:
+        assert first.ann_checkpoint_dir != second.ann_checkpoint_dir
+        assert first.post_finetuning_prefix_dir != second.post_finetuning_prefix_dir
+    else:
+        assert first.ann_checkpoint_dir == second.ann_checkpoint_dir
+        assert first.post_finetuning_prefix_dir == second.post_finetuning_prefix_dir
     assert first.post_finetuning_prefix_dir.is_relative_to(first.root / "post_finetuning")
     assert first.post_finetuning_site_dir.is_relative_to(first.root / "post_finetuning")
     if mode in {"phase_aware", "gif_aware"}:
