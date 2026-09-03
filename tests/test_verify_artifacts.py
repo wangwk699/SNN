@@ -850,3 +850,34 @@ def test_final_ann_prefix_metadata_rejects_unaware_selector_mismatch(tmp_path):
     write_json(path, {"snn2_metadata": metadata})
     with pytest.raises(ValueError, match="prefix_source_stage"):
         _VERIFY._verify_final_ann_forward_metadata(cfg, layout, path)
+
+
+
+@pytest.mark.parametrize(
+    ("token_ids", "expected_length", "expected_required"),
+    [
+        ([], 0, False),
+        ([151643], 1, True),
+        ([1, 2, 3], 3, True),
+    ],
+)
+def test_selected_snn_prefix_summary(
+    token_ids, expected_length, expected_required
+):
+    assert _VERIFY._selected_snn_prefix_summary({"token_ids": token_ids}) == {
+        "prefix_length": expected_length,
+        "prefix_kv_required": expected_required,
+    }
+
+
+def test_selected_snn_prefix_summary_does_not_use_final_ann_prefix():
+    final_ann_post_prefix = {"token_ids": [101, 102, 103]}
+    selected_snn_pre_prefix = {"token_ids": [201]}
+
+    assert _VERIFY._selected_snn_prefix_summary(selected_snn_pre_prefix) == {
+        "prefix_length": 1,
+        "prefix_kv_required": True,
+    }
+    assert _VERIFY._selected_snn_prefix_summary(selected_snn_pre_prefix) != (
+        _VERIFY._selected_snn_prefix_summary(final_ann_post_prefix)
+    )

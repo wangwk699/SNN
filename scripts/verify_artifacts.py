@@ -113,6 +113,14 @@ def _validate_prefix_artifact(cfg, layout, root, *, label):
     return validate_prefix_discovery_state(cfg, layout, root)
 
 
+def _selected_snn_prefix_summary(prefix_info):
+    token_ids = [int(value) for value in prefix_info.get("token_ids", [])]
+    return {
+        "prefix_length": len(token_ids),
+        "prefix_kv_required": bool(token_ids),
+    }
+
+
 def _validate_aware_final_ann_training_provenance(cfg, layout):
     if is_aware_ann_mode(cfg):
         return validate_recorded_training_artifact_provenance(cfg, layout)
@@ -766,8 +774,9 @@ def main():
                 ),
             )
 
+        selected_snn_prefix_info = {"token_ids": []}
         if conversion_prefix_enabled(cfg) or evaluation_prefix_enabled(cfg):
-            _validate_prefix_artifact(
+            selected_snn_prefix_info = _validate_prefix_artifact(
                 cfg, layout, layout.conversion_prefix_dir,
                 label="Selected SNN",
             )
@@ -920,8 +929,7 @@ def main():
             "required_files": len(required),
             "calibration": calibration,
             "conversion_descriptors": conversions,
-            "prefix_length": len(prefix_token_ids),
-            "prefix_kv_required": bool(prefix_token_ids),
+            **_selected_snn_prefix_summary(selected_snn_prefix_info),
             **topology_metadata(),
         }
 
