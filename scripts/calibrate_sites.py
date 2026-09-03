@@ -19,6 +19,27 @@ from snn2.modeling import (
 )
 
 
+def calibration_scope(stage: str, phase: str) -> str:
+    scope = {
+        ("ann_training", "A"): "ann_training_calibration",
+        ("ann_training", "B"): "ann_training_clip_profile",
+        ("vanilla_analysis", "A"): "vanilla_analysis_calibration",
+        ("post_finetuning", "A"): "post_finetuning_calibration",
+    }.get((stage, phase))
+    if scope is not None:
+        return scope
+    if stage == "post_finetuning" and phase == "B":
+        raise ValueError(
+            "Post-finetuning conversion calibration is Stage A only; "
+            "Stage B Clip profiles are forbidden."
+        )
+    if stage == "vanilla_analysis" and phase == "B":
+        raise ValueError(
+            "vanilla_analysis is analysis-only and supports calibration phase A only"
+        )
+    raise ValueError(f"Unsupported calibration stage/phase combination: {stage} + {phase}")
+
+
 def main():
     arg_parser = parser("Run calibration Stage A statistics/state or Stage B Clip materialization")
     arg_parser.add_argument(
@@ -27,18 +48,14 @@ def main():
     )
     arg_parser.add_argument("--calibration-phase", required=True, choices=("A", "B"))
     args = arg_parser.parse_args()
-    scope = {
-        ("ann_training", "A"): "ann_training_calibration",
-        ("ann_training", "B"): "ann_training_clip_profile",
-        ("vanilla_analysis", "A"): "vanilla_analysis_calibration",
-        ("post_finetuning", "A"): "post_finetuning_calibration",
-        ("post_finetuning", "B"): "post_finetuning_clip_profile",
-    }.get((args.stage, args.calibration_phase))
-    if scope is None:
-        raise ValueError("vanilla_analysis does not materialize Stage B Clip profiles")
+    scope = calibration_scope(args.stage, args.calibration_phase)
     cfg, layout = setup(args.config, config_scope=scope)
     if args.stage == "ann_training" and not requires_ann_training_calibration(cfg):
-        raise ValueError("ANN-training calibration is only used by phase_aware/gif_aware modes")
+        raise ValueError(
+            "ANN-training calibration generation is only performed with "
+            "phase_aware/gif_aware configs; its shared Stage A may also be "
+            "consumed by unaware SNN conversion."
+        )
     if args.stage == "vanilla_analysis" and (
         cfg["experiment"]["ann_mode"] != "vanilla" or cfg["rotation"]["enabled"]
     ):
@@ -48,16 +65,16 @@ def main():
         "vanilla_analysis": layout.vanilla_analysis_site_dir,
         "post_finetuning": layout.post_finetuning_site_dir,
     }[args.stage]
-    profile_root = {
-        "ann_training": layout.ann_training_clip_profile_dir,
-        "post_finetuning": layout.post_finetuning_clip_profile_dir,
-    }.get(args.stage)
+    profile_root = (
+        layout.ann_training_clip_profile_dir
+        if args.stage == "ann_training"
+        else None
+    )
     logs_dir = {
         ("ann_training", "A"): layout.ann_training_calibration_logs_dir,
         ("ann_training", "B"): layout.ann_training_clip_profile_logs_dir,
         ("vanilla_analysis", "A"): layout.vanilla_analysis_calibration_logs_dir,
         ("post_finetuning", "A"): layout.post_finetuning_conversion_calibration_logs_dir,
-        ("post_finetuning", "B"): layout.post_finetuning_clip_profile_logs_dir,
     }[(args.stage, args.calibration_phase)]
     with StageRun(
         f"calibrate_sites_{args.stage}_phase_{args.calibration_phase}",
@@ -66,7 +83,7 @@ def main():
     ) as run:
         if args.calibration_phase == "B":
             if profile_root is None:
-                raise ValueError("vanilla_analysis does not materialize Stage B Clip profiles")
+                raise ValueError("Only ANN-training calibration supports Stage B Clip profiles")
             result = materialize_clip_profile(site_root, profile_root, cfg)
             run.event("clip_profile_saved", stage=args.stage, profile_root=str(profile_root), sites=len(result["sites"]))
             return

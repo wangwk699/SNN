@@ -12,7 +12,7 @@
 - 每个 Transformer layer 固定 10 个 activation replacement sites。
 - Hadamard Rotation，包括离线权重融合与在线 R3/R4 变换。
 - Prefix 技术：Prefix 预先转换为固定 KV cache，并在训练、calibration 或 evaluation 的指定阶段注入。
-- 模式感知 calibration：aware 模式在转换时复用 ANN-training calibration，vanilla/unaware 使用 Post-finetuning conversion calibration。
+- 双套 SNN artifact source：non-vanilla 可选择 shared Pre-finetuning Prefix + ANN-training Stage A，或 per-run Post-finetuning Prefix + Stage A。
 - Phase、GIF、MTN 三类 SNN conversion 与 temporal deployment。
 - TL;DR ROUGE evaluation 与 lm-eval evaluation。
 
@@ -35,21 +35,22 @@
 
 Aware final ANN evaluation 同时镜像训练期 common Clip 开关；SNN evaluation 永远不执行 common Clip。`phase_aware`/`gif_aware` 的 site-local surrogate 会立即聚合回 static tensor，时间维度不跨层传播，因此仍是 ANN fine-tuning；只有 `deploy_phase/gif/mtn` 属于 full-temporal SNN。Base 与 rotated-pre-finetuning diagnostic 始终保持 identity semantics。
 
-## Mode-aware SNN Conversion
+## SNN Conversion Artifact Source
 
-`vanilla` 和 `unaware` 在 ANN 微调后生成 Post-finetuning Prefix，并只运行 Post-finetuning Stage A。`phase_aware` 和 `gif_aware` 复用 ANN 微调前固定的 Prefix、Stage A 与训练所选 Stage B profile；conversion/deployment 始终只读取 Stage A，绝不加载 Clip。
+`conversion.use_post_finetuning_artifacts` 是 SNN conversion 与 SNN evaluation 的唯一 artifact source selector：`true` 选择每个 Final ANN run 的 Post-finetuning Prefix + Post-finetuning Stage A；`false` 选择 shared Pre-finetuning Prefix + shared ANN-training Stage A。`vanilla` 只能选择 `true`。
 
-`vanilla` 的 final ANN `--neuron ann` 始终是无 Prefix 的 identity 评估；即使已生成 Post-finetuning Prefix，运行时也不会加载它。该 Prefix 用于 vanilla 后续的 Post-finetuning conversion calibration、SNN conversion，以及 Phase/GIF/MTN SNN evaluation。`unaware` 的 final ANN evaluation 则仍由 `evaluation.prefix_enabled` 决定是否加载其 Post-finetuning Prefix。
+| ANN mode | selector=false | selector=true |
+|---|---|---|
+| `vanilla` | 非法 | Post-finetuning Prefix + Post-finetuning Stage A |
+| `unaware` | shared Pre Prefix + shared ANN-training Stage A | Post Prefix + Post Stage A |
+| `phase_aware` | shared Pre Prefix + shared ANN-training Stage A | Post Prefix + Post Stage A |
+| `gif_aware` | shared Pre Prefix + shared ANN-training Stage A | Post Prefix + Post Stage A |
 
-Stage A 的 site 目录只包含 statistics 与 T/K-independent Phase/GIF/MTN state。Stage B 位于独立的 `clip_profiles/phase_T_<P>_mtn_T_<M>/`，并通过 Stage A manifest 哈希绑定来源。训练和 final aware ANN evaluation 分别传入 Stage A root 与 Stage B Clip root；两者都冻结并校验 provenance。
+`unaware`、`phase_aware` 与 `gif_aware` 可以同时拥有两套 artifact。selector 不改变 ANN checkpoint，也不改变 Final ANN evaluation。aware 的 Post-finetuning artifacts 从各自 Final ANN 生成，并保存在各自 run 的 `post_finetuning/` 下，不进入 `_shared`。
 
-其中 GIF 内部量化使用的整数范围 clamp 属于 GIF 自身算法，不属于 ANN-aware training 中的 common Clip。
+SNN conversion/deployment 只读取 Stage A，永不读取 ANN-training Stage B Clip；Post-finetuning calibration 仅有完全 clip-free 的 Stage A。
 
-Prefix K/V 在 ANN-aware replacement 与 SNN deployment runtime 中都经过 Site 3/4 neuron；calibration statistics 仍可排除 Prefix positions。Phase EMA 固定为 FP32、factor `0.99`。Phase state 只保存 T-independent `tau`，运行时按 `v0 = 0.5 * tau * 2^-T` 构造；MTN state 也不保存 T/K。`phase.base` 固定为 `2.0`，旧 `max_spikes` 配置已删除。
-
-`calibration.group_size` 同时控制 Phase/GIF/MTN/Clip 和 final RMSNorm Phase。Site 2/3/4 的参数保持 logical per-head grouping，Site 6 使用 merged last-dim。Stage B Clip 对每个 group 做 mask-aware all-low/all-high/mixed 分类；Site 1 保存 q/k/v role-specific interval，Site 7 保存 gate/up interval，Site 5 永久 identity/no-Clip。
-
-Calibration data、Stage A、aware run 与 non-aware SNN 路径同时按 `calibration.group_size` 和 `calibration.num_samples` 隔离。Aware run 还包含训练期 `phase.T/mtn.T`；Phase SNN 使用 `phase/phase_T_<P>`，MTN SNN 使用 `mtn/mtn_T_<M>_mtn_K_<K>`，GIF 路径不变。改变部署 T/K 不修改 Stage A；改变 `num_samples` 或 G 必须重建对应数据 manifest 和 Stage A。
+Final ANN Prefix 规则独立保持：vanilla 不加载 Prefix；unaware 按 `evaluation.prefix_enabled` 从 Post-finetuning Prefix 加载；phase-aware/gif-aware 按同一开关从 Pre-finetuning Prefix 加载。
 
 ## 主要入口
 

@@ -61,12 +61,15 @@ def test_dual_artifact_protocol_table(mode, use_post, pre, ann_cal, reused, ann_
     assert conversion_prefix_enabled(cfg) is True
 
 
-def test_selector_does_not_change_ann_identity_or_final_ann_prefix_rule():
-    post = ArtifactLayout(_cfg("phase_aware", use_post=True))
-    pre = ArtifactLayout(_cfg("phase_aware", use_post=False))
+@pytest.mark.parametrize("mode", ["unaware", "phase_aware", "gif_aware"])
+def test_selector_does_not_change_ann_identity_or_final_ann_prefix_rule(mode):
+    post = ArtifactLayout(_cfg(mode, use_post=True))
+    pre = ArtifactLayout(_cfg(mode, use_post=False))
     assert post.ann_checkpoint_dir == pre.ann_checkpoint_dir
-    assert final_ann_evaluation_prefix_artifact_stage(post._cfg) == final_ann_evaluation_prefix_artifact_stage(pre._cfg) == "pre_finetuning"
+    assert final_ann_evaluation_prefix_artifact_stage(post._cfg) == final_ann_evaluation_prefix_artifact_stage(pre._cfg)
     assert post.snn_dir("phase") != pre.snn_dir("phase")
+    assert post.conversion_prefix_dir != pre.conversion_prefix_dir
+    assert post.conversion_site_dir != pre.conversion_site_dir
 
 
 def test_conversion_roots_follow_selector_and_pre_bundle_is_shared():
@@ -183,7 +186,7 @@ def test_calibration_config_logs_and_sites_are_group_isolated_but_shared_inputs_
     assert first.data_dir == second.data_dir
 
 
-@pytest.mark.parametrize("mode", ["vanilla", "unaware"])
+@pytest.mark.parametrize("mode", ["vanilla", "unaware", "phase_aware", "gif_aware"])
 def test_post_finetuning_calibration_config_logs_and_sites_are_group_isolated(mode):
     first_cfg = _cfg(mode)
     second_cfg = _cfg(mode)
@@ -196,6 +199,12 @@ def test_post_finetuning_calibration_config_logs_and_sites_are_group_isolated(mo
     assert first.post_finetuning_site_dir != second.post_finetuning_site_dir
     assert first.ann_checkpoint_dir == second.ann_checkpoint_dir
     assert first.post_finetuning_prefix_dir == second.post_finetuning_prefix_dir
+    assert first.post_finetuning_prefix_dir.is_relative_to(first.root / "post_finetuning")
+    assert first.post_finetuning_site_dir.is_relative_to(first.root / "post_finetuning")
+    if mode in {"phase_aware", "gif_aware"}:
+        assert first.post_finetuning_prefix_dir != first.ann_training_prefix_dir
+        assert first.post_finetuning_site_dir != first.ann_training_site_dir
+        assert "_shared" not in first.post_finetuning_site_dir.parts
 
 
 def test_vanilla_analysis_calibration_config_logs_and_sites_are_group_isolated():
@@ -279,3 +288,30 @@ def test_vanilla_ann_and_snn_evaluation_prefix_stages_are_distinct(tmp_path):
 
     assert prefix_ids_for_stage(cfg, layout, stage="final_ann_evaluation") == []
     assert prefix_ids_for_stage(cfg, layout, stage="final_snn_evaluation") == [17]
+
+
+
+def _load_script_module(monkeypatch, filename, module_name):
+    import importlib.util
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.syspath_prepend(str(root / "scripts"))
+    spec = importlib.util.spec_from_file_location(module_name, root / "scripts" / filename)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_post_finetuning_stage_b_is_forbidden(monkeypatch):
+    module = _load_script_module(monkeypatch, "calibrate_sites.py", "_calibrate_sites_guard")
+    with pytest.raises(ValueError, match="Stage A only"):
+        module.calibration_scope("post_finetuning", "B")
+    assert module.calibration_scope("ann_training", "B") == "ann_training_clip_profile"
+
+
+def test_lm_harness_imports_conversion_metadata_validator(monkeypatch):
+    module = _load_script_module(monkeypatch, "evaluate_lm_harness.py", "_evaluate_lm_harness_import")
+    assert callable(module.validate_conversion_metadata)

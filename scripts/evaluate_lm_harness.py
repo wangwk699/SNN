@@ -7,6 +7,7 @@ import torch
 from _common import apply_deployment_overrides, parser, setup
 
 from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
+from snn2.conversion import validate_conversion_metadata
 from snn2.config import (
     final_ann_evaluation_prefix_enabled,
     evaluation_prefix_enabled,

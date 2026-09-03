@@ -6,12 +6,7 @@ SOURCE_CFG="configs/generated/exp1_qwen3_8b_tldr__phase_aware.yaml"
 
 # Learning rates to run sequentially.
 LEARNING_RATES=(
-  1.0e-06
-  5.0e-06
-  1.0e-05
-  2.0e-05
   5.0e-05
-  8.0e-05
 )
 
 # CUDA_VISIBLE_DEVICES is provided externally.
