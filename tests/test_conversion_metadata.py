@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -74,13 +75,16 @@ def _statistics(site_index=1):
     }
 
 
-def _cfg(rotation_enabled=False):
+def _cfg(rotation_enabled=False, *, ann_mode="vanilla", use_post=True):
     return {
-        "experiment": {"name": "test_conversion", "ann_mode": "vanilla"},
-        "ann_finetuning": {"mode": "vanilla"},
+        "experiment": {"name": "test_conversion", "ann_mode": ann_mode},
+        "ann_finetuning": {"mode": ann_mode},
         "rotation": {"enabled": rotation_enabled},
-        "post_finetuning": {"prefix_enabled": False},
-        "conversion": {"use_post_finetuning_artifacts": True},
+        "prefix": {"enabled": ann_mode != "vanilla"},
+        "ann_training": {"prefix_enabled": ann_mode != "vanilla"},
+        "post_finetuning": {"prefix_enabled": ann_mode != "vanilla"},
+        "conversion": {"use_post_finetuning_artifacts": use_post},
+        "replacement": {"common_clip_enabled": False},
         "calibration": {"group_size": -1, "num_samples": 128, "expected_sites_per_layer": 10},
         "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
@@ -271,7 +275,7 @@ def test_conversion_rejects_stale_post_finetuning_clip_state(tmp_path):
     layout, _ = _prepare(tmp_path)
     stale = next(layout.post_finetuning_site_dir.glob("layer_*/site_*"))
     torch.save({}, stale / "clip_state.pt")
-    with pytest.raises(ValueError, match="clip-free"):
+    with pytest.raises(ValueError, match="Conversion Stage A calibration must be clip-free"):
         validate_conversion_metadata(_cfg(), layout, "gif")
 
 
@@ -335,3 +339,178 @@ def test_create_conversion_selects_clip_policy_and_records_reuse(
     assert (
         layout.snn_conversion_dir("phase") / "conversion_metadata.json"
     ).exists()
+
+
+
+class _SelectorLayout:
+    def __init__(self, root: Path, *, use_post: bool):
+        self.root = root
+        self._use_post = use_post
+        self.ann_dir = root / "ann"
+        self.ann_checkpoint_dir = self.ann_dir / "final"
+        self.rotation_dir = root / "rotation"
+        self.calibration_data_manifest_path = root / "data" / "calibration_manifest.json"
+        self.ann_training_prefix_dir = root / "shared" / "pre_prefix" / "num_samples_128"
+        self.post_finetuning_prefix_dir = root / "post" / "prefix" / "num_samples_128"
+        self.ann_training_site_dir = root / "shared" / "ann_training_sites"
+        self.post_finetuning_site_dir = root / "post" / "sites"
+
+    @property
+    def conversion_prefix_dir(self):
+        return self.post_finetuning_prefix_dir if self._use_post else self.ann_training_prefix_dir
+
+    @property
+    def conversion_site_dir(self):
+        return self.post_finetuning_site_dir if self._use_post else self.ann_training_site_dir
+
+    def snn_conversion_dir(self, neuron):
+        return self.root / "snn" / str(self._use_post).lower() / neuron / "conversion"
+
+
+def _write_prefix_fixture(layout, directory):
+    layout.calibration_data_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    layout.calibration_data_manifest_path.write_text(json.dumps({"num_samples": 128}), encoding="utf-8")
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "prefix_state.json").write_text(json.dumps({
+        "prefix_token_ids": [],
+        "discovery_num_samples": 128,
+        "discovery_data_source": "stage_a_calibration_selection",
+        "discovery_manifest_path": str(layout.calibration_data_manifest_path.resolve()),
+        "discovery_manifest_sha256": sha256_file(layout.calibration_data_manifest_path),
+    }), encoding="utf-8")
+
+
+def _write_stage_a_fixture(root, cfg, *, post, ann_checkpoint):
+    for index in SITE_IDS:
+        directory = root / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
+        directory.mkdir(parents=True, exist_ok=True)
+        torch.save(_statistics(index), directory / "statistics.pt")
+    global_directory = root / "_global" / "final_rmsnorm"
+    global_directory.mkdir(parents=True, exist_ok=True)
+    torch.save(_statistics(None), global_directory / "statistics.pt")
+    metadata = {
+        "purpose": "post_finetuning_conversion_calibration" if post else "ann_training_calibration",
+        "eligible_for_ann_training": not post,
+        "eligible_for_conversion": True,
+        "conversion_reuse_policy": "final_ann_only" if post else "non_vanilla_when_selected",
+        "post_finetuning_recalibration": post,
+        "state_profile": "stage_a_common_states",
+        "common_clip_required": False,
+        "common_clip_generated": False,
+        "common_clip_application_control": "replacement.common_clip_enabled",
+        "prefix_enabled": True,
+        "source_model_stage": "final_ann_checkpoint" if post else "rotated_fused_base",
+        "source_ann_mode": cfg["experiment"]["ann_mode"] if post else None,
+        "source_ann_checkpoint": str(ann_checkpoint.resolve()) if post else None,
+        "source_ann_config_sha256": sha256_file(ann_checkpoint / "config.json") if post else None,
+    }
+    materialize_calibration_states(root, cfg, metadata, expected_num_hidden_layers=1)
+    return root / "calibration_state_manifest.json"
+
+
+def _prepare_selector_fixture(tmp_path, *, ann_mode, use_post, include_training_result=False):
+    cfg = _cfg(True, ann_mode=ann_mode, use_post=use_post)
+    layout = _SelectorLayout(tmp_path, use_post=use_post)
+    layout.ann_checkpoint_dir.mkdir(parents=True)
+    (layout.ann_checkpoint_dir / "config.json").write_text(json.dumps({"num_hidden_layers": 1}), encoding="utf-8")
+    layout.rotation_dir.mkdir(parents=True)
+    (layout.rotation_dir / "rotation_state.pt").write_bytes(b"rotation")
+    _write_prefix_fixture(layout, layout.ann_training_prefix_dir)
+    _write_prefix_fixture(layout, layout.post_finetuning_prefix_dir)
+    ann_manifest = _write_stage_a_fixture(
+        layout.ann_training_site_dir, cfg, post=False, ann_checkpoint=layout.ann_checkpoint_dir
+    )
+    post_manifest = _write_stage_a_fixture(
+        layout.post_finetuning_site_dir, cfg, post=True, ann_checkpoint=layout.ann_checkpoint_dir
+    )
+    if include_training_result:
+        profile_root = tmp_path / "shared" / "clip_profile"
+        profile_root.mkdir(parents=True)
+        profile_manifest = profile_root / "clip_profile_manifest.json"
+        profile_manifest.write_text("{}", encoding="utf-8")
+        prefix_state = layout.ann_training_prefix_dir / "prefix_state.json"
+        result = {
+            "ann_training_prefix_root": str(layout.ann_training_prefix_dir.resolve()),
+            "ann_training_prefix_state_sha256": sha256_file(prefix_state),
+            "ann_training_prefix_kv_sha256": None,
+            "ann_training_prefix_num_samples": 128,
+            "ann_training_prefix_discovery_manifest_sha256": json.loads(prefix_state.read_text(encoding="utf-8"))["discovery_manifest_sha256"],
+            "ann_training_prefix_token_ids": [],
+            "ann_training_calibration_root": str(layout.ann_training_site_dir.resolve()),
+            "ann_training_calibration_manifest_sha256": sha256_file(ann_manifest),
+            "ann_training_calibration_group_size": -1,
+            "ann_training_calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+            "statistics_format_version": STATISTICS_FORMAT_VERSION,
+            "ann_training_phase_T": 4,
+            "ann_training_mtn_T": 4,
+            "ann_training_calibration_num_samples": 128,
+            "ann_training_clip_profile_root": str(profile_root.resolve()),
+            "ann_training_clip_profile_manifest_sha256": sha256_file(profile_manifest),
+        }
+        (layout.ann_dir / "training_result.json").write_text(json.dumps(result), encoding="utf-8")
+    return cfg, layout, ann_manifest, post_manifest
+
+
+def test_unaware_pre_bundle_conversion_is_end_to_end_and_skips_aware_provenance(monkeypatch, tmp_path):
+    cfg, layout, ann_manifest, _ = _prepare_selector_fixture(
+        tmp_path, ann_mode="unaware", use_post=False
+    )
+    monkeypatch.setattr(
+        "snn2.conversion._validate_aware_training_provenance",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("unaware must not require aware training provenance")),
+    )
+    metadata = create_conversion(cfg, layout, "phase")
+    assert validate_conversion_metadata(cfg, layout, "phase") == metadata
+    assert metadata["use_post_finetuning_artifacts"] is False
+    assert metadata["prefix_source_stage"] == "pre_finetuning"
+    assert metadata["calibration_source_stage"] == "ann_training"
+    assert metadata["reused_ann_training_artifacts"] is True
+    assert metadata["post_finetuning_recalibration"] is False
+    manifest = json.loads(ann_manifest.read_text(encoding="utf-8"))
+    assert manifest["source_model_stage"] == "rotated_fused_base"
+    assert manifest["source_ann_mode"] is None
+    assert manifest["source_ann_checkpoint"] is None
+
+
+@pytest.mark.parametrize(
+    ("ann_mode", "neuron"),
+    [("phase_aware", "phase"), ("gif_aware", "gif")],
+)
+def test_aware_pre_bundle_conversion_validates_frozen_provenance(tmp_path, ann_mode, neuron):
+    cfg, layout, ann_manifest, _ = _prepare_selector_fixture(
+        tmp_path, ann_mode=ann_mode, use_post=False, include_training_result=True
+    )
+    metadata = create_conversion(cfg, layout, neuron)
+    assert validate_conversion_metadata(cfg, layout, neuron) == metadata
+    assert metadata["reused_ann_training_artifacts"] is True
+    assert metadata["post_finetuning_recalibration"] is False
+    assert metadata["source_ann_training_phase_T"] == 4
+    assert metadata["source_ann_training_mtn_T"] == 4
+    result_path = layout.ann_dir / "training_result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["ann_training_calibration_manifest_sha256"] = "0" * 64
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    with pytest.raises(ValueError, match="Aware conversion artifacts differ from those fixed during ANN training"):
+        validate_conversion_metadata(cfg, layout, neuron)
+
+
+def test_phase_aware_post_bundle_conversion_does_not_require_aware_training_provenance(monkeypatch, tmp_path):
+    cfg, layout, ann_manifest, post_manifest = _prepare_selector_fixture(
+        tmp_path, ann_mode="phase_aware", use_post=True
+    )
+    monkeypatch.setattr(
+        "snn2.conversion._validate_aware_training_provenance",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("post bundle must not require aware training provenance")),
+    )
+    metadata = create_conversion(cfg, layout, "phase")
+    assert validate_conversion_metadata(cfg, layout, "phase") == metadata
+    assert metadata["use_post_finetuning_artifacts"] is True
+    assert metadata["prefix_source_stage"] == "post_finetuning"
+    assert metadata["calibration_source_stage"] == "post_finetuning"
+    assert metadata["reused_ann_training_artifacts"] is False
+    assert metadata["post_finetuning_recalibration"] is True
+    manifest = json.loads(post_manifest.read_text(encoding="utf-8"))
+    assert sha256_file(post_manifest) != sha256_file(ann_manifest)
+    assert manifest["source_model_stage"] == "final_ann_checkpoint"
+    assert manifest["source_ann_mode"] == "phase_aware"
+    assert manifest["source_ann_checkpoint"] == str(layout.ann_checkpoint_dir.resolve())

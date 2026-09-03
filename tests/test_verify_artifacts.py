@@ -63,7 +63,7 @@ HEAD_DIM = 4
 HIDDEN_SIZE = NUM_ATTENTION_HEADS * HEAD_DIM
 
 
-def _cfg(ann_mode: str = "vanilla") -> dict:
+def _cfg(ann_mode: str = "vanilla", *, use_post: bool = True) -> dict:
     return {
         "experiment": {
             "ann_mode": ann_mode,
@@ -71,6 +71,7 @@ def _cfg(ann_mode: str = "vanilla") -> dict:
         "replacement": {
             "common_clip_enabled": False,
         },
+        "conversion": {"use_post_finetuning_artifacts": use_post},
         "calibration": {
             "group_size": -1,
             "num_samples": 128,
@@ -651,4 +652,34 @@ def test_verify_final_ann_forward_metadata_rejects_legacy_gif_impl_string(
             cfg,
             layout,
             path,
+        )
+
+
+
+@pytest.mark.parametrize(
+    ("mode", "use_post", "prefix_stage", "calibration_stage", "reused"),
+    [
+        ("unaware", False, "pre_finetuning", "ann_training", True),
+        ("phase_aware", False, "pre_finetuning", "ann_training", True),
+        ("gif_aware", False, "pre_finetuning", "ann_training", True),
+        ("phase_aware", True, "post_finetuning", "post_finetuning", False),
+    ],
+)
+def test_verify_selector_source_matrix(mode, use_post, prefix_stage, calibration_stage, reused):
+    cfg = _cfg(mode, use_post=use_post)
+    source = {
+        "use_post_finetuning_artifacts": use_post,
+        "prefix_source_stage": prefix_stage,
+        "calibration_source_stage": calibration_stage,
+        "reused_ann_training_artifacts": reused,
+        "post_finetuning_recalibration": not reused,
+    }
+    _VERIFY._validate_snn_source_metadata(
+        cfg, source, dict(source), metrics_path="metrics.json"
+    )
+    tampered = dict(source)
+    tampered["prefix_source_stage"] = "post_finetuning" if not use_post else "pre_finetuning"
+    with pytest.raises(ValueError, match="source mismatch"):
+        _VERIFY._validate_snn_source_metadata(
+            cfg, source, tampered, metrics_path="metrics.json"
         )

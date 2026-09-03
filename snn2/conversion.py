@@ -46,6 +46,12 @@ def validate_calibration(
     clip_policy: str,
 ) -> dict[str, Any]:
     root = Path(site_root)
+    clip_states = sorted(root.glob("layer_*/site_*/clip_state.pt"))
+    if clip_policy == "forbid_all" and clip_states:
+        raise ValueError(
+            "Conversion Stage A calibration must be clip-free; "
+            "rebuild the currently selected Stage A calibration artifact."
+        )
     validation = validate_site_state_bundle(
         root,
         clip_policy=clip_policy,
@@ -56,12 +62,6 @@ def validate_calibration(
         for name in required:
             if not (directory / name).exists():
                 raise FileNotFoundError(directory / name)
-    clip_states = sorted(root.glob("layer_*/site_*/clip_state.pt"))
-    if clip_policy == "forbid_all" and clip_states:
-        raise ValueError(
-            "Post-finetuning conversion calibration must be clip-free; "
-            "re-run calibrate_sites.py --stage post_finetuning --calibration-phase A"
-        )
     return {
         "expected_num_hidden_layers": validation["expected_num_hidden_layers"],
         "layers": validation["layers"],

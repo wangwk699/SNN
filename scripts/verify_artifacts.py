@@ -10,7 +10,7 @@ from snn2.config import (
     conversion_prefix_enabled,
     conversion_reuses_ann_training_artifacts,
     conversion_calibration_stage,
-    final_snn_evaluation_prefix_artifact_stage,
+    conversion_prefix_artifact_stage,
     use_post_finetuning_artifacts,
     is_aware_ann_mode,
     final_ann_evaluation_prefix_enabled,
@@ -76,6 +76,21 @@ def _validate_snn_forward_metadata(policy_source, *, neuron, metrics_path):
             "SNN metrics have incompatible temporal forward metadata: "
             f"{metrics_path}: missing={missing}, mismatched={mismatched}"
         )
+
+
+def _validate_snn_source_metadata(cfg, descriptor, metrics, *, metrics_path):
+    expected = {
+        "use_post_finetuning_artifacts": use_post_finetuning_artifacts(cfg),
+        "calibration_source_stage": conversion_calibration_stage(cfg),
+        "prefix_source_stage": conversion_prefix_artifact_stage(cfg),
+        "reused_ann_training_artifacts": conversion_reuses_ann_training_artifacts(cfg),
+        "post_finetuning_recalibration": not conversion_reuses_ann_training_artifacts(cfg),
+    }
+    for key, value in expected.items():
+        if descriptor.get(key) != value or metrics.get(key) != value:
+            raise ValueError(
+                "SNN descriptor and metrics source mismatch for " + key + ": " + str(metrics_path)
+            )
 
 
 def _verify_final_ann_forward_metadata(cfg, layout, path):
@@ -880,17 +895,9 @@ def main():
             _validate_snn_forward_metadata(
                 policy_source, neuron=neuron, metrics_path=metrics_path
             )
-            expected_selector = use_post_finetuning_artifacts(cfg)
-            expected_source = {
-                "use_post_finetuning_artifacts": expected_selector,
-                "calibration_source_stage": conversion_calibration_stage(cfg),
-                "prefix_source_stage": final_snn_evaluation_prefix_artifact_stage(cfg),
-            }
-            for key, value in expected_source.items():
-                if metadata.get(key) != value or policy_source.get(key) != value:
-                    raise ValueError(
-                        f"SNN descriptor and metrics source mismatch for {key}: {metrics_path}"
-                    )
+            _validate_snn_source_metadata(
+                cfg, metadata, policy_source, metrics_path=metrics_path
+            )
 
         if tldr_layout is not None:
             expected_count = int(tldr_layout["selected_test_samples"])
