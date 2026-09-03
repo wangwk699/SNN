@@ -159,7 +159,7 @@ def test_temporal_linear_bias_is_kept_only_at_timestep_zero():
 
 def test_artifact_schema_versions_do_not_change_temporal_arithmetic():
     assert CALIBRATION_MANIFEST_FORMAT_VERSION == 12
-    assert CONVERSION_METADATA_FORMAT_VERSION == 13
+    assert CONVERSION_METADATA_FORMAT_VERSION == 14
     assert SITE_STATE_FORMAT_VERSION == 10
     assert TEMPORAL_IMPLEMENTATION_VERSION == 8
 

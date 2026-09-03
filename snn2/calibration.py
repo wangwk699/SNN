@@ -117,7 +117,7 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "eligible_for_ann_training": stage == "ann_training",
         "eligible_for_conversion": stage in {"ann_training", "post_finetuning"},
         "conversion_reuse_policy": (
-            "aware_modes_only" if stage == "ann_training" else
+            "non_vanilla_when_selected" if stage == "ann_training" else
             ("final_ann_only" if stage == "post_finetuning" else "none")
         ),
         "post_finetuning_recalibration": post,
@@ -938,7 +938,7 @@ def collect_site_statistics(
         "post_finetuning_conversion_calibration",
     }
     conversion_reuse_policy = {
-        "ann_training_calibration": "aware_modes_only",
+        "ann_training_calibration": "non_vanilla_when_selected",
         "vanilla_analysis_calibration": "none",
         "post_finetuning_conversion_calibration": "final_ann_only",
     }[purpose]

@@ -8,7 +8,7 @@ from snn2.model_integration import install_model_integration
 from snn2.modeling import load_model, load_tokenizer, model_source_for_stage, rotation_state
 from snn2.prefix import discover_prefix_tokens
 from snn2.prefix_cache import build_prefix_key_values, save_prefix_key_values
-from snn2.config import requires_post_finetuning_artifacts, requires_pre_finetuning_prefix
+from snn2.config import requires_pre_finetuning_prefix
 
 
 def main():
@@ -28,11 +28,6 @@ def main():
     cfg, layout = setup(args.config, config_scope=config_scope)
     if canonical_stage == "pre_finetuning" and not requires_pre_finetuning_prefix(cfg):
         raise ValueError("vanilla does not use or require a Pre-finetuning Prefix")
-    if canonical_stage == "post_finetuning" and not requires_post_finetuning_artifacts(cfg):
-        raise ValueError(
-            "This ANN mode reuses the pre-finetuning Prefix for SNN conversion; "
-            "do not rediscover a post-finetuning Prefix."
-        )
     logs_dir = layout.ann_training_prefix_logs_dir if canonical_stage == "pre_finetuning" else layout.post_finetuning_prefix_logs_dir
     with StageRun(f"discover_prefix_{args.stage}", logs_dir, cfg["experiment"]) as run:
         if canonical_stage == "pre_finetuning":

@@ -9,6 +9,10 @@ from snn2.data import validate_prefix_discovery_state
 from snn2.config import (
     conversion_prefix_enabled,
     conversion_reuses_ann_training_artifacts,
+    conversion_calibration_stage,
+    final_snn_evaluation_prefix_artifact_stage,
+    use_post_finetuning_artifacts,
+    is_aware_ann_mode,
     final_ann_evaluation_prefix_enabled,
     evaluation_prefix_enabled,
     requires_ann_training_calibration,
@@ -799,14 +803,14 @@ def main():
             "purpose": ("ann_training_calibration" if reused else "post_finetuning_conversion_calibration"),
             "eligible_for_ann_training": reused,
             "eligible_for_conversion": True,
-            "conversion_reuse_policy": ("aware_modes_only" if reused else "final_ann_only"),
+            "conversion_reuse_policy": ("non_vanilla_when_selected" if reused else "final_ann_only"),
             "post_finetuning_recalibration": not reused,
             "state_profile": "stage_a_common_states",
             "common_clip_required": False,
             "common_clip_generated": False,
             "common_clip_application_control": "replacement.common_clip_enabled",
         }
-        if reused:
+        if reused and is_aware_ann_mode(cfg):
             training_result = read_json(layout.ann_dir / "training_result.json")
             training_profile_root = Path(training_result["ann_training_clip_profile_root"])
             required.append(training_profile_root / "clip_profile_manifest.json")
@@ -876,6 +880,17 @@ def main():
             _validate_snn_forward_metadata(
                 policy_source, neuron=neuron, metrics_path=metrics_path
             )
+            expected_selector = use_post_finetuning_artifacts(cfg)
+            expected_source = {
+                "use_post_finetuning_artifacts": expected_selector,
+                "calibration_source_stage": conversion_calibration_stage(cfg),
+                "prefix_source_stage": final_snn_evaluation_prefix_artifact_stage(cfg),
+            }
+            for key, value in expected_source.items():
+                if metadata.get(key) != value or policy_source.get(key) != value:
+                    raise ValueError(
+                        f"SNN descriptor and metrics source mismatch for {key}: {metrics_path}"
+                    )
 
         if tldr_layout is not None:
             expected_count = int(tldr_layout["selected_test_samples"])

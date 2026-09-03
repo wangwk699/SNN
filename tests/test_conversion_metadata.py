@@ -80,6 +80,7 @@ def _cfg(rotation_enabled=False):
         "ann_finetuning": {"mode": "vanilla"},
         "rotation": {"enabled": rotation_enabled},
         "post_finetuning": {"prefix_enabled": False},
+        "conversion": {"use_post_finetuning_artifacts": True},
         "calibration": {"group_size": -1, "num_samples": 128, "expected_sites_per_layer": 10},
         "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
         "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
@@ -116,6 +117,15 @@ def _prepare(tmp_path, *, rotation_enabled=False):
     layout.ann_checkpoint_dir.mkdir(parents=True)
     ann_config = layout.ann_checkpoint_dir / "config.json"
     ann_config.write_text('{"num_hidden_layers": 1}' + '\n', encoding="utf-8")
+    manifest_path = layout.post_finetuning_site_dir / "calibration_state_manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_payload.update({
+        "source_model_stage": "final_ann_checkpoint",
+        "source_ann_mode": "vanilla",
+        "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()),
+        "source_ann_config_sha256": sha256_file(ann_config),
+    })
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
     output = layout.snn_conversion_dir("gif")
     output.mkdir(parents=True)
     rotation_path = layout.rotation_dir / "rotation_state.pt"
@@ -145,6 +155,7 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         "calibration_source_stage": "post_finetuning",
         "prefix_source_stage": "post_finetuning",
         "reused_ann_training_artifacts": False,
+        "use_post_finetuning_artifacts": True,
         "snn_clip_applied": False,
         "source_ann_common_clip_enabled": False,
         "ordinary_gif_local_decomposition_steps": GIF_LOCAL_STEPS,
@@ -267,8 +278,8 @@ def test_conversion_rejects_stale_post_finetuning_clip_state(tmp_path):
 @pytest.mark.parametrize(
     ("ann_mode", "expected_reused", "expected_clip_policy"),
     [
-        ("phase_aware", True, "forbid_all"),
-        ("gif_aware", True, "forbid_all"),
+        ("phase_aware", False, "forbid_all"),
+        ("gif_aware", False, "forbid_all"),
         ("vanilla", False, "forbid_all"),
         ("unaware", False, "forbid_all"),
     ],

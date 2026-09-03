@@ -12,7 +12,8 @@ from .prefix_cache import load_prefix_key_values
 from .config import (
     final_ann_evaluation_prefix_enabled,
     evaluation_prefix_enabled,
-    final_evaluation_prefix_artifact_stage,
+    final_ann_evaluation_prefix_artifact_stage,
+    final_snn_evaluation_prefix_artifact_stage,
     post_finetuning_prefix_enabled,
     rotated_pre_finetuning_prefix_enabled,
     training_prefix_enabled,
@@ -103,7 +104,11 @@ def prefix_ids_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: 
         )
         if not enabled:
             return []
-        artifact_stage = final_evaluation_prefix_artifact_stage(cfg)
+        artifact_stage = (
+            final_ann_evaluation_prefix_artifact_stage(cfg)
+            if stage == "final_ann_evaluation"
+            else final_snn_evaluation_prefix_artifact_stage(cfg)
+        )
         path = (
             layout.ann_training_prefix_dir
             if artifact_stage == "pre_finetuning"
@@ -141,7 +146,11 @@ def prefix_key_values_for_stage(cfg: dict[str, Any], layout: ArtifactLayout, *, 
     elif stage in {"final_ann_evaluation", "final_snn_evaluation"}:
         directory = (
             layout.ann_training_prefix_dir
-            if final_evaluation_prefix_artifact_stage(cfg) == "pre_finetuning"
+            if (
+                final_ann_evaluation_prefix_artifact_stage(cfg)
+                if stage == "final_ann_evaluation"
+                else final_snn_evaluation_prefix_artifact_stage(cfg)
+            ) == "pre_finetuning"
             else layout.post_finetuning_prefix_dir
         )
     else:

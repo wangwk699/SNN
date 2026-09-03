@@ -10,7 +10,8 @@ from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
 from snn2.config import (
     final_ann_evaluation_prefix_enabled,
     evaluation_prefix_enabled,
-    final_evaluation_prefix_artifact_stage,
+    final_ann_evaluation_prefix_artifact_stage,
+    final_snn_evaluation_prefix_artifact_stage,
     rotated_pre_finetuning_prefix_enabled,
 )
 from snn2.evaluation import (
@@ -414,9 +415,28 @@ def main():
             ),
             "prefix_stage": prefix_stage,
             "prefix_enabled": active_prefix_enabled,
+            "prefix_root": (
+                None
+                if args.base or args.rotated_pre_finetuning or not active_prefix_enabled
+                else str(
+                    (
+                        layout.ann_training_prefix_dir
+                        if (
+                            final_ann_evaluation_prefix_artifact_stage(cfg)
+                            if args.neuron == "ann"
+                            else final_snn_evaluation_prefix_artifact_stage(cfg)
+                        ) == "pre_finetuning"
+                        else layout.post_finetuning_prefix_dir
+                    )
+                )
+            ),
             "prefix_source_stage": (
                 None if args.base or args.rotated_pre_finetuning
-                else final_evaluation_prefix_artifact_stage(cfg)
+                else (
+                    final_ann_evaluation_prefix_artifact_stage(cfg)
+                    if args.neuron == "ann"
+                    else final_snn_evaluation_prefix_artifact_stage(cfg)
+                )
             ),
             **evaluation_calibration_metadata(
                 cfg,

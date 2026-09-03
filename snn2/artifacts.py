@@ -11,12 +11,17 @@ from .config import (
     is_aware_ann_mode,
     save_yaml,
     training_common_clip_enabled,
+    use_post_finetuning_artifacts,
 )
 
 
 def prefix_enabled_dirname(enabled: bool) -> str:
     """Stable artifact suffix (the historical ``ture`` spelling is intentional)."""
     return "prefix_enabled_ture" if enabled else "prefix_enabled_false"
+
+
+def conversion_artifact_source_dirname(use_post: bool) -> str:
+    return f"use_post_finetuning_artifacts_{str(bool(use_post)).lower()}"
 
 
 def ann_run_variant_dirname(
@@ -385,17 +390,17 @@ class ArtifactLayout:
     @property
     def conversion_prefix_dir(self) -> Path:
         return (
-            self.ann_training_prefix_dir
-            if is_aware_ann_mode(self._cfg)
-            else self.post_finetuning_prefix_dir
+            self.post_finetuning_prefix_dir
+            if use_post_finetuning_artifacts(self._cfg)
+            else self.ann_training_prefix_dir
         )
 
     @property
     def conversion_calibration_dir(self) -> Path:
         return (
-            self.ann_training_calibration_dir
-            if is_aware_ann_mode(self._cfg)
-            else self.post_finetuning_conversion_calibration_dir
+            self.post_finetuning_conversion_calibration_dir
+            if use_post_finetuning_artifacts(self._cfg)
+            else self.ann_training_calibration_dir
         )
 
     @property
@@ -407,7 +412,9 @@ class ArtifactLayout:
         return self.root / "logs"
 
     def snn_dir(self, neuron: str) -> Path:
-        base = self.root / "snn"
+        base = self.root / "snn" / conversion_artifact_source_dirname(
+            use_post_finetuning_artifacts(self._cfg)
+        )
         if is_aware_ann_mode(self._cfg):
             result = base / neuron
         else:

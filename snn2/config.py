@@ -67,6 +67,8 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
         "prefix_enabled",
         bool(cfg.get("post_finetuning", {}).get("prefix_enabled", True)),
     )
+    cfg.setdefault("conversion", {})
+    cfg["conversion"].setdefault("use_post_finetuning_artifacts", True)
     mode = cfg["experiment"]["ann_mode"]
     if mode == "vanilla":
         cfg["rotation"]["enabled"] = False
@@ -83,22 +85,10 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
         cfg["rotation"]["enabled"] = True
         cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
         cfg["replacement"]["train_mode"] = "phase"
-        cfg["post_finetuning"].update({
-            "rediscover_prefix": False,
-            "recalibrate_sites": False,
-            "post_finetuning_recalibration": False,
-            "prefix_enabled": False,
-        })
     elif mode == "gif_aware":
         cfg["rotation"]["enabled"] = True
         cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
         cfg["replacement"]["train_mode"] = "gif"
-        cfg["post_finetuning"].update({
-            "rediscover_prefix": False,
-            "recalibrate_sites": False,
-            "post_finetuning_recalibration": False,
-            "prefix_enabled": False,
-        })
     return cfg
 
 
@@ -117,6 +107,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
         "training",
         "evaluation",
         "post_finetuning",
+        "conversion",
     }
     missing = required - cfg.keys()
     if missing:
@@ -251,12 +242,11 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError(
             "rotation.regression_top1_agreement_threshold must be in [0, 1)"
         )
-    expected_post = not is_aware_ann_mode(cfg)
-    for key in ("rediscover_prefix", "recalibrate_sites", "post_finetuning_recalibration"):
-        if bool(cfg["post_finetuning"].get(key, False)) != expected_post:
-            raise ValueError(
-                f"{mode} requires post_finetuning.{key}={str(expected_post).lower()}"
-            )
+    use_post = cfg["conversion"].get("use_post_finetuning_artifacts")
+    if not isinstance(use_post, bool):
+        raise ValueError("conversion.use_post_finetuning_artifacts must be true or false")
+    if mode == "vanilla" and not use_post:
+        raise ValueError("vanilla requires conversion.use_post_finetuning_artifacts=true")
     if mode == "vanilla" and training_prefix_enabled(cfg):
         raise ValueError("vanilla must not use a Pre-finetuning Prefix")
     if mode != "vanilla" and not training_prefix_enabled(cfg):
@@ -270,6 +260,10 @@ def validate_config(cfg: dict[str, Any]) -> None:
         value = cfg[section].get("prefix_enabled")
         if not isinstance(value, bool):
             raise ValueError(f"{section}.prefix_enabled must be true or false")
+    for key in ("rediscover_prefix", "recalibrate_sites", "post_finetuning_recalibration"):
+        value = cfg["post_finetuning"].get(key)
+        if not isinstance(value, bool):
+            raise ValueError(f"post_finetuning.{key} must be true or false")
 
 
 def training_prefix_enabled(cfg: dict[str, Any]) -> bool:
@@ -299,23 +293,40 @@ def requires_ann_training_calibration(cfg: dict[str, Any]) -> bool:
 
 
 def requires_post_finetuning_artifacts(cfg: dict[str, Any]) -> bool:
-    return not is_aware_ann_mode(cfg)
+    return True
+
+
+def use_post_finetuning_artifacts(cfg: dict[str, Any]) -> bool:
+    return bool(cfg.get("conversion", {}).get("use_post_finetuning_artifacts", True))
 
 
 def conversion_reuses_ann_training_artifacts(cfg: dict[str, Any]) -> bool:
-    return is_aware_ann_mode(cfg)
+    return not use_post_finetuning_artifacts(cfg)
 
 
 def conversion_prefix_enabled(cfg: dict[str, Any]) -> bool:
-    return training_prefix_enabled(cfg) if is_aware_ann_mode(cfg) else post_finetuning_prefix_enabled(cfg)
+    return post_finetuning_prefix_enabled(cfg) if use_post_finetuning_artifacts(cfg) else training_prefix_enabled(cfg)
 
 
 def conversion_calibration_stage(cfg: dict[str, Any]) -> str:
-    return "ann_training" if is_aware_ann_mode(cfg) else "post_finetuning"
+    return "post_finetuning" if use_post_finetuning_artifacts(cfg) else "ann_training"
+
+
+def conversion_prefix_artifact_stage(cfg: dict[str, Any]) -> str:
+    return "post_finetuning" if use_post_finetuning_artifacts(cfg) else "pre_finetuning"
+
+
+def final_ann_evaluation_prefix_artifact_stage(cfg: dict[str, Any]) -> str:
+    return "pre_finetuning" if is_aware_ann_mode(cfg) else "post_finetuning"
+
+
+def final_snn_evaluation_prefix_artifact_stage(cfg: dict[str, Any]) -> str:
+    return "post_finetuning" if use_post_finetuning_artifacts(cfg) else "pre_finetuning"
 
 
 def final_evaluation_prefix_artifact_stage(cfg: dict[str, Any]) -> str:
-    return "pre_finetuning" if is_aware_ann_mode(cfg) else "post_finetuning"
+    """Compatibility alias for callers that mean final ANN evaluation."""
+    return final_ann_evaluation_prefix_artifact_stage(cfg)
 
 
 def post_finetuning_prefix_enabled(cfg: dict[str, Any]) -> bool:

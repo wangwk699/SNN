@@ -39,6 +39,8 @@ experiments:
       loss_masked: true
     ann_training:
       prefix_enabled: true
+    conversion:
+      use_post_finetuning_artifacts: true
     post_finetuning:
       rediscover_prefix: true
       recalibrate_sites: true
@@ -200,6 +202,8 @@ experiments:
       loss_masked: true
     ann_training:
       prefix_enabled: true
+    conversion:
+      use_post_finetuning_artifacts: true
     post_finetuning:
       rediscover_prefix: true
       recalibrate_sites: true
@@ -363,6 +367,8 @@ experiments:
       loss_masked: true
     ann_training:
       prefix_enabled: true
+    conversion:
+      use_post_finetuning_artifacts: true
     post_finetuning:
       rediscover_prefix: true
       recalibrate_sites: true

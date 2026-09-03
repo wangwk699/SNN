@@ -15,7 +15,8 @@ from snn2.conversion import validate_conversion_metadata
 from snn2.config import (
     final_ann_evaluation_prefix_enabled,
     evaluation_prefix_enabled,
-    final_evaluation_prefix_artifact_stage,
+    final_ann_evaluation_prefix_artifact_stage,
+    final_snn_evaluation_prefix_artifact_stage,
     rotated_pre_finetuning_prefix_enabled,
 )
 from snn2.data import (
@@ -555,12 +556,24 @@ def main():
                         else str(
                             layout.rotated_pre_finetuning_prefix_dir
                             if args.rotated_pre_finetuning
-                            else layout.conversion_prefix_dir
+                            else (
+                                layout.conversion_prefix_dir
+                                if args.neuron != "ann"
+                                else (
+                                    layout.ann_training_prefix_dir
+                                    if final_ann_evaluation_prefix_artifact_stage(cfg) == "pre_finetuning"
+                                    else layout.post_finetuning_prefix_dir
+                                )
+                            )
                         )
                     ),
                     "prefix_source_stage": (
                         None if args.base or args.rotated_pre_finetuning
-                        else final_evaluation_prefix_artifact_stage(cfg)
+                        else (
+                            final_ann_evaluation_prefix_artifact_stage(cfg)
+                            if args.neuron == "ann"
+                            else final_snn_evaluation_prefix_artifact_stage(cfg)
+                        )
                     ),
                     **evaluation_calibration_metadata(
                         cfg,

@@ -60,8 +60,16 @@ def test_all_twelve_generated_configs_carry_temporal_v5_and_ordinary_qmax30(gene
         }
         assert cfg["phase"]["surrogate_slope"] == 1.0
         assert isinstance(cfg["replacement"]["common_clip_enabled"], bool)
+        assert cfg["conversion"]["use_post_finetuning_artifacts"] is True
         if cfg["experiment"]["ann_mode"] in {"vanilla", "unaware"}:
             assert cfg["replacement"]["common_clip_enabled"] is False
+        if cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}:
+            assert cfg["post_finetuning"] == {
+                "rediscover_prefix": True,
+                "recalibrate_sites": True,
+                "prefix_enabled": True,
+                "post_finetuning_recalibration": True,
+            }
         assert cfg["gif"]["high_qmax"] == GIF_HIGH_QMAX
         assert cfg["gif"]["temporal_steps"] == GIF_LOCAL_STEPS
         assert cfg["gif"]["per_step_qmax"] == GIF_STEP_QMAX
@@ -202,3 +210,16 @@ def test_non_qwen3_8b_training_memory_settings_remain_unchanged(generated_config
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert cfg["training"]["gradient_checkpointing"] is False
         assert cfg["training"]["deepspeed_config"] == "configs/deepspeed_zero3.json"
+
+@pytest.mark.parametrize("mode", ["unaware", "phase_aware", "gif_aware"])
+def test_non_vanilla_accepts_pre_finetuning_conversion_bundle(generated_configs, mode):
+    cfg = yaml.safe_load(next(path for path in generated_configs if path.stem.endswith(f"__{mode}")).read_text(encoding="utf-8"))
+    cfg["conversion"]["use_post_finetuning_artifacts"] = False
+    validate_config(cfg)
+
+
+def test_vanilla_rejects_pre_finetuning_conversion_bundle(generated_configs):
+    cfg = yaml.safe_load(next(path for path in generated_configs if path.stem.endswith("__vanilla")).read_text(encoding="utf-8"))
+    cfg["conversion"]["use_post_finetuning_artifacts"] = False
+    with pytest.raises(ValueError, match="vanilla requires conversion.use_post_finetuning_artifacts=true"):
+        validate_config(cfg)

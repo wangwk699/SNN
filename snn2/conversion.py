@@ -7,8 +7,11 @@ from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
 from .config import (
     conversion_calibration_stage,
     conversion_prefix_enabled,
+    conversion_prefix_artifact_stage,
     conversion_reuses_ann_training_artifacts,
+    is_aware_ann_mode,
     training_common_clip_enabled,
+    use_post_finetuning_artifacts,
 )
 from .controller import SiteController
 from .data import validate_prefix_discovery_state
@@ -74,7 +77,7 @@ def _validate_source_manifest(manifest: dict[str, Any], *, reused: bool) -> None
             "purpose": "ann_training_calibration",
             "eligible_for_ann_training": True,
             "eligible_for_conversion": True,
-            "conversion_reuse_policy": "aware_modes_only",
+            "conversion_reuse_policy": "non_vanilla_when_selected",
             "post_finetuning_recalibration": False,
             "state_profile": "stage_a_common_states",
             "common_clip_required": False,
@@ -108,11 +111,7 @@ def validate_conversion_prefix(
     cfg: dict[str, Any], layout: ArtifactLayout
 ) -> dict[str, Any]:
     enabled = conversion_prefix_enabled(cfg)
-    source_stage = (
-        "pre_finetuning"
-        if conversion_reuses_ann_training_artifacts(cfg)
-        else "post_finetuning"
-    )
+    source_stage = conversion_prefix_artifact_stage(cfg)
     root = layout.conversion_prefix_dir
     if not enabled:
         return {
@@ -209,6 +208,28 @@ def _source_bundle(
     manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
     manifest = read_json(manifest_path)
     _validate_source_manifest(manifest, reused=reused)
+    expected_source = (
+        {
+            "source_model_stage": "rotated_fused_base",
+            "source_ann_mode": None,
+            "source_ann_checkpoint": None,
+            "source_ann_config_sha256": None,
+        }
+        if reused
+        else {
+            "source_model_stage": "final_ann_checkpoint",
+            "source_ann_mode": cfg["experiment"]["ann_mode"],
+            "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()),
+            "source_ann_config_sha256": sha256_file(ann_config),
+        }
+    )
+    source_mismatch = {
+        key: {"expected": value, "actual": manifest.get(key)}
+        for key, value in expected_source.items()
+        if manifest.get(key) != value
+    }
+    if source_mismatch:
+        raise ValueError(f"Conversion calibration source provenance mismatch: {source_mismatch}")
     expected_grouping = {
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
@@ -225,7 +246,7 @@ def _source_bundle(
         raise ValueError("Conversion calibration Prefix policy disagrees with config")
     provenance = (
         _validate_aware_training_provenance(cfg, layout, prefix, manifest_path)
-        if reused
+        if reused and is_aware_ann_mode(cfg)
         else {}
     )
     return prefix, validation, manifest_path, provenance
@@ -262,6 +283,7 @@ def validate_conversion_metadata(
         "calibration_root": str(layout.conversion_site_dir.resolve()),
         "calibration_state_manifest_sha256": sha256_file(manifest_path),
         "calibration_source_stage": conversion_calibration_stage(cfg),
+        "use_post_finetuning_artifacts": use_post_finetuning_artifacts(cfg),
         "prefix_source_stage": prefix["prefix_source_stage"],
         "reused_ann_training_artifacts": reused,
         "post_finetuning_recalibration": not reused,
@@ -338,6 +360,7 @@ def create_conversion(
         "calibration_root": str(layout.conversion_site_dir.resolve()),
         "calibration_state_manifest_sha256": sha256_file(manifest_path),
         "calibration_source_stage": conversion_calibration_stage(cfg),
+        "use_post_finetuning_artifacts": use_post_finetuning_artifacts(cfg),
         "prefix_source_stage": prefix["prefix_source_stage"],
         "reused_ann_training_artifacts": reused,
         "deployment_neuron": neuron,

@@ -5,7 +5,7 @@ from snn2.calibration import (
     collect_site_statistics,
     materialize_clip_profile,
 )
-from snn2.config import requires_ann_training_calibration, requires_post_finetuning_artifacts
+from snn2.config import requires_ann_training_calibration
 from snn2.controller import SiteController
 from snn2.data import load_selected_raw
 from snn2.logging_utils import StageRun
@@ -39,8 +39,6 @@ def main():
     cfg, layout = setup(args.config, config_scope=scope)
     if args.stage == "ann_training" and not requires_ann_training_calibration(cfg):
         raise ValueError("ANN-training calibration is only used by phase_aware/gif_aware modes")
-    if args.stage == "post_finetuning" and not requires_post_finetuning_artifacts(cfg):
-        raise ValueError("Aware ANN modes reuse ANN-training calibration; do not run post-finetuning calibration")
     if args.stage == "vanilla_analysis" and (
         cfg["experiment"]["ann_mode"] != "vanilla" or cfg["rotation"]["enabled"]
     ):

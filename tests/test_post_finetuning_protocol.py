@@ -3,12 +3,12 @@ from pathlib import Path
 
 import pytest
 from snn2.artifacts import ArtifactLayout, sha256_file
-from snn2.artifacts import ArtifactLayout
 from snn2.config import (
     conversion_calibration_stage,
     conversion_prefix_enabled,
     conversion_reuses_ann_training_artifacts,
-    final_evaluation_prefix_artifact_stage,
+    final_ann_evaluation_prefix_artifact_stage,
+    final_snn_evaluation_prefix_artifact_stage,
     requires_ann_training_calibration,
     requires_post_finetuning_artifacts,
     requires_pre_finetuning_prefix,
@@ -17,7 +17,7 @@ from snn2.conversion import validate_conversion_prefix
 from snn2.modeling import prefix_ids_for_stage
 
 
-def _cfg(mode, root="artifacts", common_clip_enabled=True):
+def _cfg(mode, root="artifacts", common_clip_enabled=True, use_post=True):
     aware = mode in {"phase_aware", "gif_aware"}
     return {
         "experiment": {
@@ -30,41 +30,55 @@ def _cfg(mode, root="artifacts", common_clip_enabled=True):
         "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
         "ann_training": {"prefix_enabled": mode != "vanilla"},
-        "post_finetuning": {"prefix_enabled": not aware},
+        "post_finetuning": {"prefix_enabled": True},
+        "conversion": {"use_post_finetuning_artifacts": use_post},
         "replacement": {"common_clip_enabled": common_clip_enabled},
         "calibration": {"group_size": -1, "num_samples": 128},
     }
 
 
 @pytest.mark.parametrize(
-    ("mode", "pre", "ann_cal", "post", "reused", "stage"),
+    ("mode", "use_post", "pre", "ann_cal", "reused", "ann_stage"),
     [
-        ("vanilla", False, False, True, False, "post_finetuning"),
-        ("unaware", True, False, True, False, "post_finetuning"),
-        ("phase_aware", True, True, False, True, "pre_finetuning"),
-        ("gif_aware", True, True, False, True, "pre_finetuning"),
+        ("vanilla", True, False, False, False, "post_finetuning"),
+        ("unaware", True, True, False, False, "post_finetuning"),
+        ("unaware", False, True, False, True, "post_finetuning"),
+        ("phase_aware", True, True, True, False, "pre_finetuning"),
+        ("phase_aware", False, True, True, True, "pre_finetuning"),
+        ("gif_aware", True, True, True, False, "pre_finetuning"),
+        ("gif_aware", False, True, True, True, "pre_finetuning"),
     ],
 )
-def test_mode_aware_protocol_table(mode, pre, ann_cal, post, reused, stage):
-    cfg = _cfg(mode)
+def test_dual_artifact_protocol_table(mode, use_post, pre, ann_cal, reused, ann_stage):
+    cfg = _cfg(mode, use_post=use_post)
     assert requires_pre_finetuning_prefix(cfg) is pre
     assert requires_ann_training_calibration(cfg) is ann_cal
-    assert requires_post_finetuning_artifacts(cfg) is post
+    assert requires_post_finetuning_artifacts(cfg) is True
     assert conversion_reuses_ann_training_artifacts(cfg) is reused
-    assert conversion_calibration_stage(cfg) == (
-        "ann_training" if reused else "post_finetuning"
-    )
-    assert final_evaluation_prefix_artifact_stage(cfg) == stage
+    assert conversion_calibration_stage(cfg) == ("post_finetuning" if use_post else "ann_training")
+    assert final_ann_evaluation_prefix_artifact_stage(cfg) == ann_stage
+    assert final_snn_evaluation_prefix_artifact_stage(cfg) == ("post_finetuning" if use_post else "pre_finetuning")
     assert conversion_prefix_enabled(cfg) is True
 
 
-def test_mode_aware_conversion_roots():
-    aware = ArtifactLayout(_cfg("phase_aware"))
-    assert aware.conversion_prefix_dir == aware.ann_training_prefix_dir
-    assert aware.conversion_site_dir == aware.ann_training_site_dir
-    unaware = ArtifactLayout(_cfg("unaware"))
-    assert unaware.conversion_prefix_dir == unaware.post_finetuning_prefix_dir
-    assert unaware.conversion_site_dir == unaware.post_finetuning_site_dir
+def test_selector_does_not_change_ann_identity_or_final_ann_prefix_rule():
+    post = ArtifactLayout(_cfg("phase_aware", use_post=True))
+    pre = ArtifactLayout(_cfg("phase_aware", use_post=False))
+    assert post.ann_checkpoint_dir == pre.ann_checkpoint_dir
+    assert final_ann_evaluation_prefix_artifact_stage(post._cfg) == final_ann_evaluation_prefix_artifact_stage(pre._cfg) == "pre_finetuning"
+    assert post.snn_dir("phase") != pre.snn_dir("phase")
+
+
+def test_conversion_roots_follow_selector_and_pre_bundle_is_shared():
+    aware_post = ArtifactLayout(_cfg("phase_aware", use_post=True))
+    aware_pre = ArtifactLayout(_cfg("phase_aware", use_post=False))
+    unaware_pre = ArtifactLayout(_cfg("unaware", use_post=False))
+    assert aware_post.conversion_prefix_dir == aware_post.post_finetuning_prefix_dir
+    assert aware_post.conversion_site_dir == aware_post.post_finetuning_site_dir
+    assert aware_pre.conversion_prefix_dir == aware_pre.ann_training_prefix_dir
+    assert aware_pre.conversion_site_dir == aware_pre.ann_training_site_dir
+    assert unaware_pre.conversion_prefix_dir == aware_pre.ann_training_prefix_dir
+    assert unaware_pre.conversion_site_dir == aware_pre.ann_training_site_dir
 
 
 @pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
@@ -141,7 +155,7 @@ def test_aware_snn_path_contains_group_size_exactly_once(mode):
     assert sum(
         part.count("calibration_group_size_-1") for part in path.parts
     ) == 1
-    assert path.parts[-3:] == ("snn", "phase", "phase_T_4")
+    assert path.parts[-3:] == ("use_post_finetuning_artifacts_true", "phase", "phase_T_4")
     assert "num_samples_128_lr1e-06_calibration_group_size_-1" in path.parts
 
 @pytest.mark.parametrize("mode", ["vanilla", "unaware"])
@@ -150,8 +164,8 @@ def test_identity_ann_snn_path_groups_below_snn(mode):
     path = layout.snn_dir("phase")
     assert path.parts.count("calibration_group_size_-1_num_samples_128") == 1
     assert path.parts.count("calibration_group_size_-1_num_samples_128") == 1
-    assert path.parts[-3:] == (
-        "calibration_group_size_-1_num_samples_128", "phase", "phase_T_4"
+    assert path.parts[-4:] == (
+        "use_post_finetuning_artifacts_true", "calibration_group_size_-1_num_samples_128", "phase", "phase_T_4"
     )
 
 def test_calibration_config_logs_and_sites_are_group_isolated_but_shared_inputs_are_not():
@@ -224,7 +238,7 @@ def _write_prefix_state(cfg, layout, directory, token_ids):
 
 
 def test_conversion_prefix_validator_uses_aware_pre_finetuning_root(tmp_path):
-    cfg = _cfg("phase_aware", tmp_path)
+    cfg = _cfg("phase_aware", tmp_path, use_post=False)
     layout = ArtifactLayout(cfg)
     _write_prefix_state(cfg, layout, layout.ann_training_prefix_dir, [])
     metadata = validate_conversion_prefix(cfg, layout)

@@ -9,6 +9,7 @@ from .artifacts import prefix_enabled_dirname
 from .config import (
     conversion_calibration_stage,
     conversion_reuses_ann_training_artifacts,
+    use_post_finetuning_artifacts,
     is_aware_ann_mode,
     rotated_pre_finetuning_prefix_enabled,
     evaluation_prefix_enabled,
@@ -277,6 +278,9 @@ def evaluation_calibration_metadata(
         ),
         "reused_ann_training_artifacts": reused,
         "post_finetuning_recalibration": False if inactive else not reused,
+        "use_post_finetuning_artifacts": (
+            None if inactive or neuron == "ann" else use_post_finetuning_artifacts(cfg)
+        ),
         "calibration_root": (
             str(layout.ann_training_site_dir)
             if aware_ann
