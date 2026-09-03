@@ -4,6 +4,8 @@ set -euo pipefail
 PROJECT_ROOT="/home/wangwenkang/SNN"
 CFG="${CFG:-configs/generated/exp1_qwen3_1_7b_tldr__gif_aware.yaml}"
 
+# CUDA_VISIBLE_DEVICES=0,1 ./snn_evaluate/evaluate_qwen3_1_7b_gif_aware_T_K_sweep.sh
+
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   echo "CUDA_VISIBLE_DEVICES must be set, for example: CUDA_VISIBLE_DEVICES=6,7 $0" >&2
   exit 1

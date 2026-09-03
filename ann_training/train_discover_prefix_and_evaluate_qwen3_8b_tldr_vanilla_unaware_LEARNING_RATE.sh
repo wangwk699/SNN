@@ -8,9 +8,7 @@ CFG_8_U="configs/generated/exp1_qwen3_8b_tldr__unaware.yaml"
 ALL_CFGS=("$CFG_8_V" "$CFG_8_U")
 
 LEARNING_RATES=(
-  5.0e-07
   1.0e-06
-  5.0e-06
 )
 
 # CUDA_VISIBLE_DEVICES is provided externally.
