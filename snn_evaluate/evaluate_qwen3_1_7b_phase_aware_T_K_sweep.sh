@@ -52,7 +52,7 @@ python scripts/convert_snn.py --config "$CFG" --neuron gif
 
 python scripts/convert_snn.py --config "$CFG" --neuron phase --phase-T 4
 python scripts/convert_snn.py --config "$CFG" --neuron phase --phase-T 6
-python scripts/convert_snn.py --config "$CFG" --neuron phase --phase-T 8
+# python scripts/convert_snn.py --config "$CFG" --neuron phase --phase-T 8
 
 python scripts/convert_snn.py --config "$CFG" --neuron mtn --mtn-T 4 --mtn-K 6
 python scripts/convert_snn.py --config "$CFG" --neuron mtn --mtn-T 6 --mtn-K 6
@@ -66,13 +66,13 @@ run_evaluation --neuron phase --phase-T 4
 wait_for_gpu_release
 run_evaluation --neuron phase --phase-T 6
 wait_for_gpu_release
-run_evaluation --neuron phase --phase-T 8
-wait_for_gpu_release
+# run_evaluation --neuron phase --phase-T 8
+# wait_for_gpu_release
 
 run_evaluation --neuron mtn --mtn-T 4 --mtn-K 6
 wait_for_gpu_release
-run_evaluation --neuron mtn --mtn-T 6 --mtn-K 6
-wait_for_gpu_release
+# run_evaluation --neuron mtn --mtn-T 6 --mtn-K 6
+# wait_for_gpu_release
 run_evaluation --neuron mtn --mtn-T 6 --mtn-K 8
 wait_for_gpu_release
-run_evaluation --neuron mtn --mtn-T 8 --mtn-K 10
+# run_evaluation --neuron mtn --mtn-T 8 --mtn-K 10

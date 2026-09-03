@@ -14,6 +14,7 @@ from snn2.config import (
     use_post_finetuning_artifacts,
     is_aware_ann_mode,
     final_ann_evaluation_prefix_enabled,
+    final_ann_evaluation_prefix_artifact_stage,
     evaluation_prefix_enabled,
     requires_ann_training_calibration,
     requires_pre_finetuning_prefix,
@@ -37,6 +38,7 @@ from snn2.sites import (
 from snn2.evaluation import append_evaluation_num_samples_if_needed, final_ann_replacement_mode, resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
 from snn2.state_validation import validate_clip_profile, validate_site_state_bundle
+from snn2.training import validate_recorded_training_artifact_provenance
 from snn2.temporal_ops import (
     CALIBRATION_GROUPING_POLICY,
     GIF_LINEAR_SALIENCY_DTYPE,
@@ -91,6 +93,30 @@ def _validate_snn_source_metadata(cfg, descriptor, metrics, *, metrics_path):
             raise ValueError(
                 "SNN descriptor and metrics source mismatch for " + key + ": " + str(metrics_path)
             )
+
+
+def _final_ann_prefix_root(cfg, layout):
+    if not final_ann_evaluation_prefix_enabled(cfg):
+        return None
+    stage = final_ann_evaluation_prefix_artifact_stage(cfg)
+    return (
+        layout.ann_training_prefix_dir
+        if stage == "pre_finetuning"
+        else layout.post_finetuning_prefix_dir
+    )
+
+
+def _validate_prefix_artifact(cfg, layout, root, *, label):
+    state_path = root / "prefix_state.json"
+    if not state_path.exists():
+        raise FileNotFoundError(f"{label} Prefix is missing: {state_path}")
+    return validate_prefix_discovery_state(cfg, layout, root)
+
+
+def _validate_aware_final_ann_training_provenance(cfg, layout):
+    if is_aware_ann_mode(cfg):
+        return validate_recorded_training_artifact_provenance(cfg, layout)
+    return None
 
 
 def _verify_final_ann_forward_metadata(cfg, layout, path):
@@ -151,6 +177,23 @@ def _verify_final_ann_forward_metadata(cfg, layout, path):
     expected_stage = "ann_training" if expected[1] else None
     if metadata.get("calibration_source_stage") != expected_stage:
         raise ValueError(f"Final ANN evaluation has incompatible calibration provenance: {path}")
+
+    prefix_enabled = final_ann_evaluation_prefix_enabled(cfg)
+    if metadata.get("prefix_enabled") != prefix_enabled:
+        raise ValueError(f"Final ANN evaluation has incompatible prefix_enabled: {path}")
+    if metadata.get("prefix_stage") != "final_ann_evaluation":
+        raise ValueError(f"Final ANN evaluation has incompatible prefix_stage: {path}")
+    prefix_root = _final_ann_prefix_root(cfg, layout)
+    if not prefix_enabled:
+        if metadata.get("prefix_root") is not None:
+            raise ValueError(f"Final ANN evaluation unexpectedly uses a Prefix root: {path}")
+    else:
+        expected_prefix_stage = final_ann_evaluation_prefix_artifact_stage(cfg)
+        actual_prefix_root = metadata.get("prefix_root")
+        if metadata.get("prefix_source_stage") != expected_prefix_stage:
+            raise ValueError(f"Final ANN evaluation has incompatible prefix_source_stage: {path}")
+        if actual_prefix_root is None or Path(actual_prefix_root).resolve() != prefix_root.resolve():
+            raise ValueError(f"Final ANN evaluation has incompatible prefix_root: {path}")
 
 
 def _require_manifest_flags(manifest, expected, label):
@@ -661,14 +704,11 @@ def main():
         # --------------------------------------------------
         # Rotation / Prefix shared artifacts
         # --------------------------------------------------
-        prefix_state_path = layout.conversion_prefix_dir / "prefix_state.json"
         required.append(layout.conversion_site_dir / "calibration_state_manifest.json")
         if requires_ann_training_calibration(cfg):
             required.append(
                 layout.ann_training_site_dir / "calibration_state_manifest.json"
             )
-        if conversion_prefix_enabled(cfg) or evaluation_prefix_enabled(cfg):
-            required.append(prefix_state_path)
 
         if cfg["rotation"]["enabled"]:
 
@@ -689,8 +729,6 @@ def main():
 
                 ]
             )
-            if requires_pre_finetuning_prefix(cfg) and training_prefix_enabled(cfg):
-                required.append(layout.ann_training_prefix_dir / "prefix_state.json")
             if requires_ann_training_calibration(cfg):
                 required.append(layout.ann_training_site_dir / "calibration_state_manifest.json")
 
@@ -712,23 +750,29 @@ def main():
                 + "\n".join(missing)
             )
         if requires_pre_finetuning_prefix(cfg) and training_prefix_enabled(cfg):
-            validate_prefix_discovery_state(cfg, layout, layout.ann_training_prefix_dir)
+            _validate_prefix_artifact(
+                cfg, layout, layout.ann_training_prefix_dir,
+                label="ANN-training Pre-finetuning",
+            )
+
+        final_ann_prefix_root = _final_ann_prefix_root(cfg, layout)
+        if final_ann_prefix_root is not None:
+            _validate_prefix_artifact(
+                cfg, layout, final_ann_prefix_root,
+                label=(
+                    "Post-finetuning Final ANN"
+                    if final_ann_evaluation_prefix_artifact_stage(cfg) == "post_finetuning"
+                    else "Pre-finetuning Final ANN"
+                ),
+            )
+
         if conversion_prefix_enabled(cfg) or evaluation_prefix_enabled(cfg):
-            validate_prefix_discovery_state(cfg, layout, layout.conversion_prefix_dir)
+            _validate_prefix_artifact(
+                cfg, layout, layout.conversion_prefix_dir,
+                label="Selected SNN",
+            )
 
-
-        if requires_pre_finetuning_prefix(cfg) and training_prefix_enabled(cfg):
-            training_prefix_state_path = layout.ann_training_prefix_dir / "prefix_state.json"
-            training_prefix_ids = [
-                int(value) for value in read_json(training_prefix_state_path).get("prefix_token_ids", [])
-            ]
-            if training_prefix_ids:
-                training_prefix_kv_path = layout.ann_training_prefix_dir / "prefixed_key_values.pt"
-                if not training_prefix_kv_path.exists():
-                    raise FileNotFoundError(
-                        "Non-empty Pre-finetuning Prefix requires its fixed KV cache: "
-                        f"{training_prefix_kv_path}"
-                    )
+        _validate_aware_final_ann_training_provenance(cfg, layout)
 
         if cfg["rotation"]["enabled"]:
             regression_path = layout.rotation_dir / "rotation_regression.json"
@@ -754,51 +798,6 @@ def main():
                 calibration_manifest
             ):
                 raise ValueError("Rotation regression calibration manifest hash mismatch")
-
-        # --------------------------------------------------
-        # Prefix KV artifact
-        #
-        # Non-empty prefix_token_ids:
-        #     prefixed_key_values.pt is mandatory.
-        #
-        # Empty prefix_token_ids:
-        #     no Prefix KV cache is required.
-        #
-        # This is important for Qwen3, where Prefix discovery
-        # is allowed to produce an empty Prefix.
-        # --------------------------------------------------
-        prefix_token_ids = []
-
-        if prefix_state_path in required:
-            prefix_state = read_json(
-                prefix_state_path
-            )
-
-            prefix_token_ids = [
-                int(value)
-                for value in prefix_state.get(
-                    "prefix_token_ids",
-                    [],
-                )
-            ]
-
-            if prefix_token_ids:
-                prefix_kv_path = layout.conversion_prefix_dir / "prefixed_key_values.pt"
-
-                required.append(
-                    prefix_kv_path
-                )
-
-                if not prefix_kv_path.exists():
-                    raise FileNotFoundError(
-                        "Prefix discovery produced "
-                        "non-empty prefix_token_ids, "
-                        "but the fixed Prefix KV cache "
-                        "is missing:\n"
-                        f"{prefix_kv_path}\n"
-                        "Re-run "
-                        "scripts/discover_prefix.py."
-                    )
 
         # --------------------------------------------------
         # Calibration

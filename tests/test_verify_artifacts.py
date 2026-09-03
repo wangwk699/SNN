@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from snn2.artifacts import write_json
+from snn2.artifacts import sha256_file, write_json
 from snn2.calibration import materialize_calibration_states
 from snn2.controller import SiteController
 from snn2.evaluation import (
@@ -26,6 +26,7 @@ from snn2.phase_statistics import (
 )
 from snn2.sites import SITE_IDS, SITE_NAMES, site_key
 from snn2.temporal_ops import STATISTICS_FORMAT_VERSION
+from snn2.training import capture_training_artifact_provenance
 
 
 def _load_verify_artifacts_module():
@@ -460,6 +461,8 @@ def _gif_eval_fixture(tmp_path):
     layout = SimpleNamespace(
         ann_training_site_dir=tmp_path / "ann_training_sites",
         conversion_site_dir=tmp_path / "conversion_sites",
+        ann_training_prefix_dir=tmp_path / "pre_prefix" / "num_samples_128",
+        post_finetuning_prefix_dir=tmp_path / "post_prefix" / "num_samples_128",
     )
     controller = SiteController(
         mode="gif",
@@ -483,6 +486,10 @@ def _gif_eval_fixture(tmp_path):
             neuron="ann",
             controller=controller,
         ),
+        "prefix_enabled": True,
+        "prefix_stage": "final_ann_evaluation",
+        "prefix_source_stage": "pre_finetuning",
+        "prefix_root": str(layout.ann_training_prefix_dir),
     }
     path = tmp_path / "metrics.json"
     write_json(
@@ -683,3 +690,163 @@ def test_verify_selector_source_matrix(mode, use_post, prefix_stage, calibration
         _VERIFY._validate_snn_source_metadata(
             cfg, source, tampered, metrics_path="metrics.json"
         )
+
+
+
+def _write_prefix_state(layout, root):
+    layout.calibration_data_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(layout.calibration_data_manifest_path, {"num_samples": 128})
+    root.mkdir(parents=True, exist_ok=True)
+    write_json(
+        root / "prefix_state.json",
+        {
+            "prefix_token_ids": [],
+            "discovery_num_samples": 128,
+            "discovery_data_source": "stage_a_calibration_selection",
+            "discovery_manifest_path": str(layout.calibration_data_manifest_path.resolve()),
+            "discovery_manifest_sha256": sha256_file(layout.calibration_data_manifest_path),
+        },
+    )
+
+
+def test_verify_unaware_pre_selector_validates_final_and_snn_prefixes(tmp_path):
+    cfg = _cfg("unaware", use_post=False)
+    cfg.update({
+        "prefix": {"enabled": True},
+        "ann_training": {"prefix_enabled": True},
+        "post_finetuning": {"prefix_enabled": True},
+        "evaluation": {"prefix_enabled": True},
+    })
+    layout = SimpleNamespace(
+        calibration_data_manifest_path=tmp_path / "data" / "calibration_manifest.json",
+        ann_training_prefix_dir=tmp_path / "pre" / "num_samples_128",
+        post_finetuning_prefix_dir=tmp_path / "post" / "num_samples_128",
+        conversion_prefix_dir=tmp_path / "pre" / "num_samples_128",
+    )
+    _write_prefix_state(layout, layout.ann_training_prefix_dir)
+    _write_prefix_state(layout, layout.post_finetuning_prefix_dir)
+
+    final_root = _VERIFY._final_ann_prefix_root(cfg, layout)
+    assert final_root == layout.post_finetuning_prefix_dir
+    _VERIFY._validate_prefix_artifact(
+        cfg, layout, final_root, label="Post-finetuning Final ANN"
+    )
+    _VERIFY._validate_prefix_artifact(
+        cfg, layout, layout.conversion_prefix_dir, label="Selected SNN"
+    )
+
+    (layout.post_finetuning_prefix_dir / "prefix_state.json").unlink()
+    with pytest.raises(FileNotFoundError, match="Post-finetuning Final ANN Prefix"):
+        _VERIFY._validate_prefix_artifact(
+            cfg, layout, final_root, label="Post-finetuning Final ANN"
+        )
+
+    _write_prefix_state(layout, layout.post_finetuning_prefix_dir)
+    (layout.ann_training_prefix_dir / "prefix_state.json").unlink()
+    with pytest.raises(FileNotFoundError, match="Selected SNN Prefix"):
+        _VERIFY._validate_prefix_artifact(
+            cfg, layout, layout.conversion_prefix_dir, label="Selected SNN"
+        )
+
+
+@pytest.mark.parametrize("ann_mode", ["phase_aware", "gif_aware"])
+def test_verify_aware_post_selector_still_validates_training_provenance(
+    monkeypatch, tmp_path, ann_mode
+):
+    cfg = _cfg(ann_mode, use_post=True)
+    cfg.update({
+        "prefix": {"enabled": True},
+        "ann_training": {"prefix_enabled": True},
+    })
+    manifest_path = tmp_path / "data" / "calibration_manifest.json"
+    prefix_dir = tmp_path / "pre" / "num_samples_128"
+    site_dir = tmp_path / "ann_sites"
+    profile_dir = tmp_path / "clip_profile"
+    ann_dir = tmp_path / "ann"
+    for directory in (prefix_dir, site_dir, profile_dir, ann_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    write_json(manifest_path, {"num_samples": 128})
+    write_json(prefix_dir / "prefix_state.json", {
+        "prefix_token_ids": [],
+        "discovery_num_samples": 128,
+        "discovery_data_source": "stage_a_calibration_selection",
+        "discovery_manifest_path": str(manifest_path.resolve()),
+        "discovery_manifest_sha256": sha256_file(manifest_path),
+    })
+    write_json(site_dir / "calibration_state_manifest.json", {"format_version": 1})
+    write_json(profile_dir / "clip_profile_manifest.json", {"format_version": 1})
+    layout = SimpleNamespace(
+        ann_dir=ann_dir,
+        ann_training_prefix_dir=prefix_dir,
+        ann_training_site_dir=site_dir,
+        ann_training_clip_profile_dir=profile_dir,
+        calibration_data_manifest_path=manifest_path,
+    )
+    monkeypatch.setattr(
+        "snn2.training.validate_site_state_bundle",
+        lambda *_args, **_kwargs: {"manifest": {
+            "calibration_group_size": -1,
+            "calibration_num_samples": 128,
+            "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2",
+            "statistics_format_version": STATISTICS_FORMAT_VERSION,
+        }},
+    )
+    monkeypatch.setattr("snn2.training.validate_clip_profile", lambda *_args, **_kwargs: {})
+    recorded = capture_training_artifact_provenance(cfg, layout, prefix_ids=[])
+    write_json(ann_dir / "training_result.json", recorded)
+
+    assert _VERIFY._validate_aware_final_ann_training_provenance(cfg, layout) == recorded
+    write_json(profile_dir / "clip_profile_manifest.json", {"format_version": 2})
+    with pytest.raises(RuntimeError, match="Recorded ANN-training Prefix/calibration provenance"):
+        _VERIFY._validate_aware_final_ann_training_provenance(cfg, layout)
+
+
+@pytest.mark.parametrize(
+    ("ann_mode", "use_post", "expected_stage"),
+    [
+        ("phase_aware", True, "pre_finetuning"),
+        ("phase_aware", False, "pre_finetuning"),
+        ("gif_aware", True, "pre_finetuning"),
+        ("gif_aware", False, "pre_finetuning"),
+    ],
+)
+def test_final_aware_ann_prefix_source_is_independent_of_selector(
+    tmp_path, ann_mode, use_post, expected_stage
+):
+    cfg = _cfg(ann_mode, use_post=use_post)
+    cfg["evaluation"] = {"prefix_enabled": True}
+    layout = SimpleNamespace(
+        ann_training_prefix_dir=tmp_path / "pre" / "num_samples_128",
+        post_finetuning_prefix_dir=tmp_path / "post" / "num_samples_128",
+    )
+    assert _VERIFY._final_ann_prefix_root(cfg, layout) == layout.ann_training_prefix_dir
+    assert expected_stage == "pre_finetuning"
+
+
+
+def test_final_ann_prefix_metadata_rejects_unaware_selector_mismatch(tmp_path):
+    cfg = _cfg("unaware", use_post=False)
+    cfg["evaluation"] = {"prefix_enabled": True}
+    layout = SimpleNamespace(
+        ann_training_site_dir=tmp_path / "ann_sites",
+        ann_training_prefix_dir=tmp_path / "pre" / "num_samples_128",
+        post_finetuning_prefix_dir=tmp_path / "post" / "num_samples_128",
+    )
+    controller = SiteController(mode="identity", site_root=layout.ann_training_site_dir)
+    metadata = {
+        **evaluation_forward_metadata(cfg, layout, neuron="ann", controller=controller),
+        **evaluation_calibration_metadata(cfg, layout, neuron="ann"),
+        **global_final_norm_evaluation_metadata(neuron="ann", controller=controller),
+        "prefix_enabled": True,
+        "prefix_stage": "final_ann_evaluation",
+        "prefix_source_stage": "post_finetuning",
+        "prefix_root": str(layout.post_finetuning_prefix_dir),
+    }
+    path = tmp_path / "metrics.json"
+    write_json(path, {"snn2_metadata": metadata})
+    _VERIFY._verify_final_ann_forward_metadata(cfg, layout, path)
+
+    metadata["prefix_source_stage"] = "pre_finetuning"
+    write_json(path, {"snn2_metadata": metadata})
+    with pytest.raises(ValueError, match="prefix_source_stage"):
+        _VERIFY._verify_final_ann_forward_metadata(cfg, layout, path)
