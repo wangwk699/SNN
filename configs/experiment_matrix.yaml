@@ -2,10 +2,7 @@ experiments:
 - name: exp1_qwen3_1_7b_tldr
   ann_modes:
   - vanilla
-  - unaware
-  - phase_aware
-  - gif_aware
-  config:
+  config: &exp1_qwen3_1_7b_tldr_base
     experiment:
       id: snn2_main_v1
       output_root: artifacts
@@ -67,14 +64,14 @@ experiments:
       phase_tau_ema_factor: 0.99
       phase_tau_accumulator_dtype: float32
     phase:
-      T: 6
+      T: 4
       base: 2.0
       surrogate_slope: 1.0
       timestep_indexing: t_0_to_T_minus_1
       threshold_rule: "tau * base ** (-(t + 1))"
     mtn:
-      T: 6
-      K: 8
+      T: 4
+      K: 6
       threshold_factor: 0.75
     gif:
       base_bits: 4
@@ -165,10 +162,7 @@ experiments:
 - name: exp1_qwen3_8b_tldr
   ann_modes:
   - vanilla
-  - unaware
-  - phase_aware
-  - gif_aware
-  config:
+  config: &exp1_qwen3_8b_tldr_base
     experiment:
       id: snn2_main_v1
       output_root: artifacts
@@ -230,14 +224,14 @@ experiments:
       phase_tau_ema_factor: 0.99
       phase_tau_accumulator_dtype: float32
     phase:
-      T: 6
+      T: 4
       base: 2.0
       surrogate_slope: 1.0
       timestep_indexing: t_0_to_T_minus_1
       threshold_rule: "tau * base ** (-(t + 1))"
     mtn:
-      T: 6
-      K: 8
+      T: 4
+      K: 6
       threshold_factor: 0.75
     gif:
       base_bits: 4
@@ -328,10 +322,7 @@ experiments:
 - name: exp2_llama3_8b_tulu3
   ann_modes:
   - vanilla
-  - unaware
-  - phase_aware
-  - gif_aware
-  config:
+  config: &exp2_llama3_8b_tulu3_base
     experiment:
       id: snn2_main_v1
       output_root: artifacts
@@ -395,14 +386,14 @@ experiments:
       phase_tau_ema_factor: 0.99
       phase_tau_accumulator_dtype: float32
     phase:
-      T: 6
+      T: 4
       base: 2.0
       surrogate_slope: 1.0
       timestep_indexing: t_0_to_T_minus_1
       threshold_rule: "tau * base ** (-(t + 1))"
     mtn:
-      T: 6
-      K: 8
+      T: 4
+      K: 6
       threshold_factor: 0.75
     gif:
       base_bits: 4
@@ -488,3 +479,58 @@ experiments:
         num_fewshot: 4
         metric: exact_match
         cot: false
+
+- name: exp1_qwen3_1_7b_tldr
+  ann_modes: [unaware]
+  config:
+    <<: *exp1_qwen3_1_7b_tldr_base
+    conversion:
+      use_post_finetuning_artifacts: true
+- name: exp1_qwen3_1_7b_tldr
+  ann_modes: [phase_aware]
+  config:
+    <<: *exp1_qwen3_1_7b_tldr_base
+    conversion:
+      use_post_finetuning_artifacts: false
+- name: exp1_qwen3_1_7b_tldr
+  ann_modes: [gif_aware]
+  config:
+    <<: *exp1_qwen3_1_7b_tldr_base
+    conversion:
+      use_post_finetuning_artifacts: false
+- name: exp1_qwen3_8b_tldr
+  ann_modes: [unaware]
+  config:
+    <<: *exp1_qwen3_8b_tldr_base
+    conversion:
+      use_post_finetuning_artifacts: true
+- name: exp1_qwen3_8b_tldr
+  ann_modes: [phase_aware]
+  config:
+    <<: *exp1_qwen3_8b_tldr_base
+    conversion:
+      use_post_finetuning_artifacts: false
+- name: exp1_qwen3_8b_tldr
+  ann_modes: [gif_aware]
+  config:
+    <<: *exp1_qwen3_8b_tldr_base
+    conversion:
+      use_post_finetuning_artifacts: false
+- name: exp2_llama3_8b_tulu3
+  ann_modes: [unaware]
+  config:
+    <<: *exp2_llama3_8b_tulu3_base
+    conversion:
+      use_post_finetuning_artifacts: true
+- name: exp2_llama3_8b_tulu3
+  ann_modes: [phase_aware]
+  config:
+    <<: *exp2_llama3_8b_tulu3_base
+    conversion:
+      use_post_finetuning_artifacts: false
+- name: exp2_llama3_8b_tulu3
+  ann_modes: [gif_aware]
+  config:
+    <<: *exp2_llama3_8b_tulu3_base
+    conversion:
+      use_post_finetuning_artifacts: false
