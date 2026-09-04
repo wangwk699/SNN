@@ -20,4 +20,5 @@ artifacts_old/
 
 configs/generated/
 
-代码修复总结/
+代码修复总结/snn_evaluate/
+ann_training/
