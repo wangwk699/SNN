@@ -97,8 +97,11 @@ def _calibration_selection(
         positions = rng.sample(range(len(train_indices)), k=num_samples)
     return positions, [train_indices[position] for position in positions]
 
-def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, dict[str, Any]]:
-    raw = _load_raw(cfg)
+
+def _manifest_split_selection(
+    cfg: dict[str, Any], raw: Any
+) -> tuple[Any, str, list[int], str, str, list[int]]:
+    """Return the deterministic split selections used by data manifests."""
     data_cfg = cfg["data"]
     seed = int(cfg["experiment"]["seed"])
     rng = random.Random(seed)
@@ -126,17 +129,80 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
                 )
             train_indices = permutation[:train_size]
             validation_indices = permutation[train_size : train_size + validation_size]
-        validation_split = train_split
-        train_sampling = "seeded_without_replacement"
-    elif task == "tldr":
+        return (
+            raw_train,
+            train_split,
+            train_indices,
+            "seeded_without_replacement",
+            train_split,
+            validation_indices,
+        )
+
+    validation_split = data_cfg.get("validation_split", "validation")
+    if task == "tldr":
         train_indices, train_sampling = _tldr_train_selection(raw_train, cfg)
-        validation_split = data_cfg.get("validation_split", "validation")
-        validation_indices = list(range(len(raw[validation_split])))
     else:
         train_indices = list(range(len(raw_train)))
         train_sampling = "full_split"
-        validation_split = data_cfg.get("validation_split", "validation")
-        validation_indices = list(range(len(raw[validation_split])))
+    return (
+        raw_train,
+        train_split,
+        train_indices,
+        train_sampling,
+        validation_split,
+        list(range(len(raw[validation_split]))),
+    )
+
+
+def prepare_calibration_manifest(
+    cfg: dict[str, Any], layout: ArtifactLayout
+) -> dict[str, Any]:
+    """Write only the current config's Stage-A calibration manifest."""
+    raw = _load_raw(cfg)
+    raw_train, train_split, train_indices, _, _, _ = _manifest_split_selection(cfg, raw)
+    data_cfg = cfg["data"]
+    calibration_num_samples = int(cfg["calibration"]["num_samples"])
+    with_replacement = bool(cfg["calibration"].get("with_replacement", False))
+    calibration_positions, calibration_indices = _calibration_selection(
+        train_indices,
+        seed=int(cfg["calibration"]["seed"]),
+        num_samples=calibration_num_samples,
+        with_replacement=with_replacement,
+    )
+    manifest = {
+        "dataset_name": data_cfg["dataset_name"],
+        "dataset_config_name": data_cfg.get("dataset_config_name"),
+        "dataset_revision": data_cfg.get("dataset_revision"),
+        "seed": int(cfg["experiment"]["seed"]),
+        "manifest_role": "stage_a_calibration_selection",
+        "split": train_split,
+        "sampling": "seeded_with_replacement" if with_replacement else "seeded_without_replacement",
+        "calibration_seed": int(cfg["calibration"]["seed"]),
+        "num_samples": calibration_num_samples,
+        "positions_in_selected_train": calibration_positions,
+        "indices": calibration_indices,
+        "record_ids": _record_ids(raw_train, calibration_indices),
+        "duplicates_preserved": with_replacement,
+        "retained_in_training": True,
+    }
+    manifest_path = layout.calibration_data_manifest_path
+    write_json(manifest_path, manifest)
+    return manifest
+
+
+def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, dict[str, Any]]:
+    raw = _load_raw(cfg)
+    data_cfg = cfg["data"]
+    seed = int(cfg["experiment"]["seed"])
+    task = cfg["experiment"]["task"]
+    (
+        raw_train,
+        train_split,
+        train_indices,
+        train_sampling,
+        validation_split,
+        validation_indices,
+    ) = _manifest_split_selection(cfg, raw)
 
     calibration_num_samples = int(cfg["calibration"]["num_samples"])
     with_replacement = bool(cfg["calibration"].get("with_replacement", False))
