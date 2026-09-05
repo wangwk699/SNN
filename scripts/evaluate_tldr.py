@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import gc
 import json
 import os
 import random
@@ -324,6 +325,8 @@ def main():
 
         local_rows = []
         execution_counter: dict[str, int] = {}
+        # Keep these defined when a distributed rank receives no samples.
+        tensor = mask = output = padded = None
 
         batch_size = int(cfg["evaluation"]["batch_size"])
         if batch_size <= 0:
@@ -401,6 +404,17 @@ def main():
             progress.update(len(batch_indices))
 
         progress.close()
+
+        # `local_rows` only contains Python strings and integers, so the most
+        # recent generation tensors are no longer needed before the NCCL object
+        # collectives below. Release them first: `all_gather_object` allocates
+        # CUDA buffers even though the objects themselves live on the CPU.
+        tensor = None
+        mask = None
+        output = None
+        padded = None
+        gc.collect()
+        torch.cuda.empty_cache()
 
         gathered = gather_object(local_rows)
         gathered_counters = gather_object([execution_counter])
