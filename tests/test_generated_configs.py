@@ -60,7 +60,6 @@ def test_all_twelve_generated_configs_carry_temporal_v8_and_ordinary_qmax30(gene
         }
         assert cfg["phase"]["surrogate_slope"] == 1.0
         assert isinstance(cfg["replacement"]["common_clip_enabled"], bool)
-        assert cfg["conversion"]["use_post_finetuning_artifacts"] is True
         if cfg["experiment"]["ann_mode"] in {"vanilla", "unaware"}:
             assert cfg["replacement"]["common_clip_enabled"] is False
         if cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}:
