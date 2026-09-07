@@ -78,3 +78,30 @@ def selection_by_leaf(selection: dict[str, Any]) -> dict[str, set[int]]:
     for item in selection["selected_leaf_docs"]:
         result[item["leaf_task"]].add(int(item["local_index"]))
     return dict(result)
+
+
+def prune_empty_selected_leaves(task_tree: dict[str, Any], selected_by_leaf: dict[str, set[int]]) -> dict[str, Any]:
+    """Return a task-tree excluding leaves with no selected evaluation documents."""
+    result: dict[str, Any] = {}
+    for name, value in task_tree.items():
+        if isinstance(value, dict):
+            nested = prune_empty_selected_leaves(value, selected_by_leaf)
+            if nested:
+                result[name] = nested
+        elif selected_by_leaf.get(name):
+            result[name] = value
+    return result
+
+
+def correct_effective_sample_counts(task_result: dict[str, Any], selection: dict[str, Any]) -> None:
+    """Keep lm-eval's original population count but correct its wrapper-visible effective count."""
+    counts = task_result.get("n-samples")
+    if not isinstance(counts, dict):
+        return
+    selected = selection_by_leaf(selection)
+    for leaf_name, count in counts.items():
+        effective = len(selected.get(leaf_name, set()))
+        if isinstance(count, dict):
+            count["effective"] = effective
+        else:
+            counts[leaf_name] = {"original": count, "effective": effective}

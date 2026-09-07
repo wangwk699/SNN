@@ -110,6 +110,16 @@ def _calibration_selection(
     return positions, [train_indices[position] for position in positions]
 
 
+def _tulu3_shared_split_selection(raw_train: Any, cfg: dict[str, Any]) -> tuple[list[int], list[int]]:
+    """Return fixed validation and the validation-excluded shared training pool."""
+    validation_size = int(cfg["data"].get("validation_size", 1_000))
+    if validation_size <= 0 or len(raw_train) <= validation_size:
+        raise ValueError("Tulu 3 validation_size must be positive and smaller than the source split")
+    permutation = list(range(len(raw_train)))
+    random.Random(int(cfg["experiment"]["seed"])).shuffle(permutation)
+    return permutation[:validation_size], permutation[validation_size:]
+
+
 def _manifest_split_selection(
     cfg: dict[str, Any], raw: Any
 ) -> tuple[Any, str, list[int], str, str, list[int]]:
@@ -122,15 +132,8 @@ def _manifest_split_selection(
     task = cfg["experiment"]["task"]
 
     if task == "tulu3":
-        validation_size = int(data_cfg.get("validation_size", 1_000))
-        if validation_size <= 0 or len(raw_train) <= validation_size:
-            raise ValueError(
-                "Tulu 3 validation_size must be positive and smaller than the source split"
-            )
-        permutation = list(range(len(raw_train)))
-        rng.shuffle(permutation)
-        validation_indices = permutation[:validation_size]
-        train_indices, train_sampling = _tulu3_train_selection(permutation[validation_size:], cfg)
+        validation_indices, shared_training_pool_indices = _tulu3_shared_split_selection(raw_train, cfg)
+        train_indices, train_sampling = _tulu3_train_selection(shared_training_pool_indices, cfg)
         return (
             raw_train,
             train_split,
@@ -162,11 +165,14 @@ def prepare_calibration_manifest(
     """Write only the current config's Stage-A calibration manifest."""
     raw = _load_raw(cfg)
     raw_train, train_split, train_indices, _, _, _ = _manifest_split_selection(cfg, raw)
+    calibration_pool_indices = train_indices
+    if cfg["experiment"]["task"] == "tulu3":
+        _, calibration_pool_indices = _tulu3_shared_split_selection(raw_train, cfg)
     data_cfg = cfg["data"]
     calibration_num_samples = int(cfg["calibration"]["num_samples"])
     with_replacement = bool(cfg["calibration"].get("with_replacement", False))
     calibration_positions, calibration_indices = _calibration_selection(
-        train_indices,
+        calibration_pool_indices,
         seed=int(cfg["calibration"]["seed"]),
         num_samples=calibration_num_samples,
         with_replacement=with_replacement,
@@ -185,7 +191,7 @@ def prepare_calibration_manifest(
         "indices": calibration_indices,
         "record_ids": _record_ids(raw_train, calibration_indices),
         "duplicates_preserved": with_replacement,
-        "retained_in_training": True,
+        **({"selection_pool": "validation_excluded_shared_training_pool", "retained_in_shared_training_pool": True, "retained_in_ann_training_subset": None} if cfg["experiment"]["task"] == "tulu3" else {"retained_in_training": True}),
     }
     manifest_path = layout.calibration_data_manifest_path
     write_json(manifest_path, manifest)
@@ -208,8 +214,11 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
 
     calibration_num_samples = int(cfg["calibration"]["num_samples"])
     with_replacement = bool(cfg["calibration"].get("with_replacement", False))
+    calibration_pool_indices = train_indices
+    if task == "tulu3":
+        _, calibration_pool_indices = _tulu3_shared_split_selection(raw_train, cfg)
     calibration_positions, calibration_indices = _calibration_selection(
-        train_indices,
+        calibration_pool_indices,
         seed=int(cfg["calibration"]["seed"]),
         num_samples=calibration_num_samples,
         with_replacement=with_replacement,
@@ -262,7 +271,7 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
             "indices": calibration_indices,
             "record_ids": _record_ids(raw_train, calibration_indices),
             "duplicates_preserved": with_replacement,
-            "retained_in_training": True,
+            **({"selection_pool": "validation_excluded_shared_training_pool", "retained_in_shared_training_pool": True, "retained_in_ann_training_subset": None} if task == "tulu3" else {"retained_in_training": True}),
         },
         "canonical_preprocessing_calibration": {
             **common,

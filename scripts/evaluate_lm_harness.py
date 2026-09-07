@@ -40,7 +40,8 @@ from snn2.modeling import (
 )
 from snn2.training import validate_recorded_training_artifact_provenance
 from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, build_test_selection,
-    enabled_lm_eval_task_specs, selection_by_leaf)
+    correct_effective_sample_counts, enabled_lm_eval_task_specs, prune_empty_selected_leaves,
+    selection_by_leaf)
 
 
 def _leaf_tasks(task_tree):
@@ -62,6 +63,8 @@ def _selected_lm_eval_tasks(name, spec):
         task=name, test_samples=spec["test_samples"], test_seed=int(spec["test_seed"]),
     )
     selected = selection_by_leaf(selection)
+    task_tree = prune_empty_selected_leaves(task_tree, selected)
+    leaves = list(_leaf_tasks(task_tree))
     for leaf_name, task in leaves:
         indices = sorted(selected[leaf_name])
         def doc_iterator(self, *, rank=0, limit=None, world_size=1, _indices=indices):
@@ -324,7 +327,7 @@ def main():
             # cot is checked by enabled_lm_eval_task_specs; it is intentionally not
             # passed to simple_evaluate because lm-eval 0.4.8 has no such argument.
             task_manager, test_selection = _selected_lm_eval_tasks(spec["name"], spec)
-            task_results[spec["name"]] = (simple_evaluate(
+            task_result = simple_evaluate(
                 model=harness_model, tasks=[spec["name"]], task_manager=task_manager,
                 num_fewshot=int(spec["num_fewshot"]), batch_size=batch_size, limit=None,
                 random_seed=int(cfg["experiment"]["seed"]),
@@ -332,7 +335,9 @@ def main():
                 torch_random_seed=int(cfg["experiment"]["seed"]),
                 fewshot_random_seed=int(cfg["experiment"]["seed"]),
                 apply_chat_template=bool(cfg["evaluation"].get("apply_chat_template", True)),
-            ), test_selection)
+            )
+            correct_effective_sample_counts(task_result, test_selection)
+            task_results[spec["name"]] = (task_result, test_selection)
 
         layers = int(
             getattr(

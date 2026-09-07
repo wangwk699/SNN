@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 from _common import apply_deployment_overrides, parser, setup
 
-from snn2.artifacts import prefix_enabled_dirname, read_json, sha256_file, write_json
+from snn2.artifacts import lm_eval_spec_dirname, prefix_enabled_dirname, safe_name, read_json, sha256_file, write_json
 from snn2.data import validate_prefix_discovery_state
 from snn2.config import (
     conversion_prefix_enabled,
@@ -39,6 +39,7 @@ from snn2.evaluation import append_evaluation_num_samples_if_needed, final_ann_r
 from snn2.logging_utils import StageRun
 from snn2.state_validation import validate_clip_profile, validate_site_state_bundle
 from snn2.training import validate_recorded_training_artifact_provenance
+from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, enabled_lm_eval_task_specs)
 from snn2.temporal_ops import (
     CALIBRATION_GROUPING_POLICY,
     GIF_LINEAR_SALIENCY_DTYPE,
@@ -55,6 +56,36 @@ from snn2.temporal_ops import (
 def _evaluation_metadata(path):
     payload = read_json(path)
     return payload.get("snn2_metadata", payload)
+
+def _validate_tulu_lm_eval_result(results_path, selection_path, spec, *, experiment_seed):
+    metadata = _evaluation_metadata(results_path)
+    expected_metadata = {
+        "lm_eval_task_spec": spec, "lm_eval_revision": LM_EVAL_PINNED_REVISION,
+        "cot_semantic_source": "project_audited_pinned_lm_eval_0_4_8",
+        "fewshot_random_seed": int(experiment_seed), "test_seed": spec["test_seed"],
+    }
+    mismatched = {key: (value, metadata.get(key)) for key, value in expected_metadata.items() if metadata.get(key) != value}
+    if mismatched:
+        raise ValueError(f"Tulu lm-eval result provenance mismatch at {results_path}: {mismatched}")
+    selection = read_json(selection_path)
+    selected = selection.get("selected_leaf_docs")
+    if not isinstance(selected, list) or selection.get("selected_count") != len(selected):
+        raise ValueError(f"Invalid Tulu lm-eval selected_count at {selection_path}")
+    pairs = [(item.get("leaf_task"), item.get("local_index")) for item in selected]
+    if len(pairs) != len(set(pairs)):
+        raise ValueError(f"Duplicate Tulu lm-eval selected documents at {selection_path}")
+    expected_selection = {"task": spec["name"], "test_samples": spec["test_samples"], "test_seed": spec["test_seed"]}
+    mismatch = {key: (value, selection.get(key)) for key, value in expected_selection.items() if selection.get(key) != value}
+    total, count = selection.get("total_population_size"), selection.get("selected_count")
+    if mismatch or not isinstance(total, int) or not isinstance(count, int) or count > total:
+        raise ValueError(f"Invalid Tulu lm-eval selection provenance at {selection_path}: {mismatch}")
+    expected_sampling = "full_evaluation_population" if spec["test_samples"] is None else "seeded_random_without_replacement"
+    expected_count = total if spec["test_samples"] is None else spec["test_samples"]
+    if selection.get("sampling") != expected_sampling or count != expected_count:
+        raise ValueError(f"Tulu lm-eval sampling mismatch at {selection_path}")
+    if metadata.get("test_sampling") != expected_sampling or metadata.get("actual_test_samples") != count:
+        raise ValueError(f"Tulu lm-eval result/selection mismatch at {results_path}")
+
 
 def _validate_snn_forward_metadata(policy_source, *, neuron, metrics_path):
     expected_forward = {
@@ -765,6 +796,17 @@ def main():
                 "Missing required artifacts:\n"
                 + "\n".join(missing)
             )
+        if task == "tulu3":
+            enabled = final_ann_evaluation_prefix_enabled(cfg)
+            eval_root = layout.ann_dir / "evaluation" / prefix_enabled_dirname(enabled)
+            eval_root = append_evaluation_num_samples_if_needed(eval_root, cfg, neuron="ann")
+            for spec in enabled_lm_eval_task_specs(cfg):
+                result_root = eval_root / safe_name(spec["name"]) / lm_eval_spec_dirname(spec)
+                _validate_tulu_lm_eval_result(
+                    result_root / "results.json", result_root / "test_selection.json", spec,
+                    experiment_seed=cfg["experiment"]["seed"],
+                )
+
         if requires_pre_finetuning_prefix(cfg) and training_prefix_enabled(cfg):
             _validate_prefix_artifact(
                 cfg, layout, layout.ann_training_prefix_dir,

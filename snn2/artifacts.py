@@ -137,6 +137,11 @@ class ArtifactLayout:
             / learning_rate
             / run_variant
         )
+        if exp["task"] == "tulu3" and exp["ann_mode"] in {"vanilla", "unaware"}:
+            run_root = run_root / (
+                f"lr_scheduler_type_{cfg['training']['lr_scheduler_type']}_"
+                f"warmup_ratio_{float(cfg['training']['warmup_ratio'])}"
+            )
         if exp["ann_mode"] == "phase_aware":
             run_root = run_root / phase_training_dirname(
                 phase_T=cfg["phase"]["T"], mtn_T=cfg["mtn"]["T"],

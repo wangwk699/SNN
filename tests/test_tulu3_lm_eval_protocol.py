@@ -1,8 +1,9 @@
 import random
 import pytest
 
-from snn2.data import _manifest_split_selection
-from snn2.lm_eval_protocol import build_test_selection, validate_lm_eval_task_specs
+from snn2.data import _manifest_split_selection, prepare_manifests
+from snn2.lm_eval_protocol import (build_test_selection, prune_empty_selected_leaves,
+    selection_by_leaf, validate_lm_eval_task_specs)
 
 
 def _cfg(samples=10, seed=42):
@@ -30,3 +31,26 @@ def test_lm_eval_cot_validation_rejects_conflict():
     cfg = {"evaluation": {"lm_eval_revision": "6d2abda4fd171e68a8789330c4149e37c1ca0bda", "limit": None, "lm_eval_task_specs": [{"name": "bbh", "enabled": True, "num_fewshot": 3, "metric": "exact_match", "cot": False, "test_samples": None, "test_seed": 42}]}}
     with pytest.raises(ValueError, match="conflicts"):
         validate_lm_eval_task_specs(cfg)
+
+
+def test_tulu_shared_calibration_is_independent_of_ann_subset(monkeypatch, tmp_path):
+    class Dataset(list):
+        column_names = ()
+        def select(self, indices):
+            return Dataset(self[index] for index in indices)
+    raw = {"train": Dataset({"id": i} for i in range(200))}
+    monkeypatch.setattr("snn2.data._load_raw", lambda cfg: raw)
+    base = _cfg(samples=10, seed=42)
+    base.update({"data": {"dataset_name": "fake", "train_split": "train", "validation_size": 5}, "calibration": {"seed": 42, "num_samples": 4, "with_replacement": False}})
+    first = prepare_manifests(base, type("L", (), {"data_dir": tmp_path / "one"})())
+    changed = {**base, "training": {"train_samples": 20, "train_seed": 99}}
+    second = prepare_manifests(changed, type("L", (), {"data_dir": tmp_path / "two"})())
+    assert first["validation"]["indices"] == second["validation"]["indices"]
+    assert first["calibration"]["indices"] == second["calibration"]["indices"]
+    assert first["train"]["indices"] != second["train"]["indices"]
+    assert first["calibration"]["retained_in_ann_training_subset"] is None
+
+def test_prune_empty_group_leaves():
+    tree = {"group": {"a": object(), "b": object(), "c": object()}}
+    pruned = prune_empty_selected_leaves(tree, {"b": {2}})
+    assert list(pruned["group"]) == ["b"]
