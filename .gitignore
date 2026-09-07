@@ -27,3 +27,23 @@ snn_evaluate/
 ann_training/
 
 /fast-hadamard-transform/
+
+# Keep the reproducible Phase sweep entry and its usage notes.
+!/ann_training/
+/ann_training/*
+!/ann_training/sweep_qwen3_8b_phase_aware.sh
+!/ann_training/phase_aware_sweep_README.md
+
+!/ann_training/run_qwen3_8b_phase_aware_formal.sh
+
+!/ann_training/diagnose_qwen3_8b_phase_aware.sh
+!/ann_training/phase_diagnostics_README.md
+
+!/ann_training/sweep_qwen3_8b_phase_aware_round2.sh
+!/ann_training/phase_aware_round2_README.md
+!/ann_training/run_qwen3_8b_phase_aware_round2_formal.sh
+!/ann_training/phase_aware_round2_formal_README.md
+!/ann_training/run_qwen3_8b_phase_aware_lr3e6_formal.sh
+!/ann_training/phase_aware_lr3e6_formal_README.md
+!/ann_training/diagnose_qwen3_8b_phase_learning_rate.sh
+!/ann_training/phase_learning_rate_diagnostics_README.md

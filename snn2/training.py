@@ -322,6 +322,9 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         data_collator=CausalLMCollator(tokenizer),
         processing_class=tokenizer,
     )
+    if training_cfg.get("audit_gradients", False):
+        from .training_audit import TrainingAudit
+        trainer.add_callback(TrainingAudit(trainer, layout.ann_dir / "training_audit.jsonl"))
     result = trainer.train(resume_from_checkpoint=training_cfg.get("resume_from_checkpoint"))
     verify_training_artifact_provenance_unchanged(captured_provenance, cfg, layout)
     final_dir = layout.ann_checkpoint_dir

@@ -33,3 +33,5 @@
 12. Base baseline 与 rotated-pre-finetuning ANN diagnostic 始终保持 identity activation semantics。
 
 13. `代码结构总结.md` 只允许保留 `2. 目录结构`；每个文件后只用一句话描述功能，任何职责变化都必须同步更新。
+
+16. 用户后续实验约束：新建或修改的 Phase-aware ANN 实验必须固定 `replacement.common_clip_enabled=true`，不得再安排 Clip=false 候选；历史 Clip=false 结果保留，旧实验记录及 vanilla/unaware 参考语义不因此改写。
