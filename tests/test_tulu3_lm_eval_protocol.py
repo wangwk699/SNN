@@ -6,8 +6,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import pytest
 
 from snn2.data import _manifest_split_selection, prepare_manifests
-from snn2.lm_eval_protocol import (build_test_selection, correct_effective_sample_counts, prune_empty_selected_leaves,
-    selection_by_leaf, validate_lm_eval_task_specs)
+from snn2.lm_eval_protocol import (LM_EVAL_0_4_8_TASK_METRIC, build_test_selection, correct_effective_sample_counts, prune_empty_selected_leaves,
+    result_contains_metric, selection_by_leaf, validate_lm_eval_task_specs)
 
 
 def _cfg(samples=10, seed=42):
@@ -71,3 +71,32 @@ def test_execution_counter_delta_is_task_local():
     from evaluate_lm_harness import execution_counter_delta
     assert execution_counter_delta({}, {"model_forward_calls": 10, "temporal_sample_step_forwards": 20}) == {"model_forward_calls": 10, "temporal_sample_step_forwards": 20}
     assert execution_counter_delta({"model_forward_calls": 10, "temporal_sample_step_forwards": 20}, {"model_forward_calls": 17, "temporal_sample_step_forwards": 35}) == {"model_forward_calls": 7, "temporal_sample_step_forwards": 15}
+
+
+@pytest.mark.parametrize("task, metric", [("truthfulqa_mc1", "acc"), ("mmlu_pro", "exact_match"), ("bbh", "exact_match"), ("agieval", "acc"), ("gsm8k_cot", "exact_match"), ("minerva_math", "exact_match")])
+def test_pinned_metric_mapping(task, metric):
+    assert LM_EVAL_0_4_8_TASK_METRIC[task] == metric
+
+def test_truthfulqa_metric_conflict_is_rejected():
+    cfg = {"evaluation": {"lm_eval_revision": "6d2abda4fd171e68a8789330c4149e37c1ca0bda", "limit": None, "lm_eval_task_specs": [{"name": "truthfulqa_mc1", "enabled": True, "num_fewshot": 0, "metric": "acc_mc1", "cot": False, "test_samples": None, "test_seed": 42}]}}
+    with pytest.raises(ValueError, match="metric"):
+        validate_lm_eval_task_specs(cfg)
+
+def test_result_contains_metric_accepts_filter_suffix_but_not_stderr():
+    assert result_contains_metric({"results": {"x": {"exact_match,custom-extract": 1.0}}}, "exact_match")
+    assert result_contains_metric({"results": {"x": {"acc,none": 1.0}}}, "acc")
+    assert not result_contains_metric({"results": {"x": {"acc_stderr,none": 0.1}}}, "acc")
+
+def test_selection_records_population_and_replays_exactly():
+    selection = build_test_selection({"a": 10, "b": 20, "c": 30}, task="group", test_samples=15, test_seed=42)
+    assert selection["leaf_population"] == {"a": 10, "b": 20, "c": 30}
+    replay = build_test_selection(selection["leaf_population"], task="group", test_samples=15, test_seed=42)
+    assert selection["selected_leaf_docs"] == replay["selected_leaf_docs"]
+    tampered = [*selection["selected_leaf_docs"]]
+    tampered[0] = {"leaf_task": "a", "local_index": 9}
+    assert tampered != replay["selected_leaf_docs"]
+
+def test_full_selection_records_every_leaf_document():
+    selection = build_test_selection({"a": 2, "b": 3}, task="group", test_samples=None, test_seed=42)
+    assert selection["selected_count"] == selection["total_population_size"] == 5
+    assert selection["selected_leaf_docs"] == [{"leaf_task": "a", "local_index": 0}, {"leaf_task": "a", "local_index": 1}, {"leaf_task": "b", "local_index": 0}, {"leaf_task": "b", "local_index": 1}, {"leaf_task": "b", "local_index": 2}]

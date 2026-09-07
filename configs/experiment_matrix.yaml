@@ -458,7 +458,7 @@ experiments:
       - name: truthfulqa_mc1
         enabled: true
         num_fewshot: 0
-        metric: acc_mc1
+        metric: acc
         cot: false
         test_samples: null
         test_seed: 42

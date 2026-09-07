@@ -10,6 +10,10 @@ LM_EVAL_0_4_8_TASK_COT = {
     "truthfulqa_mc1": False, "mmlu_pro": True, "bbh": True,
     "agieval": False, "gsm8k_cot": True, "minerva_math": False,
 }
+LM_EVAL_0_4_8_TASK_METRIC = {
+    "truthfulqa_mc1": "acc", "mmlu_pro": "exact_match", "bbh": "exact_match",
+    "agieval": "acc", "gsm8k_cot": "exact_match", "minerva_math": "exact_match",
+}
 
 def _positive_int_or_none(value: Any, field: str) -> None:
     if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
@@ -45,6 +49,9 @@ def validate_lm_eval_task_specs(cfg: dict[str, Any]) -> list[dict[str, Any]]:
             raise ValueError(f"lm-eval spec {name}.num_fewshot must be a non-negative integer")
         if not isinstance(spec.get("metric"), str) or not spec["metric"]:
             raise ValueError(f"lm-eval spec {name}.metric must be a non-empty string")
+        expected_metric = LM_EVAL_0_4_8_TASK_METRIC[name]
+        if spec["metric"] != expected_metric:
+            raise ValueError(f"Configured metric={spec['metric']!r} conflicts with pinned lm-eval task {name!r}, whose audited metric is {expected_metric!r} at revision {LM_EVAL_PINNED_REVISION}")
         _positive_int_or_none(spec.get("test_samples"), f"lm-eval spec {name}.test_samples")
         if not isinstance(spec.get("test_seed"), int) or isinstance(spec.get("test_seed"), bool):
             raise ValueError(f"lm-eval spec {name}.test_seed must be an integer")
@@ -61,7 +68,11 @@ def enabled_lm_eval_task_specs(cfg: dict[str, Any]) -> list[dict[str, Any]]:
 
 def build_test_selection(leaf_population: dict[str, int], *, task: str, test_samples: int | None, test_seed: int) -> dict[str, Any]:
     """Globally sample logical docs, rather than N documents per group leaf."""
-    population = [(leaf, index) for leaf in sorted(leaf_population) for index in range(leaf_population[leaf])]
+    normalized_population = {str(name): int(size) for name, size in sorted(leaf_population.items())}
+    if (any(not isinstance(name, str) or not name or not isinstance(size, int)
+            or isinstance(size, bool) or size < 0 for name, size in leaf_population.items())):
+        raise ValueError("leaf_population must contain non-empty task names and non-negative integer sizes")
+    population = [(leaf, index) for leaf in normalized_population for index in range(normalized_population[leaf])]
     total = len(population)
     if test_samples is None:
         selected, sampling = population, "full_evaluation_population"
@@ -71,7 +82,7 @@ def build_test_selection(leaf_population: dict[str, int], *, task: str, test_sam
         selected = random.Random(test_seed).sample(population, k=test_samples)
         selected.sort()
         sampling = "seeded_random_without_replacement"
-    return {"task": task, "test_samples": test_samples, "test_seed": test_seed, "sampling": sampling, "total_population_size": total, "selected_count": len(selected), "selected_leaf_docs": [{"leaf_task": leaf, "local_index": index} for leaf, index in selected]}
+    return {"task": task, "test_samples": test_samples, "test_seed": test_seed, "sampling": sampling, "total_population_size": total, "leaf_population": normalized_population, "selected_count": len(selected), "selected_leaf_docs": [{"leaf_task": leaf, "local_index": index} for leaf, index in selected]}
 
 def selection_by_leaf(selection: dict[str, Any]) -> dict[str, set[int]]:
     result: dict[str, set[int]] = defaultdict(set)
@@ -107,3 +118,17 @@ def correct_effective_sample_counts(task_result: dict[str, Any], selection: dict
             count["effective"] = effective
         else:
             counts[leaf_name] = {"original": count, "effective": effective}
+
+
+def result_contains_metric(task_result: dict[str, Any], metric_name: str) -> bool:
+    """Find a non-stderr lm-eval metric key, regardless of its task filter suffix."""
+    def visit(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        for key, nested in value.items():
+            if isinstance(key, str) and (key == metric_name or key.startswith(metric_name + ",")):
+                return True
+            if visit(nested):
+                return True
+        return False
+    return visit(task_result.get("results", task_result))

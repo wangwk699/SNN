@@ -41,7 +41,7 @@ from snn2.modeling import (
 from snn2.training import validate_recorded_training_artifact_provenance
 from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, build_test_selection,
     correct_effective_sample_counts, enabled_lm_eval_task_specs, prune_empty_selected_leaves,
-    selection_by_leaf)
+    result_contains_metric, selection_by_leaf)
 
 
 def execution_counter_delta(before, after):
@@ -344,6 +344,8 @@ def main():
                 apply_chat_template=bool(cfg["evaluation"].get("apply_chat_template", True)),
             )
             correct_effective_sample_counts(task_result, test_selection)
+            if not result_contains_metric(task_result, spec["metric"]):
+                raise ValueError(f"lm-eval result for {spec['name']!r} does not contain configured metric {spec['metric']!r}")
             after_counter = dict(proxy.execution_counter)
             task_counter = (execution_counter_delta(before_counter, after_counter)
                             if cfg["experiment"]["task"] == "tulu3" else after_counter)

@@ -40,7 +40,8 @@ from snn2.evaluation import append_evaluation_num_samples_if_needed, final_ann_r
 from snn2.logging_utils import StageRun
 from snn2.state_validation import validate_clip_profile, validate_site_state_bundle
 from snn2.training import validate_recorded_training_artifact_provenance
-from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, enabled_lm_eval_task_specs)
+from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, build_test_selection,
+    enabled_lm_eval_task_specs, result_contains_metric)
 from snn2.temporal_ops import (
     CALIBRATION_GROUPING_POLICY,
     GIF_LINEAR_SALIENCY_DTYPE,
@@ -86,8 +87,19 @@ def _validate_tulu_lm_eval_result(results_path, selection_path, spec, *, experim
     expected_selection = {"task": spec["name"], "test_samples": spec["test_samples"], "test_seed": spec["test_seed"]}
     mismatch = {key: (value, selection.get(key)) for key, value in expected_selection.items() if selection.get(key) != value}
     total, count = selection.get("total_population_size"), selection.get("selected_count")
-    if mismatch or not isinstance(total, int) or not isinstance(count, int) or count > total:
+    leaf_population = selection.get("leaf_population")
+    valid_population = isinstance(leaf_population, dict) and all(
+        isinstance(name, str) and bool(name) and isinstance(size, int)
+        and not isinstance(size, bool) and size >= 0 for name, size in leaf_population.items()
+    )
+    if (mismatch or not isinstance(total, int) or not isinstance(count, int)
+            or count > total or not valid_population or sum(leaf_population.values()) != total):
         raise ValueError(f"Invalid Tulu lm-eval selection provenance at {selection_path}: {mismatch}")
+    replay = build_test_selection(leaf_population, task=spec["name"],
+                                  test_samples=spec["test_samples"], test_seed=int(spec["test_seed"]))
+    replay_keys = ("sampling", "total_population_size", "selected_count", "selected_leaf_docs")
+    if any(selection.get(key) != replay[key] for key in replay_keys):
+        raise ValueError(f"Tulu lm-eval exact selection replay mismatch at {selection_path}")
     expected_sampling = "full_evaluation_population" if spec["test_samples"] is None else "seeded_random_without_replacement"
     expected_count = total if spec["test_samples"] is None else spec["test_samples"]
     if selection.get("sampling") != expected_sampling or count != expected_count:
@@ -95,6 +107,8 @@ def _validate_tulu_lm_eval_result(results_path, selection_path, spec, *, experim
     if metadata.get("test_sampling") != expected_sampling or metadata.get("actual_test_samples") != count:
         raise ValueError(f"Tulu lm-eval result/selection mismatch at {results_path}")
     task_result = read_json(results_path).get("tasks", {}).get(spec["name"], {})
+    if not result_contains_metric(task_result, spec["metric"]):
+        raise ValueError(f"Tulu lm-eval result lacks configured metric {spec['metric']!r}: {results_path}")
     sample_counts = task_result.get("n-samples", {})
     selected_by_leaf = Counter(item["leaf_task"] for item in selected)
     for leaf_name, selected_count in selected_by_leaf.items():
@@ -947,6 +961,18 @@ def main():
                         result_root / "results.json", result_root / "test_selection.json", spec,
                         experiment_seed=cfg["experiment"]["seed"],
                     )
+
+        if task == "tulu3":
+            for spec in enabled_lm_eval_task_specs(cfg):
+                selections = [read_json(_tulu_lm_eval_task_root(cfg, root, spec, neuron=neuron) / "test_selection.json")
+                              for neuron, root in [("ann", layout.ann_dir),
+                                                   ("phase", layout.snn_dir("phase")),
+                                                   ("gif", layout.snn_dir("gif")),
+                                                   ("mtn", layout.snn_dir("mtn"))]]
+                canonical = selections[0]
+                for selection in selections[1:]:
+                    if selection != canonical:
+                        raise ValueError(f"Tulu ANN/SNN test selection mismatch for {spec['name']}")
 
         _verify_final_ann_forward_metadata(
             cfg, layout, evaluation_paths(layout.ann_dir)[0]
