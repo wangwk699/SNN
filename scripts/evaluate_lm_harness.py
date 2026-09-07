@@ -44,6 +44,12 @@ from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, build_test_selection
     selection_by_leaf)
 
 
+def execution_counter_delta(before, after):
+    """Return a task-local counter delta without changing the proxy's cumulative state."""
+    return {key: int(after.get(key, 0)) - int(before.get(key, 0))
+            for key in set(before) | set(after)}
+
+
 def _leaf_tasks(task_tree):
     for name, value in task_tree.items():
         if isinstance(value, dict):
@@ -327,6 +333,7 @@ def main():
             # cot is checked by enabled_lm_eval_task_specs; it is intentionally not
             # passed to simple_evaluate because lm-eval 0.4.8 has no such argument.
             task_manager, test_selection = _selected_lm_eval_tasks(spec["name"], spec)
+            before_counter = dict(proxy.execution_counter)
             task_result = simple_evaluate(
                 model=harness_model, tasks=[spec["name"]], task_manager=task_manager,
                 num_fewshot=int(spec["num_fewshot"]), batch_size=batch_size, limit=None,
@@ -337,30 +344,15 @@ def main():
                 apply_chat_template=bool(cfg["evaluation"].get("apply_chat_template", True)),
             )
             correct_effective_sample_counts(task_result, test_selection)
-            task_results[spec["name"]] = (task_result, test_selection)
+            after_counter = dict(proxy.execution_counter)
+            task_counter = (execution_counter_delta(before_counter, after_counter)
+                            if cfg["experiment"]["task"] == "tulu3" else after_counter)
+            task_results[spec["name"]] = (task_result, test_selection, task_counter)
 
         layers = int(
             getattr(
                 model.config,
                 "num_hidden_layers",
-            )
-        )
-
-        execution_counter = dict(
-            proxy.execution_counter
-        )
-
-        temporal_sample_step_forwards = (
-            execution_counter.get(
-                "temporal_sample_step_forwards",
-                0,
-            )
-        )
-
-        batched_temporal_sample_slots = (
-            execution_counter.get(
-                "batched_temporal_sample_slots",
-                0,
             )
         )
 
@@ -457,21 +449,6 @@ def main():
                 rotated_pre_finetuning=args.rotated_pre_finetuning,
             ),
 
-            # 保存全部原始 execution counter
-            "execution_counter": (
-                execution_counter
-            ),
-
-            # Batch-size-independent logical
-            # activation-site operator equivalents
-            "activation_site_temporal_operator_calls": (
-                temporal_sample_step_forwards * per_forward_operators
-            ),
-
-            # Actual batched sample-slot execution
-            "batched_activation_site_temporal_slots": (
-                batched_temporal_sample_slots * per_forward_operators
-            ),
         }
 
         # --------------------------------------------------
@@ -520,11 +497,16 @@ def main():
         if rank == 0:
             for spec in task_specs:
                 name = spec["name"]
-                task_result, selection = task_results[name]
+                task_result, selection, task_counter = task_results[name]
                 actual = int(selection["selected_count"])
+                task_temporal_forwards = task_counter.get("temporal_sample_step_forwards", 0)
+                task_temporal_slots = task_counter.get("batched_temporal_sample_slots", 0)
                 result = {
                     "tasks": {name: task_result},
                     "snn2_metadata": {**common_snn2_metadata,
+                        "execution_counter": task_counter,
+                        "activation_site_temporal_operator_calls": task_temporal_forwards * per_forward_operators,
+                        "batched_activation_site_temporal_slots": task_temporal_slots * per_forward_operators,
                         "lm_eval_task_spec": spec, "lm_eval_revision": LM_EVAL_PINNED_REVISION,
                         "cot_semantic_source": "project_audited_pinned_lm_eval_0_4_8",
                         "test_sampling": selection["sampling"], "actual_test_samples": actual,

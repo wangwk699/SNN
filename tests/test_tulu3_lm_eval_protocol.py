@@ -1,8 +1,12 @@
 import random
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import pytest
 
 from snn2.data import _manifest_split_selection, prepare_manifests
-from snn2.lm_eval_protocol import (build_test_selection, prune_empty_selected_leaves,
+from snn2.lm_eval_protocol import (build_test_selection, correct_effective_sample_counts, prune_empty_selected_leaves,
     selection_by_leaf, validate_lm_eval_task_specs)
 
 
@@ -54,3 +58,16 @@ def test_prune_empty_group_leaves():
     tree = {"group": {"a": object(), "b": object(), "c": object()}}
     pruned = prune_empty_selected_leaves(tree, {"b": {2}})
     assert list(pruned["group"]) == ["b"]
+
+
+def test_effective_counts_leave_non_leaf_aliases_untouched():
+    result = {"n-samples": {"leaf": {"original": 10, "effective": 10}, "group": {"original": 10, "effective": 10}}}
+    selection = {"selected_leaf_docs": [{"leaf_task": "leaf", "local_index": 2}]}
+    correct_effective_sample_counts(result, selection)
+    assert result["n-samples"]["leaf"]["effective"] == 1
+    assert result["n-samples"]["group"]["effective"] == 10
+
+def test_execution_counter_delta_is_task_local():
+    from evaluate_lm_harness import execution_counter_delta
+    assert execution_counter_delta({}, {"model_forward_calls": 10, "temporal_sample_step_forwards": 20}) == {"model_forward_calls": 10, "temporal_sample_step_forwards": 20}
+    assert execution_counter_delta({"model_forward_calls": 10, "temporal_sample_step_forwards": 20}, {"model_forward_calls": 17, "temporal_sample_step_forwards": 35}) == {"model_forward_calls": 7, "temporal_sample_step_forwards": 15}

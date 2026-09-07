@@ -100,7 +100,9 @@ def correct_effective_sample_counts(task_result: dict[str, Any], selection: dict
         return
     selected = selection_by_leaf(selection)
     for leaf_name, count in counts.items():
-        effective = len(selected.get(leaf_name, set()))
+        if leaf_name not in selected:
+            continue
+        effective = len(selected[leaf_name])
         if isinstance(count, dict):
             count["effective"] = effective
         else:

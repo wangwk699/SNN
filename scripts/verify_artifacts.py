@@ -1,5 +1,6 @@
 from __future__ import annotations
 import math
+from collections import Counter
 from pathlib import Path
 import torch
 from _common import apply_deployment_overrides, parser, setup
@@ -57,6 +58,14 @@ def _evaluation_metadata(path):
     payload = read_json(path)
     return payload.get("snn2_metadata", payload)
 
+def _tulu_lm_eval_task_root(cfg, root, spec, *, neuron):
+    enabled = (final_ann_evaluation_prefix_enabled(cfg) if neuron == "ann"
+               else evaluation_prefix_enabled(cfg))
+    directory = root / "evaluation" / prefix_enabled_dirname(enabled)
+    directory = append_evaluation_num_samples_if_needed(directory, cfg, neuron=neuron)
+    return directory / safe_name(spec["name"]) / lm_eval_spec_dirname(spec)
+
+
 def _validate_tulu_lm_eval_result(results_path, selection_path, spec, *, experiment_seed):
     metadata = _evaluation_metadata(results_path)
     expected_metadata = {
@@ -85,6 +94,15 @@ def _validate_tulu_lm_eval_result(results_path, selection_path, spec, *, experim
         raise ValueError(f"Tulu lm-eval sampling mismatch at {selection_path}")
     if metadata.get("test_sampling") != expected_sampling or metadata.get("actual_test_samples") != count:
         raise ValueError(f"Tulu lm-eval result/selection mismatch at {results_path}")
+    task_result = read_json(results_path).get("tasks", {}).get(spec["name"], {})
+    sample_counts = task_result.get("n-samples", {})
+    selected_by_leaf = Counter(item["leaf_task"] for item in selected)
+    for leaf_name, selected_count in selected_by_leaf.items():
+        entry = sample_counts.get(leaf_name)
+        if not isinstance(entry, dict) or entry.get("effective") != selected_count:
+            raise ValueError(f"Tulu lm-eval effective sample count mismatch for {leaf_name}: {results_path}")
+        if spec["test_samples"] is None and entry.get("original") != entry.get("effective"):
+            raise ValueError(f"Full Tulu lm-eval sample count mismatch for {leaf_name}: {results_path}")
 
 
 def _validate_snn_forward_metadata(policy_source, *, neuron, metrics_path):
@@ -739,11 +757,7 @@ def main():
                 directory = directory / prefix_enabled_dirname(enabled)
                 directory = append_evaluation_num_samples_if_needed(directory, cfg, neuron=neuron)
                 return [directory / name for name in evaluation_files]
-            enabled = final_ann_evaluation_prefix_enabled(cfg) if neuron == "ann" else evaluation_prefix_enabled(cfg)
-            directory = directory / prefix_enabled_dirname(enabled)
-            from snn2.artifacts import lm_eval_spec_dirname, safe_name
-            from snn2.lm_eval_protocol import enabled_lm_eval_task_specs
-            return [directory / safe_name(spec["name"]) / lm_eval_spec_dirname(spec) / filename
+            return [_tulu_lm_eval_task_root(cfg, root, spec, neuron=neuron) / filename
                     for spec in enabled_lm_eval_task_specs(cfg) for filename in evaluation_files]
 
         required.extend(evaluation_paths(layout.ann_dir))
@@ -797,11 +811,8 @@ def main():
                 + "\n".join(missing)
             )
         if task == "tulu3":
-            enabled = final_ann_evaluation_prefix_enabled(cfg)
-            eval_root = layout.ann_dir / "evaluation" / prefix_enabled_dirname(enabled)
-            eval_root = append_evaluation_num_samples_if_needed(eval_root, cfg, neuron="ann")
             for spec in enabled_lm_eval_task_specs(cfg):
-                result_root = eval_root / safe_name(spec["name"]) / lm_eval_spec_dirname(spec)
+                result_root = _tulu_lm_eval_task_root(cfg, layout.ann_dir, spec, neuron="ann")
                 _validate_tulu_lm_eval_result(
                     result_root / "results.json", result_root / "test_selection.json", spec,
                     experiment_seed=cfg["experiment"]["seed"],
@@ -927,6 +938,15 @@ def main():
                 "Missing required artifacts:\n"
                 + "\n".join(missing)
             )
+
+        if task == "tulu3":
+            for neuron in ("phase", "gif", "mtn"):
+                for spec in enabled_lm_eval_task_specs(cfg):
+                    result_root = _tulu_lm_eval_task_root(cfg, layout.snn_dir(neuron), spec, neuron=neuron)
+                    _validate_tulu_lm_eval_result(
+                        result_root / "results.json", result_root / "test_selection.json", spec,
+                        experiment_seed=cfg["experiment"]["seed"],
+                    )
 
         _verify_final_ann_forward_metadata(
             cfg, layout, evaluation_paths(layout.ann_dir)[0]
