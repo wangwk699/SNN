@@ -463,7 +463,7 @@ experiments:
         test_samples: null
         test_seed: 42
       - name: mmlu_pro
-        enabled: true
+        enabled: false
         num_fewshot: 5
         metric: exact_match
         cot: true
