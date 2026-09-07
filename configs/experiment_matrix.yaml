@@ -339,7 +339,6 @@ experiments:
       dataset_name: allenai/tulu-3-sft-mixture
       dataset_revision: 3c09be1fe3882f2b1cb5a42ab26ceeab3dc9c6ea
       train_split: train
-      train_size: null
       validation_size: 1000
       chat_template_override: true
       chat_template: '{{ bos_token }}{% for message in messages %}{{ ''<|start_header_id|>'' + message[''role''] + ''<|end_header_id|>\n\n'' }}{% if message[''role''] == ''assistant'' %}{% generation %}{{ message[''content''] | trim + ''<|eot_id|>'' }}{% endgeneration %}{% else %}{{ message[''content''] | trim + ''<|eot_id|>'' }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ ''<|start_header_id|>assistant<|end_header_id|>\n\n'' }}{% endif %}'
@@ -415,10 +414,12 @@ experiments:
     rotated_pre_finetuning:
       prefix_enabled: true
     training:
-      num_train_epochs: 1
+      train_samples: 10000
+      train_seed: 42
+      num_train_epochs: 2
       per_device_train_batch_size: 1
       per_device_eval_batch_size: 1
-      gradient_accumulation_steps: 8
+      gradient_accumulation_steps: 16
       learning_rate: 1.0e-06
       weight_decay: 0.0
       adam_beta1: 0.9
@@ -451,34 +452,51 @@ experiments:
       - rouge2
       - rougeL
       - rougeLsum
-      limit: null
       lm_eval_revision: 6d2abda4fd171e68a8789330c4149e37c1ca0bda
       apply_chat_template: true
       lm_eval_task_specs:
       - name: truthfulqa_mc1
-        num_fewshot: 6
-        metric: acc_mc1
-        cot: true
-      - name: mmlu_pro
+        enabled: true
         num_fewshot: 0
-        metric: exact_match
+        metric: acc_mc1
         cot: false
+        test_samples: null
+        test_seed: 42
+      - name: mmlu_pro
+        enabled: true
+        num_fewshot: 5
+        metric: exact_match
+        cot: true
+        test_samples: null
+        test_seed: 42
       - name: bbh
+        enabled: true
         num_fewshot: 3
         metric: exact_match
-        cot: false
+        cot: true
+        test_samples: null
+        test_seed: 42
       - name: agieval
+        enabled: true
         num_fewshot: 0
         metric: acc
         cot: false
+        test_samples: null
+        test_seed: 42
       - name: gsm8k_cot
-        num_fewshot: 8
+        enabled: true
+        num_fewshot: 4
         metric: exact_match
         cot: true
+        test_samples: null
+        test_seed: 42
       - name: minerva_math
+        enabled: true
         num_fewshot: 4
         metric: exact_match
         cot: false
+        test_samples: null
+        test_seed: 42
 
 - name: exp1_qwen3_1_7b_tldr
   ann_modes: [unaware]

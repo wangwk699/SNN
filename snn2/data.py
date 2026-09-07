@@ -73,6 +73,18 @@ def _tldr_train_selection(
     return indices, "seeded_random_without_replacement"
 
 
+def _tulu3_train_selection(training_pool_indices: list[int], cfg: dict[str, Any]) -> tuple[list[int], str]:
+    configured = cfg["training"].get("train_samples")
+    if configured is None or int(configured) == len(training_pool_indices):
+        return list(training_pool_indices), "full_training_pool"
+    requested = int(configured)
+    if requested <= 0 or requested > len(training_pool_indices):
+        raise ValueError("training.train_samples must be positive and no larger than the Tulu-3 training pool")
+    indices = random.Random(int(cfg["training"].get("train_seed", 42))).sample(training_pool_indices, k=requested)
+    indices.sort()
+    return indices, "seeded_random_without_replacement"
+
+
 CANONICAL_PREPROCESSING_NUM_SAMPLES = 128
 
 
@@ -110,7 +122,6 @@ def _manifest_split_selection(
     task = cfg["experiment"]["task"]
 
     if task == "tulu3":
-        configured_train_size = data_cfg.get("train_size")
         validation_size = int(data_cfg.get("validation_size", 1_000))
         if validation_size <= 0 or len(raw_train) <= validation_size:
             raise ValueError(
@@ -118,22 +129,13 @@ def _manifest_split_selection(
             )
         permutation = list(range(len(raw_train)))
         rng.shuffle(permutation)
-        if configured_train_size is None:
-            validation_indices = permutation[:validation_size]
-            train_indices = permutation[validation_size:]
-        else:
-            train_size = int(configured_train_size)
-            if train_size <= 0 or len(raw_train) < train_size + validation_size:
-                raise ValueError(
-                    "Tulu 3 train_size must be positive and leave enough rows for validation"
-                )
-            train_indices = permutation[:train_size]
-            validation_indices = permutation[train_size : train_size + validation_size]
+        validation_indices = permutation[:validation_size]
+        train_indices, train_sampling = _tulu3_train_selection(permutation[validation_size:], cfg)
         return (
             raw_train,
             train_split,
             train_indices,
-            "seeded_without_replacement",
+            train_sampling,
             train_split,
             validation_indices,
         )
@@ -238,6 +240,7 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
                 if task == "tldr"
                 else {}
             ),
+            **({"train_samples": cfg["training"].get("train_samples"), "train_seed": int(cfg["training"].get("train_seed", 42)), "validation_size": int(data_cfg["validation_size"]), "selection_scope": "current_ann_training_config"} if task == "tulu3" else {}),
             "indices": train_indices,
             "record_ids": _record_ids(raw_train, train_indices),
         },
@@ -394,18 +397,22 @@ def load_selected_raw(
         if (
             name == "train"
             and use_configured_train_subset
-            and cfg["experiment"]["task"] == "tldr"
+            and cfg["experiment"]["task"] in {"tldr", "tulu3"}
         ):
             raw_train = raw[manifest["split"]]
-            indices, sampling = _tldr_train_selection(raw_train, cfg)
+            if cfg["experiment"]["task"] == "tldr":
+                indices, sampling = _tldr_train_selection(raw_train, cfg)
+            else:
+                permutation = list(range(len(raw_train)))
+                random.Random(int(cfg["experiment"]["seed"])).shuffle(permutation)
+                indices, sampling = _tulu3_train_selection(permutation[int(cfg["data"]["validation_size"]):], cfg)
             selected[name] = raw_train.select(indices)
             manifests[name] = {
                 **manifest,
                 "indices": indices,
                 "record_ids": _record_ids(raw_train, indices),
                 "sampling": sampling,
-                "tldr_train_samples": cfg["training"].get("tldr_train_samples"),
-                "tldr_train_seed": int(cfg["training"].get("tldr_train_seed", 42)),
+                **({"tldr_train_samples": cfg["training"].get("tldr_train_samples"), "tldr_train_seed": int(cfg["training"].get("tldr_train_seed", 42))} if cfg["experiment"]["task"] == "tldr" else {"train_samples": cfg["training"].get("train_samples"), "train_seed": int(cfg["training"].get("train_seed", 42)), "validation_size": int(cfg["data"]["validation_size"])}),
                 "selection_scope": "current_ann_training_config",
             }
         else:

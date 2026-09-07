@@ -163,6 +163,17 @@ def validate_config(cfg: dict[str, Any]) -> None:
                 "training.tldr_train_samples must be a positive integer or null"
             )
         int(cfg["training"].get("tldr_train_seed", 42))
+    elif cfg["experiment"].get("task") == "tulu3":
+        if "train_size" in cfg["data"]:
+            raise ValueError("Tulu-3 data.train_size is deprecated; use training.train_samples")
+        train_samples = cfg["training"].get("train_samples")
+        if train_samples is not None and (not isinstance(train_samples, int) or isinstance(train_samples, bool) or train_samples <= 0):
+            raise ValueError("training.train_samples must be a positive integer or null")
+        train_seed = cfg["training"].get("train_seed")
+        if not isinstance(train_seed, int) or isinstance(train_seed, bool):
+            raise ValueError("training.train_seed must be an integer")
+        from .lm_eval_protocol import validate_lm_eval_task_specs
+        validate_lm_eval_task_specs(cfg)
 
     deployment = cfg["deployment"]
     expected_deployment = {

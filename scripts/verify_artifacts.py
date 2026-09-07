@@ -694,18 +694,26 @@ def main():
             evaluation_subdir = str(tldr_layout["dirname"])
         else:
             tldr_layout = None
-            eval_dir_name = "lm_harness"
-            evaluation_files = ("results.json",)
+            eval_dir_name = None
+            evaluation_files = ("results.json", "test_selection.json")
             evaluation_subdir = None
 
         def evaluation_paths(root, *, neuron="ann"):
-            directory = root / "evaluation" / eval_dir_name
-            if evaluation_subdir is not None:
-                directory = directory / evaluation_subdir
+            directory = root / "evaluation"
+            if task == "tldr":
+                directory = directory / eval_dir_name
+                if evaluation_subdir is not None:
+                    directory = directory / evaluation_subdir
+                enabled = final_ann_evaluation_prefix_enabled(cfg) if neuron == "ann" else evaluation_prefix_enabled(cfg)
+                directory = directory / prefix_enabled_dirname(enabled)
+                directory = append_evaluation_num_samples_if_needed(directory, cfg, neuron=neuron)
+                return [directory / name for name in evaluation_files]
             enabled = final_ann_evaluation_prefix_enabled(cfg) if neuron == "ann" else evaluation_prefix_enabled(cfg)
             directory = directory / prefix_enabled_dirname(enabled)
-            directory = append_evaluation_num_samples_if_needed(directory, cfg, neuron=neuron)
-            return [directory / name for name in evaluation_files]
+            from snn2.artifacts import lm_eval_spec_dirname, safe_name
+            from snn2.lm_eval_protocol import enabled_lm_eval_task_specs
+            return [directory / safe_name(spec["name"]) / lm_eval_spec_dirname(spec) / filename
+                    for spec in enabled_lm_eval_task_specs(cfg) for filename in evaluation_files]
 
         required.extend(evaluation_paths(layout.ann_dir))
 

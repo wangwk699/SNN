@@ -257,14 +257,10 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
     bundle = load_selected_raw(
         cfg, layout, use_configured_train_subset=True
     )
-    configured_train_samples = training_cfg.get("tldr_train_samples")
-    if (
-        cfg["experiment"]["task"] == "tldr"
-        and configured_train_samples is not None
-        and len(bundle.train) != int(configured_train_samples)
-    ):
+    configured_train_samples = (training_cfg.get("tldr_train_samples") if cfg["experiment"]["task"] == "tldr" else training_cfg.get("train_samples"))
+    if configured_train_samples is not None and len(bundle.train) != int(configured_train_samples):
         raise RuntimeError(
-            "TL;DR ANN training selection count mismatch: "
+            "ANN training selection count mismatch: "
             f"configured={configured_train_samples}, selected={len(bundle.train)}"
         )
     prefixes = prefix_ids_for_stage(cfg, layout, stage="ann_training")
@@ -310,6 +306,8 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
                 "chat_template_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest(),
                 "configured_tldr_train_samples": training_cfg.get("tldr_train_samples"),
                 "tldr_train_seed": int(training_cfg.get("tldr_train_seed", 42)),
+                "configured_train_samples": training_cfg.get("train_samples") if cfg["experiment"]["task"] == "tulu3" else training_cfg.get("tldr_train_samples"),
+                "train_seed": int(training_cfg.get("train_seed", training_cfg.get("tldr_train_seed", 42))),
                 "actual_train_samples": len(train_dataset),
                 "train_sampling": bundle.manifests["train"].get("sampling"),
             },

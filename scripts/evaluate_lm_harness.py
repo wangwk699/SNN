@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+from types import MethodType
 
 import torch
 
 from _common import apply_deployment_overrides, parser, setup
 
-from snn2.artifacts import prefix_enabled_dirname, read_json, write_json
+from snn2.artifacts import lm_eval_spec_dirname, prefix_enabled_dirname, safe_name, read_json, write_json
 from snn2.conversion import validate_conversion_metadata
 from snn2.config import (
     final_ann_evaluation_prefix_enabled,
@@ -38,6 +39,41 @@ from snn2.modeling import (
     rotation_state,
 )
 from snn2.training import validate_recorded_training_artifact_provenance
+from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, build_test_selection,
+    enabled_lm_eval_task_specs, selection_by_leaf)
+
+
+def _leaf_tasks(task_tree):
+    for name, value in task_tree.items():
+        if isinstance(value, dict):
+            yield from _leaf_tasks(value)
+        else:
+            yield name, value
+
+
+def _selected_lm_eval_tasks(name, spec):
+    """Build an evaluation-only doc view; few-shot datasets remain untouched."""
+    from lm_eval.tasks import TaskManager
+    manager = TaskManager()
+    task_tree = manager.load_task_or_group([name])
+    leaves = list(_leaf_tasks(task_tree))
+    selection = build_test_selection(
+        {leaf_name: len(task.eval_docs) for leaf_name, task in leaves},
+        task=name, test_samples=spec["test_samples"], test_seed=int(spec["test_seed"]),
+    )
+    selected = selection_by_leaf(selection)
+    for leaf_name, task in leaves:
+        indices = sorted(selected[leaf_name])
+        def doc_iterator(self, *, rank=0, limit=None, world_size=1, _indices=indices):
+            # Limit is intentionally ignored: this wrapper is the deterministic test view.
+            for position, index in enumerate(_indices):
+                if position % int(world_size) == int(rank):
+                    yield index, self.eval_docs[index]
+        task.doc_iterator = MethodType(doc_iterator, task)
+    # simple_evaluate resolves by name again. Return this already wrapped tree so group
+    # aggregation is retained without mutating a dataset or its few-shot pool.
+    manager.load_task_or_group = lambda task_list=None: task_tree
+    return manager, selection
 
 
 def main():
@@ -282,60 +318,21 @@ def main():
             ),
         )
 
-        task_specs = list(
-            cfg["evaluation"].get(
-                "lm_eval_task_specs",
-                [],
-            )
-        )
-
-        if not task_specs:
-            raise ValueError(
-                "evaluation.lm_eval_task_specs "
-                "must contain at least one task"
-            )
-
-        results = {
-            "tasks": {},
-            "task_specs": task_specs,
-        }
-
+        task_specs = enabled_lm_eval_task_specs(cfg)
+        task_results: dict[str, dict] = {}
         for spec in task_specs:
-            name = spec["name"]
-
-            task_result = simple_evaluate(
-                model=harness_model,
-                tasks=[name],
-                num_fewshot=int(
-                    spec["num_fewshot"]
-                ),
-                batch_size=batch_size,
-                limit=cfg["evaluation"].get(
-                    "limit"
-                ),
-                random_seed=int(
-                    cfg["experiment"]["seed"]
-                ),
-                numpy_random_seed=int(
-                    cfg["experiment"]["seed"]
-                ),
-                torch_random_seed=int(
-                    cfg["experiment"]["seed"]
-                ),
-                fewshot_random_seed=int(
-                    cfg["experiment"]["seed"]
-                ),
-                apply_chat_template=bool(
-                    cfg["evaluation"].get(
-                        "apply_chat_template",
-                        True,
-                    )
-                ),
-            )
-
-            results["tasks"][
-                name
-            ] = task_result
+            # cot is checked by enabled_lm_eval_task_specs; it is intentionally not
+            # passed to simple_evaluate because lm-eval 0.4.8 has no such argument.
+            task_manager, test_selection = _selected_lm_eval_tasks(spec["name"], spec)
+            task_results[spec["name"]] = (simple_evaluate(
+                model=harness_model, tasks=[spec["name"]], task_manager=task_manager,
+                num_fewshot=int(spec["num_fewshot"]), batch_size=batch_size, limit=None,
+                random_seed=int(cfg["experiment"]["seed"]),
+                numpy_random_seed=int(cfg["experiment"]["seed"]),
+                torch_random_seed=int(cfg["experiment"]["seed"]),
+                fewshot_random_seed=int(cfg["experiment"]["seed"]),
+                apply_chat_template=bool(cfg["evaluation"].get("apply_chat_template", True)),
+            ), test_selection)
 
         layers = int(
             getattr(
@@ -365,7 +362,7 @@ def main():
         per_forward_operators = activation_neuron_operators_per_temporal_forward(
             num_hidden_layers=layers, neuron=args.neuron
         )
-        results["snn2_metadata"] = {
+        common_snn2_metadata = {
             # ----------------------------------
             # 明确区分原始 Base 与 fine-tuned ANN
             # ----------------------------------
@@ -476,17 +473,17 @@ def main():
         # Output directory
         #
         # Base:
-        #   <model>/base/seed42/evaluation/lm_harness/
+        #   <model>/base/seed42/evaluation/<task>/<spec>/
         #
         # Fine-tuned ANN:
         #   <model>/<ann_mode>/<lr>/<run_variant>/
         #       [surrogate_slope_<value>_warmup_ratio_<value>/]seed42/
-        #       ann/evaluation/lm_harness/
+        #       ann/evaluation/<task>/<spec>/
         #
         # SNN:
         #   <model>/<ann_mode>/<lr>/<run_variant>/
         #       [surrogate_slope_<value>_warmup_ratio_<value>/]seed42/
-        #       snn/<neuron>/evaluation/lm_harness/
+        #       snn/<neuron>/evaluation/<task>/<spec>/
         # --------------------------------------------------
         if args.base:
             model_output_dir = (
@@ -508,42 +505,31 @@ def main():
                 )
             )
 
-        output_dir = (
-            model_output_dir
-            / "evaluation"
-            / "lm_harness"
-        )
-
+        output_root = model_output_dir / "evaluation"
         if not args.base:
-            output_dir = output_dir / prefix_enabled_dirname(active_prefix_enabled)
-
-        output_dir = append_evaluation_num_samples_if_needed(
-            output_dir, cfg, base=args.base,
+            output_root = output_root / prefix_enabled_dirname(active_prefix_enabled)
+        output_root = append_evaluation_num_samples_if_needed(
+            output_root, cfg, base=args.base,
             rotated_pre_finetuning=args.rotated_pre_finetuning, neuron=args.neuron,
         )
         if rank == 0:
-            write_json(
-                output_dir / "results.json",
-                results,
-            )
-
-            run.event(
-                "evaluation_saved",
-                output_dir=str(
-                    output_dir
-                ),
-                model_variant=(
-                    results[
-                        "snn2_metadata"
-                    ][
-                        "model_variant"
-                    ]
-                ),
-                tasks=[
-                    spec["name"]
-                    for spec in task_specs
-                ],
-            )
+            for spec in task_specs:
+                name = spec["name"]
+                task_result, selection = task_results[name]
+                actual = int(selection["selected_count"])
+                result = {
+                    "tasks": {name: task_result},
+                    "snn2_metadata": {**common_snn2_metadata,
+                        "lm_eval_task_spec": spec, "lm_eval_revision": LM_EVAL_PINNED_REVISION,
+                        "cot_semantic_source": "project_audited_pinned_lm_eval_0_4_8",
+                        "test_sampling": selection["sampling"], "actual_test_samples": actual,
+                        "fewshot_random_seed": int(cfg["experiment"]["seed"]), "test_seed": spec["test_seed"]},
+                }
+                output_dir = output_root / safe_name(name) / lm_eval_spec_dirname(spec)
+                write_json(output_dir / "results.json", result)
+                write_json(output_dir / "test_selection.json", selection)
+                run.event("evaluation_saved", output_dir=str(output_dir),
+                          model_variant=common_snn2_metadata["model_variant"], tasks=[name])
 
 
 if __name__ == "__main__":

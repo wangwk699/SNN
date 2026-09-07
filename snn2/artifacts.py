@@ -45,8 +45,15 @@ def phase_training_dirname(*, phase_T: Any, mtn_T: Any, surrogate_slope: Any, wa
     )
 
 
-def gif_training_dirname(*, phase_T: Any, mtn_T: Any, warmup_ratio: Any) -> str:
-    return f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}_warmup_ratio_{float(warmup_ratio)}"
+def gif_training_dirname(*, phase_T: Any, mtn_T: Any, warmup_ratio: Any, lr_scheduler_type: Any | None = None) -> str:
+    result = f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}"
+    if lr_scheduler_type is not None:
+        result += f"_lr_scheduler_type_{lr_scheduler_type}"
+    return result + f"_warmup_ratio_{float(warmup_ratio)}"
+
+def lm_eval_spec_dirname(spec: dict[str, Any]) -> str:
+    samples = "full" if spec["test_samples"] is None else str(int(spec["test_samples"]))
+    return f"num_fewshot_{int(spec['num_fewshot'])}_cot_{str(bool(spec['cot'])).lower()}_test_samples_{samples}_test_seed_{int(spec['test_seed'])}"
 
 
 def clip_profile_dirname(phase_T: Any, mtn_T: Any) -> str:
@@ -101,6 +108,10 @@ class ArtifactLayout:
                     )
                 train_samples = str(configured_train_samples)
             learning_rate = f"{learning_rate}_train_samples_{train_samples}"
+        elif exp["task"] == "tulu3":
+            configured_train_samples = cfg["training"].get("train_samples")
+            train_samples = "full" if configured_train_samples is None else str(int(configured_train_samples))
+            learning_rate = f"{learning_rate}_train_samples_{train_samples}"
         if is_aware_ann_mode(cfg):
             learning_rate = (
                 f"num_samples_{int(cfg['calibration']['num_samples'])}_"
@@ -132,10 +143,16 @@ class ArtifactLayout:
                 surrogate_slope=cfg["phase"]["surrogate_slope"],
                 warmup_ratio=cfg["training"]["warmup_ratio"],
             )
+            if exp["task"] == "tulu3":
+                run_root = run_root.parent / (run_root.name.replace(
+                    f"_warmup_ratio_{float(cfg['training']['warmup_ratio'])}",
+                    f"_lr_scheduler_type_{cfg['training']['lr_scheduler_type']}_warmup_ratio_{float(cfg['training']['warmup_ratio'])}",
+                ))
         elif exp["ann_mode"] == "gif_aware":
             run_root = run_root / gif_training_dirname(
                 phase_T=cfg["phase"]["T"], mtn_T=cfg["mtn"]["T"],
                 warmup_ratio=cfg["training"]["warmup_ratio"],
+                lr_scheduler_type=cfg["training"]["lr_scheduler_type"] if exp["task"] == "tulu3" else None,
             )
         self.root = run_root / seed
         # 原始 Base 模型独立目录：
