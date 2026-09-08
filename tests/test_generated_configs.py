@@ -245,3 +245,17 @@ def test_generated_evaluation_configs_are_task_specific(generated_configs):
             assert [spec["name"] for spec in specs] == expected_names
             assert [spec["name"] for spec in specs if spec["enabled"]] == expected_enabled
             assert all(spec["enabled"] is False for spec in specs[6:])
+
+
+def test_tldr_aware_run_paths_include_epochs_before_calibration_identity(generated_configs):
+    from snn2.artifacts import ArtifactLayout
+    for path in generated_configs:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        layout = ArtifactLayout(cfg)
+        if cfg["experiment"]["task"] == "tldr":
+            prefix = f"epochs_{cfg['training']['num_train_epochs']}_"
+            assert any(part.startswith(prefix) for part in layout.root.parts)
+            if cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}:
+                assert any(part.startswith(prefix + "num_samples_") for part in layout.root.parts)
+        if cfg["experiment"]["task"] == "tulu3":
+            assert not any(part.startswith("epochs_") for part in layout.root.parts)

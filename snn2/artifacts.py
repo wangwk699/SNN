@@ -108,6 +108,9 @@ class ArtifactLayout:
                     )
                 train_samples = str(configured_train_samples)
             learning_rate = f"{learning_rate}_train_samples_{train_samples}"
+            epochs = cfg["training"].get("num_train_epochs")
+            if epochs is not None and not is_aware_ann_mode(cfg):
+                learning_rate = f"epochs_{epochs}_{learning_rate}"
         elif exp["task"] == "tulu3":
             configured_train_samples = cfg["training"].get("train_samples")
             train_samples = "full" if configured_train_samples is None else str(int(configured_train_samples))
@@ -118,6 +121,8 @@ class ArtifactLayout:
                 f"{learning_rate}_"
                 f"{calibration_group_dirname(cfg['calibration']['group_size'])}"
             )
+            if exp["task"] == "tldr" and epochs is not None:
+                learning_rate = f"epochs_{epochs}_{learning_rate}"
 
         self.model_root = model_root
         self.seed_name = seed
