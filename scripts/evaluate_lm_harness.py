@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import copy
 import time
 from types import MethodType
 
@@ -115,12 +116,66 @@ def _leaf_tasks(task_tree):
         else:
             yield name, value
 
+@contextmanager
+def _prefer_local_dataset_cache():
+    """
+    Make datasets.load_dataset() cache-first:
+
+    1. Try strictly local cache first.
+    2. If the local cache is insufficient, retry normally and allow download.
+
+    This changes only dataset loading policy.
+    """
+    import datasets
+    from datasets import DownloadConfig
+
+    original_load_dataset = datasets.load_dataset
+
+    def cache_first_load_dataset(*args, **kwargs):
+        local_kwargs = dict(kwargs)
+
+        existing_download_config = local_kwargs.get("download_config")
+
+        if existing_download_config is None:
+            local_download_config = DownloadConfig(
+                local_files_only=True
+            )
+        else:
+            local_download_config = copy.copy(
+                existing_download_config
+            )
+            local_download_config.local_files_only = True
+
+        local_kwargs["download_config"] = local_download_config
+
+        try:
+            # First attempt: strictly local cache, no Hub download.
+            return original_load_dataset(
+                *args,
+                **local_kwargs,
+            )
+        except Exception:
+            # Local cache is unavailable/incomplete.
+            # Retry with the original arguments, which allows Hub access
+            # and preserves Hugging Face's normal caching behavior.
+            return original_load_dataset(
+                *args,
+                **kwargs,
+            )
+
+    datasets.load_dataset = cache_first_load_dataset
+
+    try:
+        yield
+    finally:
+        datasets.load_dataset = original_load_dataset
 
 def _selected_lm_eval_tasks(name, spec):
     """Build an evaluation-only doc view; few-shot datasets remain untouched."""
     from lm_eval.tasks import TaskManager
-    manager = TaskManager()
-    task_tree = manager.load_task_or_group([name])
+    with _prefer_local_dataset_cache():
+        manager = TaskManager()
+        task_tree = manager.load_task_or_group([name])
     leaves = list(_leaf_tasks(task_tree))
     selection = build_test_selection(
         {leaf_name: len(task.eval_docs) for leaf_name, task in leaves},
