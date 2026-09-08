@@ -382,7 +382,7 @@ experiments:
       save_strategy: 'no'
       load_best_model_at_end: false
       logging_steps: 10
-      deepspeed_config: configs/deepspeed_zero3.json
+      deepspeed_config: configs/deepspeed_zero3_cpu_offload.json
       resume_from_checkpoint: null
     evaluation:
       prefix_enabled: true
