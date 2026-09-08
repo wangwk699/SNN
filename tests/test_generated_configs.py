@@ -259,3 +259,15 @@ def test_tldr_aware_run_paths_include_epochs_before_calibration_identity(generat
                 assert any(part.startswith(prefix + "num_samples_") for part in layout.root.parts)
         if cfg["experiment"]["task"] == "tulu3":
             assert not any(part.startswith("epochs_") for part in layout.root.parts)
+
+
+def test_tulu_task_result_path_container_is_isolated_from_tldr(generated_configs):
+    from snn2.artifacts import lm_eval_spec_dirname, safe_name
+    for path in generated_configs:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if cfg["experiment"]["task"] == "tulu3":
+            spec = next(spec for spec in cfg["evaluation"]["lm_eval_task_specs"] if spec["enabled"])
+            task_path = Path("evaluation") / "task_results" / safe_name(spec["name"]) / lm_eval_spec_dirname(spec)
+            assert task_path.parts[1] == "task_results"
+        else:
+            assert "task_results" not in cfg["evaluation"]

@@ -7,7 +7,7 @@ import pytest
 
 from snn2.data import _manifest_split_selection, prepare_manifests
 from snn2.lm_eval_protocol import (LM_EVAL_0_4_8_TASK_COT, LM_EVAL_0_4_8_TASK_METRIC, build_test_selection, correct_effective_sample_counts, prune_empty_selected_leaves,
-    result_contains_metric, selection_by_leaf, validate_lm_eval_task_specs)
+    extract_metric_value, result_contains_metric, seconds_to_hms, selection_by_leaf, validate_lm_eval_task_specs)
 
 
 def _cfg(samples=10, seed=42):
@@ -116,3 +116,32 @@ def test_acc_norm_tasks_reject_acc_metric(task):
 def test_acc_fast_tasks_accept_acc_metric(task):
     cfg = {"evaluation": {"lm_eval_revision": "6d2abda4fd171e68a8789330c4149e37c1ca0bda", "lm_eval_task_specs": [{"name": task, "enabled": True, "num_fewshot": 0, "metric": "acc", "cot": False, "test_samples": None, "test_seed": 42}]}}
     assert validate_lm_eval_task_specs(cfg)[0]["name"] == task
+
+
+@pytest.mark.parametrize(("seconds", "expected"), [(0, "00:00:00"), (37, "00:00:37"), (309, "00:05:09"), (3600, "01:00:00"), (27 * 3600 + 3 * 60 + 8, "27:03:08"), (1.6, "00:00:02")])
+def test_seconds_to_hms(seconds, expected):
+    assert seconds_to_hms(seconds) == expected
+
+@pytest.mark.parametrize("value", [-1, True, "37"])
+def test_seconds_to_hms_rejects_invalid_values(value):
+    with pytest.raises((TypeError, ValueError)):
+        seconds_to_hms(value)
+
+def test_extract_metric_value_handles_filter_suffixes():
+    assert extract_metric_value({"results": {"task": {"acc,none": 0.5}}}, "acc") == 0.5
+    assert extract_metric_value({"results": {"task": {"acc_norm,none": 0.75}}}, "acc_norm") == 0.75
+
+def test_extract_metric_value_rejects_stderr_missing_ambiguous_and_bool():
+    with pytest.raises(ValueError):
+        extract_metric_value({"results": {"task": {"acc_stderr,none": 0.1}}}, "acc")
+    with pytest.raises(ValueError):
+        extract_metric_value({"results": {"task": {} }}, "acc")
+    with pytest.raises(ValueError):
+        extract_metric_value({"results": {"a": {"acc,none": 0.5}, "b": {"acc,foo": 0.6}}}, "acc")
+    with pytest.raises(ValueError):
+        extract_metric_value({"results": {"task": {"acc,none": True}}}, "acc")
+
+
+def test_extract_metric_value_prefers_group_aggregate():
+    result = {"results": {"agieval": {"acc,none": 0.6}, "agieval_leaf": {"acc,none": 0.2}}}
+    assert extract_metric_value(result, "acc", task_name="agieval") == 0.6

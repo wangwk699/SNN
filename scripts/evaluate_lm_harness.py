@@ -46,7 +46,7 @@ from snn2.lm_eval_distributed import (DistributedPreinitializedHFLM, distributed
     gather_sum_execution_counter, indices_for_rank)
 from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, build_test_selection,
     correct_effective_sample_counts, enabled_lm_eval_task_specs, prune_empty_selected_leaves,
-    result_contains_metric, selection_by_leaf)
+    extract_metric_value, result_contains_metric, seconds_to_hms, selection_by_leaf)
 
 
 def execution_counter_delta(before, after):
@@ -525,17 +525,9 @@ def main():
             rotated_pre_finetuning=args.rotated_pre_finetuning, neuron=args.neuron,
         )
         if accelerator.is_main_process:
-            timing_summary = None
-            if is_tulu_lm_eval:
-                timing_summary = {
-                    "model_variant": model_variant,
-                    "enabled_tasks": [spec["name"] for spec in task_specs],
-                    "tasks": {name: task_results[name][3] for name in (spec["name"] for spec in task_specs)},
-                }
-                timing_summary["total_lm_eval_seconds"] = sum(
-                    item["lm_eval_seconds"] for item in timing_summary["tasks"].values()
-                )
-                write_json(output_root / "evaluation_timing.json", timing_summary)
+            task_results_root = output_root / "task_results" if is_tulu_lm_eval else output_root
+            task_times = {}
+            task_metrics = {}
             for spec in task_specs:
                 name = spec["name"]
                 task_result, selection, task_counter, timing = task_results[name]
@@ -554,9 +546,12 @@ def main():
                         "test_sampling": selection["sampling"], "actual_test_samples": actual,
                         "fewshot_random_seed": int(cfg["experiment"]["seed"]), "test_seed": spec["test_seed"]},
                 }
-                output_dir = output_root / safe_name(name) / lm_eval_spec_dirname(spec)
+                output_dir = task_results_root / safe_name(name) / lm_eval_spec_dirname(spec)
                 write_json(output_dir / "results.json", result)
                 write_json(output_dir / "test_selection.json", selection)
+                if is_tulu_lm_eval:
+                    task_times[name] = seconds_to_hms(timing["lm_eval_seconds"])
+                    task_metrics[name] = extract_metric_value(task_result, spec["metric"], task_name=name)
                 run.event("evaluation_saved", output_dir=str(output_dir),
                           model_variant=common_snn2_metadata["model_variant"], tasks=[name],
                           **({"lm_eval_seconds": timing["lm_eval_seconds"],
@@ -564,7 +559,9 @@ def main():
                               "selected_documents": timing["selected_documents"]}
                              if is_tulu_lm_eval else {}))
             if is_tulu_lm_eval:
-                run.event("lm_eval_timing_summary", output_dir=str(output_root), **timing_summary)
+                summary = {"task_times": task_times, "task_metrics": task_metrics}
+                write_json(output_root / "evaluation_summary.json", summary)
+                run.event("lm_eval_summary_saved", output_dir=str(output_root), **summary)
 
 
 if __name__ == "__main__":

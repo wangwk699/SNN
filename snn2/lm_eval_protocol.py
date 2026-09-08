@@ -134,3 +134,44 @@ def result_contains_metric(task_result: dict[str, Any], metric_name: str) -> boo
                 return True
         return False
     return visit(task_result.get("results", task_result))
+
+
+def seconds_to_hms(seconds: float) -> str:
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        raise TypeError("seconds must be a number")
+    if seconds < 0:
+        raise ValueError("seconds must be non-negative")
+    total = int(round(float(seconds)))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def extract_metric_value(task_result: dict[str, Any], metric_name: str, *, task_name: str | None = None) -> float:
+    """Extract one canonical non-stderr lm-eval metric, preserving its raw value.
+
+    A group task name selects lm-eval's already-aggregated group result before
+    considering any leaf results.
+    """
+    results = task_result.get("results", task_result)
+    if not isinstance(results, dict):
+        raise ValueError("lm-eval result has no results mapping")
+
+    def candidates(value: Any) -> list[tuple[str, Any]]:
+        if not isinstance(value, dict):
+            return []
+        found: list[tuple[str, Any]] = []
+        for key, nested in value.items():
+            if isinstance(key, str) and (key == metric_name or key.startswith(metric_name + ",")):
+                found.append((key, nested))
+            found.extend(candidates(nested))
+        return found
+
+    scoped_results = results.get(task_name) if task_name is not None else None
+    found = candidates(scoped_results) if isinstance(scoped_results, dict) else candidates(results)
+    if len(found) != 1:
+        raise ValueError(f"Expected exactly one {metric_name!r} metric, found {len(found)}")
+    value = found[0][1]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"Metric {found[0][0]!r} must be a non-boolean number")
+    return float(value)

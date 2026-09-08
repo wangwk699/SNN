@@ -1,5 +1,6 @@
 from __future__ import annotations
 import math
+import re
 from collections import Counter
 from pathlib import Path
 import torch
@@ -41,7 +42,7 @@ from snn2.logging_utils import StageRun
 from snn2.state_validation import validate_clip_profile, validate_site_state_bundle
 from snn2.training import validate_recorded_training_artifact_provenance
 from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, build_test_selection,
-    enabled_lm_eval_task_specs, result_contains_metric)
+    enabled_lm_eval_task_specs, extract_metric_value, result_contains_metric, seconds_to_hms)
 from snn2.temporal_ops import (
     CALIBRATION_GROUPING_POLICY,
     GIF_LINEAR_SALIENCY_DTYPE,
@@ -59,12 +60,47 @@ def _evaluation_metadata(path):
     payload = read_json(path)
     return payload.get("snn2_metadata", payload)
 
-def _tulu_lm_eval_task_root(cfg, root, spec, *, neuron):
+def _tulu_lm_eval_root(cfg, root, *, neuron):
     enabled = (final_ann_evaluation_prefix_enabled(cfg) if neuron == "ann"
                else evaluation_prefix_enabled(cfg))
     directory = root / "evaluation" / prefix_enabled_dirname(enabled)
-    directory = append_evaluation_num_samples_if_needed(directory, cfg, neuron=neuron)
-    return directory / safe_name(spec["name"]) / lm_eval_spec_dirname(spec)
+    return append_evaluation_num_samples_if_needed(directory, cfg, neuron=neuron)
+
+
+def _tulu_lm_eval_task_root(cfg, root, spec, *, neuron):
+    return (_tulu_lm_eval_root(cfg, root, neuron=neuron) / "task_results"
+            / safe_name(spec["name"]) / lm_eval_spec_dirname(spec))
+
+
+def _validate_tulu_evaluation_summary(cfg, root, *, neuron):
+    summary_path = _tulu_lm_eval_root(cfg, root, neuron=neuron) / "evaluation_summary.json"
+    stale_timing = summary_path.parent / "evaluation_timing.json"
+    if stale_timing.exists():
+        raise ValueError(f"Stale Tulu lm-eval timing artifact: {stale_timing}")
+    summary = read_json(summary_path)
+    if set(summary) != {"task_times", "task_metrics"}:
+        raise ValueError(f"Invalid Tulu evaluation summary schema: {summary_path}")
+    specs = enabled_lm_eval_task_specs(cfg)
+    names = [spec["name"] for spec in specs]
+    if list(summary["task_times"]) != names or list(summary["task_metrics"]) != names:
+        raise ValueError(f"Tulu evaluation summary task order mismatch: {summary_path}")
+    for spec in specs:
+        name = spec["name"]
+        recorded_time = summary["task_times"].get(name)
+        if not isinstance(recorded_time, str) or not re.fullmatch(r"\d{2,}:[0-5]\d:[0-5]\d", recorded_time):
+            raise ValueError(f"Invalid Tulu task time in {summary_path}: {name}")
+        metric = summary["task_metrics"].get(name)
+        if isinstance(metric, bool) or not isinstance(metric, (int, float)):
+            raise ValueError(f"Invalid Tulu task metric in {summary_path}: {name}")
+        task_root = _tulu_lm_eval_task_root(cfg, root, spec, neuron=neuron)
+        payload = read_json(task_root / "results.json")
+        metadata = payload.get("snn2_metadata", {})
+        timing = metadata.get("evaluation_timing", {})
+        if recorded_time != seconds_to_hms(timing.get("lm_eval_seconds")):
+            raise ValueError(f"Tulu task time summary mismatch: {summary_path}: {name}")
+        task_result = payload.get("tasks", {}).get(name, {})
+        if metric != extract_metric_value(task_result, spec["metric"], task_name=name):
+            raise ValueError(f"Tulu task metric summary mismatch: {summary_path}: {name}")
 
 
 def _validate_tulu_lm_eval_result(results_path, selection_path, spec, *, experiment_seed):
@@ -785,6 +821,8 @@ def main():
                     for spec in enabled_lm_eval_task_specs(cfg) for filename in evaluation_files]
 
         required.extend(evaluation_paths(layout.ann_dir))
+        if task == "tulu3":
+            required.append(_tulu_lm_eval_root(cfg, layout.ann_dir, neuron="ann") / "evaluation_summary.json")
 
         # --------------------------------------------------
         # Rotation / Prefix shared artifacts
@@ -950,6 +988,8 @@ def main():
 
             conversions[neuron] = path.exists()
             required.extend(evaluation_paths(layout.snn_dir(neuron), neuron=neuron))
+            if task == "tulu3":
+                required.append(_tulu_lm_eval_root(cfg, layout.snn_dir(neuron), neuron=neuron) / "evaluation_summary.json")
 
         missing = [
             str(path)
@@ -973,6 +1013,9 @@ def main():
                     )
 
         if task == "tulu3":
+            for neuron, root in [("ann", layout.ann_dir), ("phase", layout.snn_dir("phase")),
+                                 ("gif", layout.snn_dir("gif")), ("mtn", layout.snn_dir("mtn"))]:
+                _validate_tulu_evaluation_summary(cfg, root, neuron=neuron)
             for spec in enabled_lm_eval_task_specs(cfg):
                 selections = [read_json(_tulu_lm_eval_task_root(cfg, root, spec, neuron=neuron) / "test_selection.json")
                               for neuron, root in [("ann", layout.ann_dir),
