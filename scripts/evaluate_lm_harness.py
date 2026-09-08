@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from types import MethodType
 
 import torch
@@ -328,12 +329,16 @@ def main():
         )
 
         task_specs = enabled_lm_eval_task_specs(cfg)
-        task_results: dict[str, dict] = {}
+        is_tulu_lm_eval = cfg["experiment"]["task"] == "tulu3"
+        task_results: dict[str, tuple] = {}
         for spec in task_specs:
             # cot is checked by enabled_lm_eval_task_specs; it is intentionally not
             # passed to simple_evaluate because lm-eval 0.4.8 has no such argument.
+            task_started = time.perf_counter() if is_tulu_lm_eval else None
             task_manager, test_selection = _selected_lm_eval_tasks(spec["name"], spec)
+            setup_seconds = time.perf_counter() - task_started if task_started is not None else None
             before_counter = dict(proxy.execution_counter)
+            evaluation_started = time.perf_counter() if is_tulu_lm_eval else None
             task_result = simple_evaluate(
                 model=harness_model, tasks=[spec["name"]], task_manager=task_manager,
                 num_fewshot=int(spec["num_fewshot"]), batch_size=batch_size, limit=None,
@@ -343,13 +348,22 @@ def main():
                 fewshot_random_seed=int(cfg["experiment"]["seed"]),
                 apply_chat_template=bool(cfg["evaluation"].get("apply_chat_template", True)),
             )
+            timing = (
+                {
+                    "selection_setup_seconds": setup_seconds,
+                    "lm_eval_seconds": time.perf_counter() - evaluation_started,
+                    "total_seconds": time.perf_counter() - task_started,
+                    "selected_documents": int(test_selection["selected_count"]),
+                }
+                if is_tulu_lm_eval else None
+            )
             correct_effective_sample_counts(task_result, test_selection)
             if not result_contains_metric(task_result, spec["metric"]):
                 raise ValueError(f"lm-eval result for {spec['name']!r} does not contain configured metric {spec['metric']!r}")
             after_counter = dict(proxy.execution_counter)
             task_counter = (execution_counter_delta(before_counter, after_counter)
                             if cfg["experiment"]["task"] == "tulu3" else after_counter)
-            task_results[spec["name"]] = (task_result, test_selection, task_counter)
+            task_results[spec["name"]] = (task_result, test_selection, task_counter, timing)
 
         layers = int(
             getattr(
@@ -497,9 +511,20 @@ def main():
             rotated_pre_finetuning=args.rotated_pre_finetuning, neuron=args.neuron,
         )
         if rank == 0:
+            timing_summary = None
+            if is_tulu_lm_eval:
+                timing_summary = {
+                    "model_variant": model_variant,
+                    "enabled_tasks": [spec["name"] for spec in task_specs],
+                    "tasks": {name: task_results[name][3] for name in (spec["name"] for spec in task_specs)},
+                }
+                timing_summary["total_lm_eval_seconds"] = sum(
+                    item["lm_eval_seconds"] for item in timing_summary["tasks"].values()
+                )
+                write_json(output_root / "evaluation_timing.json", timing_summary)
             for spec in task_specs:
                 name = spec["name"]
-                task_result, selection, task_counter = task_results[name]
+                task_result, selection, task_counter, timing = task_results[name]
                 actual = int(selection["selected_count"])
                 task_temporal_forwards = task_counter.get("temporal_sample_step_forwards", 0)
                 task_temporal_slots = task_counter.get("batched_temporal_sample_slots", 0)
@@ -507,6 +532,7 @@ def main():
                     "tasks": {name: task_result},
                     "snn2_metadata": {**common_snn2_metadata,
                         "execution_counter": task_counter,
+                        **({"evaluation_timing": timing} if is_tulu_lm_eval else {}),
                         "activation_site_temporal_operator_calls": task_temporal_forwards * per_forward_operators,
                         "batched_activation_site_temporal_slots": task_temporal_slots * per_forward_operators,
                         "lm_eval_task_spec": spec, "lm_eval_revision": LM_EVAL_PINNED_REVISION,
@@ -518,7 +544,13 @@ def main():
                 write_json(output_dir / "results.json", result)
                 write_json(output_dir / "test_selection.json", selection)
                 run.event("evaluation_saved", output_dir=str(output_dir),
-                          model_variant=common_snn2_metadata["model_variant"], tasks=[name])
+                          model_variant=common_snn2_metadata["model_variant"], tasks=[name],
+                          **({"lm_eval_seconds": timing["lm_eval_seconds"],
+                              "total_seconds": timing["total_seconds"],
+                              "selected_documents": timing["selected_documents"]}
+                             if is_tulu_lm_eval else {}))
+            if is_tulu_lm_eval:
+                run.event("lm_eval_timing_summary", output_dir=str(output_root), **timing_summary)
 
 
 if __name__ == "__main__":
