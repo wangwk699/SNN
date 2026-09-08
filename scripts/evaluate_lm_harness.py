@@ -7,6 +7,8 @@ from types import MethodType
 from accelerate import Accelerator
 
 import torch
+import logging
+from contextlib import contextmanager
 
 from _common import apply_deployment_overrides, parser, setup
 
@@ -53,6 +55,57 @@ def execution_counter_delta(before, after):
     """Return a task-local counter delta without changing the proxy's cumulative state."""
     return {key: int(after.get(key, 0)) - int(before.get(key, 0))
             for key in set(before) | set(after)}
+
+
+class _ZeroShotLmEvalWarningFilter(logging.Filter):
+    """Suppress known lm-eval warnings that are harmless for explicit 0-shot tasks."""
+
+    def filter(self, record):
+        message = record.getMessage()
+
+        # ConfigurableTask initialization calls fewshot_docs() even for 0-shot
+        # tasks. AGIEval tasks without train/validation splits therefore emit
+        # this warning although no few-shot examples are actually used.
+        if (
+            record.name == "lm_eval.api.task"
+            and "has_training_docs and has_validation_docs are False" in message
+            and "using test_docs as fewshot_docs but this is not recommended" in message
+        ):
+            return False
+
+        # The project explicitly passes num_fewshot=0 to simple_evaluate().
+        # lm-eval reports the None -> 0 override as a warning.
+        if (
+            record.name == "lm_eval.evaluator"
+            and message.startswith("Overwriting default num_fewshot of ")
+            and " from None to 0" in message
+        ):
+            return False
+
+        return True
+
+
+@contextmanager
+def _suppress_zero_shot_lm_eval_warnings(enabled):
+    """Temporarily suppress only the two known lm-eval 0-shot warnings."""
+    if not enabled:
+        yield
+        return
+
+    warning_filter = _ZeroShotLmEvalWarningFilter()
+    loggers = [
+        logging.getLogger("lm_eval.api.task"),
+        logging.getLogger("lm_eval.evaluator"),
+    ]
+
+    for logger in loggers:
+        logger.addFilter(warning_filter)
+
+    try:
+        yield
+    finally:
+        for logger in loggers:
+            logger.removeFilter(warning_filter)
 
 
 def _leaf_tasks(task_tree):
@@ -324,19 +377,24 @@ def main():
             # cot is checked by enabled_lm_eval_task_specs; it is intentionally not
             # passed to simple_evaluate because lm-eval 0.4.8 has no such argument.
             task_started = time.perf_counter() if is_tulu_lm_eval else None
-            task_manager, test_selection = _selected_lm_eval_tasks(spec["name"], spec)
-            setup_seconds = time.perf_counter() - task_started if task_started is not None else None
-            before_counter = dict(proxy.execution_counter)
-            evaluation_started = time.perf_counter() if is_tulu_lm_eval else None
-            task_result = simple_evaluate(
-                model=harness_model, tasks=[spec["name"]], task_manager=task_manager,
-                num_fewshot=int(spec["num_fewshot"]), batch_size=batch_size, limit=None,
-                random_seed=int(cfg["experiment"]["seed"]),
-                numpy_random_seed=int(cfg["experiment"]["seed"]),
-                torch_random_seed=int(cfg["experiment"]["seed"]),
-                fewshot_random_seed=int(cfg["experiment"]["seed"]),
-                apply_chat_template=bool(cfg["evaluation"].get("apply_chat_template", True)),
-            )
+            with _suppress_zero_shot_lm_eval_warnings(enabled=int(spec["num_fewshot"]) == 0):
+                task_manager, test_selection = _selected_lm_eval_tasks(spec["name"], spec)
+                setup_seconds = (time.perf_counter() - task_started if task_started is not None else None)
+                before_counter = dict(proxy.execution_counter)
+                evaluation_started = (time.perf_counter() if is_tulu_lm_eval else None)
+                task_result = simple_evaluate(
+                    model=harness_model,
+                    tasks=[spec["name"]],
+                    task_manager=task_manager,
+                    num_fewshot=int(spec["num_fewshot"]),
+                    batch_size=batch_size,
+                    limit=None,
+                    random_seed=int(cfg["experiment"]["seed"]),
+                    numpy_random_seed=int(cfg["experiment"]["seed"]),
+                    torch_random_seed=int(cfg["experiment"]["seed"]),
+                    fewshot_random_seed=int(cfg["experiment"]["seed"]),
+                    apply_chat_template=bool(cfg["evaluation"].get("apply_chat_template", True)),
+                )
             local_timing = (
                 {
                     "selection_setup_seconds": setup_seconds,
