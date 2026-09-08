@@ -9,10 +9,12 @@ LM_EVAL_PINNED_REVISION = "6d2abda4fd171e68a8789330c4149e37c1ca0bda"
 LM_EVAL_0_4_8_TASK_COT = {
     "truthfulqa_mc1": False, "mmlu_pro": True, "bbh": True,
     "agieval": False, "gsm8k_cot": True, "minerva_math": False,
+    "arc_challenge": False, "piqa": False, "winogrande": False, "boolq": False,
 }
 LM_EVAL_0_4_8_TASK_METRIC = {
     "truthfulqa_mc1": "acc", "mmlu_pro": "exact_match", "bbh": "exact_match",
     "agieval": "acc", "gsm8k_cot": "exact_match", "minerva_math": "exact_match",
+    "arc_challenge": "acc_norm", "piqa": "acc_norm", "winogrande": "acc", "boolq": "acc",
 }
 
 def _positive_int_or_none(value: Any, field: str) -> None:

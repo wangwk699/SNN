@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import pytest
 
 from snn2.data import _manifest_split_selection, prepare_manifests
-from snn2.lm_eval_protocol import (LM_EVAL_0_4_8_TASK_METRIC, build_test_selection, correct_effective_sample_counts, prune_empty_selected_leaves,
+from snn2.lm_eval_protocol import (LM_EVAL_0_4_8_TASK_COT, LM_EVAL_0_4_8_TASK_METRIC, build_test_selection, correct_effective_sample_counts, prune_empty_selected_leaves,
     result_contains_metric, selection_by_leaf, validate_lm_eval_task_specs)
 
 
@@ -73,9 +73,13 @@ def test_execution_counter_delta_is_task_local():
     assert execution_counter_delta({"model_forward_calls": 10, "temporal_sample_step_forwards": 20}, {"model_forward_calls": 17, "temporal_sample_step_forwards": 35}) == {"model_forward_calls": 7, "temporal_sample_step_forwards": 15}
 
 
-@pytest.mark.parametrize("task, metric", [("truthfulqa_mc1", "acc"), ("mmlu_pro", "exact_match"), ("bbh", "exact_match"), ("agieval", "acc"), ("gsm8k_cot", "exact_match"), ("minerva_math", "exact_match")])
+@pytest.mark.parametrize("task, metric", [("truthfulqa_mc1", "acc"), ("mmlu_pro", "exact_match"), ("bbh", "exact_match"), ("agieval", "acc"), ("gsm8k_cot", "exact_match"), ("minerva_math", "exact_match"), ("arc_challenge", "acc_norm"), ("piqa", "acc_norm"), ("winogrande", "acc"), ("boolq", "acc")])
 def test_pinned_metric_mapping(task, metric):
     assert LM_EVAL_0_4_8_TASK_METRIC[task] == metric
+
+@pytest.mark.parametrize("task", ["arc_challenge", "piqa", "winogrande", "boolq"])
+def test_new_fast_tasks_are_non_cot(task):
+    assert LM_EVAL_0_4_8_TASK_COT[task] is False
 
 def test_truthfulqa_metric_conflict_is_rejected():
     cfg = {"evaluation": {"lm_eval_revision": "6d2abda4fd171e68a8789330c4149e37c1ca0bda", "limit": None, "lm_eval_task_specs": [{"name": "truthfulqa_mc1", "enabled": True, "num_fewshot": 0, "metric": "acc_mc1", "cot": False, "test_samples": None, "test_seed": 42}]}}
@@ -100,3 +104,15 @@ def test_full_selection_records_every_leaf_document():
     selection = build_test_selection({"a": 2, "b": 3}, task="group", test_samples=None, test_seed=42)
     assert selection["selected_count"] == selection["total_population_size"] == 5
     assert selection["selected_leaf_docs"] == [{"leaf_task": "a", "local_index": 0}, {"leaf_task": "a", "local_index": 1}, {"leaf_task": "b", "local_index": 0}, {"leaf_task": "b", "local_index": 1}, {"leaf_task": "b", "local_index": 2}]
+
+
+@pytest.mark.parametrize("task", ["arc_challenge", "piqa"])
+def test_acc_norm_tasks_reject_acc_metric(task):
+    cfg = {"evaluation": {"lm_eval_revision": "6d2abda4fd171e68a8789330c4149e37c1ca0bda", "lm_eval_task_specs": [{"name": task, "enabled": True, "num_fewshot": 0, "metric": "acc", "cot": False, "test_samples": None, "test_seed": 42}]}}
+    with pytest.raises(ValueError, match="metric"):
+        validate_lm_eval_task_specs(cfg)
+
+@pytest.mark.parametrize("task", ["winogrande", "boolq"])
+def test_acc_fast_tasks_accept_acc_metric(task):
+    cfg = {"evaluation": {"lm_eval_revision": "6d2abda4fd171e68a8789330c4149e37c1ca0bda", "lm_eval_task_specs": [{"name": task, "enabled": True, "num_fewshot": 0, "metric": "acc", "cot": False, "test_samples": None, "test_seed": 42}]}}
+    assert validate_lm_eval_task_specs(cfg)[0]["name"] == task

@@ -222,3 +222,26 @@ def test_vanilla_rejects_pre_finetuning_conversion_bundle(generated_configs):
     cfg["conversion"]["use_post_finetuning_artifacts"] = False
     with pytest.raises(ValueError, match="vanilla requires conversion.use_post_finetuning_artifacts=true"):
         validate_config(cfg)
+
+
+def test_generated_evaluation_configs_are_task_specific(generated_configs):
+    expected_names = [
+        "truthfulqa_mc1", "agieval", "arc_challenge", "piqa", "winogrande",
+        "boolq", "mmlu_pro", "bbh", "gsm8k_cot", "minerva_math",
+    ]
+    expected_enabled = expected_names[:6]
+    tldr_only = {"max_new_tokens", "tldr_input_length", "tldr_test_samples", "tldr_test_seed", "rouge_types"}
+    lm_eval_only = {"lm_eval_revision", "apply_chat_template", "lm_eval_task_specs", "limit"}
+    for path in generated_configs:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        evaluation = cfg["evaluation"]
+        if cfg["experiment"]["task"] == "tldr":
+            assert tldr_only <= set(evaluation)
+            assert not (lm_eval_only & set(evaluation))
+        else:
+            assert not (tldr_only & set(evaluation))
+            assert {"prefix_enabled", "batch_size", "lm_eval_revision", "apply_chat_template", "lm_eval_task_specs"} <= set(evaluation)
+            specs = evaluation["lm_eval_task_specs"]
+            assert [spec["name"] for spec in specs] == expected_names
+            assert [spec["name"] for spec in specs if spec["enabled"]] == expected_enabled
+            assert all(spec["enabled"] is False for spec in specs[6:])
