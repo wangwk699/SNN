@@ -82,14 +82,29 @@ def _validate_tulu_evaluation_summary(cfg, root, *, neuron):
         raise ValueError(f"Invalid Tulu evaluation summary schema: {summary_path}")
     specs = enabled_lm_eval_task_specs(cfg)
     names = [spec["name"] for spec in specs]
-    if list(summary["task_times"]) != names or list(summary["task_metrics"]) != names:
-        raise ValueError(f"Tulu evaluation summary task order mismatch: {summary_path}")
+    expected_names = set(names)
+    task_times = summary.get("task_times")
+    task_metrics = summary.get("task_metrics")
+    if not isinstance(task_times, dict):
+        raise ValueError(f"Invalid Tulu evaluation summary task_times: {summary_path}")
+    if not isinstance(task_metrics, dict):
+        raise ValueError(f"Invalid Tulu evaluation summary task_metrics: {summary_path}")
+
+    for label, values in (("task_times", task_times), ("task_metrics", task_metrics)):
+        actual_names = set(values)
+        missing = expected_names - actual_names
+        extra = actual_names - expected_names
+        if missing or extra:
+            raise ValueError(
+                f"Tulu evaluation summary {label} mismatch at {summary_path}: "
+                f"missing={sorted(missing)}, extra={sorted(extra)}"
+            )
     for spec in specs:
         name = spec["name"]
-        recorded_time = summary["task_times"].get(name)
+        recorded_time = task_times[name]
         if not isinstance(recorded_time, str) or not re.fullmatch(r"\d{2,}:[0-5]\d:[0-5]\d", recorded_time):
             raise ValueError(f"Invalid Tulu task time in {summary_path}: {name}")
-        metric = summary["task_metrics"].get(name)
+        metric = task_metrics[name]
         if isinstance(metric, bool) or not isinstance(metric, (int, float)):
             raise ValueError(f"Invalid Tulu task metric in {summary_path}: {name}")
         task_root = _tulu_lm_eval_task_root(cfg, root, spec, neuron=neuron)

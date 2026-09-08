@@ -881,3 +881,136 @@ def test_selected_snn_prefix_summary_does_not_use_final_ann_prefix():
     assert _VERIFY._selected_snn_prefix_summary(selected_snn_pre_prefix) != (
         _VERIFY._selected_snn_prefix_summary(final_ann_post_prefix)
     )
+
+
+def _tulu_summary_specs():
+    return [
+        {"name": "truthfulqa_mc1", "metric": "acc"},
+        {"name": "agieval", "metric": "acc"},
+        {"name": "arc_challenge", "metric": "acc_norm"},
+        {"name": "piqa", "metric": "acc_norm"},
+        {"name": "winogrande", "metric": "acc"},
+        {"name": "boolq", "metric": "acc"},
+    ]
+
+
+def _write_tulu_evaluation_summary_fixture(
+    monkeypatch, tmp_path, specs, *, task_time_names, task_metric_names
+):
+    evaluation_root = tmp_path / "evaluation"
+    by_name = {
+        spec["name"]: (index, spec)
+        for index, spec in enumerate(specs, start=1)
+    }
+
+    monkeypatch.setattr(
+        _VERIFY,
+        "_tulu_lm_eval_root",
+        lambda *_args, **_kwargs: evaluation_root,
+    )
+    monkeypatch.setattr(
+        _VERIFY,
+        "_tulu_lm_eval_task_root",
+        lambda _cfg, _root, spec, **_kwargs: (
+            evaluation_root / "task_results" / spec["name"]
+        ),
+    )
+    monkeypatch.setattr(
+        _VERIFY,
+        "enabled_lm_eval_task_specs",
+        lambda _cfg: specs,
+    )
+
+    for name, (index, spec) in by_name.items():
+        seconds = index * 60
+        write_json(
+            evaluation_root / "task_results" / name / "results.json",
+            {
+                "tasks": {
+                    name: {
+                        "results": {
+                            name: {f"{spec['metric']},none": index / 10},
+                        },
+                    },
+                },
+                "snn2_metadata": {
+                    "evaluation_timing": {"lm_eval_seconds": seconds},
+                },
+            },
+        )
+
+    def time_for(name):
+        return f"00:{by_name[name][0]:02d}:00"
+
+    def metric_for(name):
+        return by_name.get(name, (0, None))[0] / 10
+
+    write_json(
+        evaluation_root / "evaluation_summary.json",
+        {
+            "task_times": {name: time_for(name) for name in task_time_names},
+            "task_metrics": {
+                name: metric_for(name) for name in task_metric_names
+            },
+        },
+    )
+
+
+def test_tulu_evaluation_summary_accepts_json_sorted_task_keys(monkeypatch, tmp_path):
+    specs = _tulu_summary_specs()
+    names = [spec["name"] for spec in specs]
+    _write_tulu_evaluation_summary_fixture(
+        monkeypatch,
+        tmp_path,
+        specs,
+        task_time_names=sorted(names),
+        task_metric_names=sorted(names),
+    )
+
+    _VERIFY._validate_tulu_evaluation_summary({}, tmp_path, neuron="ann")
+
+
+@pytest.mark.parametrize(
+    ("field", "names", "expected_error"),
+    [
+        (
+            "task_times",
+            [
+                "truthfulqa_mc1",
+                "agieval",
+                "arc_challenge",
+                "piqa",
+                "winogrande",
+            ],
+            "task_times mismatch.*boolq",
+        ),
+        (
+            "task_metrics",
+            [
+                "truthfulqa_mc1",
+                "agieval",
+                "arc_challenge",
+                "piqa",
+                "winogrande",
+                "boolq",
+                "mmlu_pro",
+            ],
+            "task_metrics mismatch.*mmlu_pro",
+        ),
+    ],
+)
+def test_tulu_evaluation_summary_rejects_missing_or_extra_tasks(
+    monkeypatch, tmp_path, field, names, expected_error
+):
+    specs = _tulu_summary_specs()
+    enabled_names = [spec["name"] for spec in specs]
+    _write_tulu_evaluation_summary_fixture(
+        monkeypatch,
+        tmp_path,
+        specs,
+        task_time_names=names if field == "task_times" else enabled_names,
+        task_metric_names=names if field == "task_metrics" else enabled_names,
+    )
+
+    with pytest.raises(ValueError, match=expected_error):
+        _VERIFY._validate_tulu_evaluation_summary({}, tmp_path, neuron="ann")
