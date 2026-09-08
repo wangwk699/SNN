@@ -4,6 +4,8 @@ import os
 import time
 from types import MethodType
 
+from accelerate import Accelerator
+
 import torch
 
 from _common import apply_deployment_overrides, parser, setup
@@ -40,6 +42,8 @@ from snn2.modeling import (
     rotation_state,
 )
 from snn2.training import validate_recorded_training_artifact_provenance
+from snn2.lm_eval_distributed import (DistributedPreinitializedHFLM, distributed_max_seconds,
+    gather_sum_execution_counter, indices_for_rank)
 from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, build_test_selection,
     correct_effective_sample_counts, enabled_lm_eval_task_specs, prune_empty_selected_leaves,
     result_contains_metric, selection_by_leaf)
@@ -76,9 +80,8 @@ def _selected_lm_eval_tasks(name, spec):
         indices = sorted(selected[leaf_name])
         def doc_iterator(self, *, rank=0, limit=None, world_size=1, _indices=indices):
             # Limit is intentionally ignored: this wrapper is the deterministic test view.
-            for position, index in enumerate(_indices):
-                if position % int(world_size) == int(rank):
-                    yield index, self.eval_docs[index]
+            for index in indices_for_rank(_indices, rank=int(rank), world_size=int(world_size)):
+                yield index, self.eval_docs[index]
         task.doc_iterator = MethodType(doc_iterator, task)
     # simple_evaluate resolves by name again. Return this already wrapped tree so group
     # aggregation is retained without mutating a dataset or its few-shot pool.
@@ -119,6 +122,15 @@ def main():
         ),
     )
     apply_deployment_overrides(args, cfg)
+    accelerator = Accelerator()
+    rank = int(accelerator.process_index)
+    world_size = int(accelerator.num_processes)
+    device = accelerator.device
+    env_rank = int(os.environ.get("RANK", rank))
+    if env_rank != rank:
+        raise RuntimeError(f"Accelerate rank mismatch: environment={env_rank}, accelerator={rank}")
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
 
     # --------------------------------------------------
     # Base evaluation 只能是原始 ANN，
@@ -165,12 +177,6 @@ def main():
     if args.neuron != "ann" and not args.base and not args.rotated_pre_finetuning:
         validate_conversion_metadata(cfg, layout, args.neuron)
 
-    rank = int(
-        os.environ.get(
-            "RANK",
-            "0",
-        )
-    )
     active_prefix_enabled = (
         False if args.base else (
             rotated_pre_finetuning_prefix_enabled(cfg)
@@ -203,29 +209,6 @@ def main():
     ) as run:
 
         from lm_eval import simple_evaluate
-        from lm_eval.models.huggingface import HFLM
-
-        if torch.cuda.is_available():
-            local_rank = int(
-                os.environ.get(
-                    "LOCAL_RANK",
-                    "0",
-                )
-            )
-
-            device = torch.device(
-                "cuda",
-                local_rank,
-            )
-
-            torch.cuda.set_device(
-                device
-            )
-
-        else:
-            device = torch.device(
-                "cpu"
-            )
 
         # --------------------------------------------------
         # Model source
@@ -319,7 +302,8 @@ def main():
             )
         )
 
-        harness_model = HFLM(
+        harness_model = DistributedPreinitializedHFLM(
+            accelerator=accelerator,
             pretrained=proxy,
             tokenizer=tokenizer,
             batch_size=batch_size,
@@ -327,6 +311,11 @@ def main():
                 cfg["data"]["max_seq_length"]
             ),
         )
+        if harness_model.rank != rank or harness_model.world_size != world_size:
+            raise RuntimeError(
+                f"lm-eval distributed binding mismatch: rank={harness_model.rank}/{rank}, "
+                f"world_size={harness_model.world_size}/{world_size}"
+            )
 
         task_specs = enabled_lm_eval_task_specs(cfg)
         is_tulu_lm_eval = cfg["experiment"]["task"] == "tulu3"
@@ -348,7 +337,7 @@ def main():
                 fewshot_random_seed=int(cfg["experiment"]["seed"]),
                 apply_chat_template=bool(cfg["evaluation"].get("apply_chat_template", True)),
             )
-            timing = (
+            local_timing = (
                 {
                     "selection_setup_seconds": setup_seconds,
                     "lm_eval_seconds": time.perf_counter() - evaluation_started,
@@ -357,13 +346,32 @@ def main():
                 }
                 if is_tulu_lm_eval else None
             )
-            correct_effective_sample_counts(task_result, test_selection)
-            if not result_contains_metric(task_result, spec["metric"]):
-                raise ValueError(f"lm-eval result for {spec['name']!r} does not contain configured metric {spec['metric']!r}")
             after_counter = dict(proxy.execution_counter)
-            task_counter = (execution_counter_delta(before_counter, after_counter)
-                            if cfg["experiment"]["task"] == "tulu3" else after_counter)
-            task_results[spec["name"]] = (task_result, test_selection, task_counter, timing)
+            local_counter = (execution_counter_delta(before_counter, after_counter)
+                             if is_tulu_lm_eval else after_counter)
+            task_counter = gather_sum_execution_counter(local_counter, world_size=world_size)
+            timing = (
+                {
+                    "selection_setup_seconds": distributed_max_seconds(
+                        local_timing["selection_setup_seconds"], device=device, world_size=world_size),
+                    "lm_eval_seconds": distributed_max_seconds(
+                        local_timing["lm_eval_seconds"], device=device, world_size=world_size),
+                    "total_seconds": distributed_max_seconds(
+                        local_timing["total_seconds"], device=device, world_size=world_size),
+                    "selected_documents": local_timing["selected_documents"],
+                }
+                if is_tulu_lm_eval else None
+            )
+            if accelerator.is_main_process:
+                if task_result is None:
+                    raise RuntimeError(f"lm-eval returned no result on main rank for {spec['name']!r}")
+                correct_effective_sample_counts(task_result, test_selection)
+                if not result_contains_metric(task_result, spec["metric"]):
+                    raise ValueError(f"lm-eval result for {spec['name']!r} does not contain configured metric {spec['metric']!r}")
+                task_results[spec["name"]] = (task_result, test_selection, task_counter, timing)
+            elif task_result is not None:
+                raise RuntimeError(f"lm-eval unexpectedly returned a result on worker rank {rank} for {spec['name']!r}")
+            accelerator.wait_for_everyone()
 
         layers = int(
             getattr(
@@ -420,6 +428,12 @@ def main():
             **deployment_policy_metadata(controller),
 
             "batch_size": batch_size,
+            "evaluation_parallelism": (
+                "lm_eval_document_data_parallel" if world_size > 1 else "single_process"
+            ),
+            "evaluation_world_size": world_size,
+            "evaluation_batch_size_per_rank": batch_size,
+            "evaluation_model_replication": "one_full_model_per_process",
 
             "prefix_token_ids": (
                 model_prefix_ids
@@ -510,7 +524,7 @@ def main():
             output_root, cfg, base=args.base,
             rotated_pre_finetuning=args.rotated_pre_finetuning, neuron=args.neuron,
         )
-        if rank == 0:
+        if accelerator.is_main_process:
             timing_summary = None
             if is_tulu_lm_eval:
                 timing_summary = {

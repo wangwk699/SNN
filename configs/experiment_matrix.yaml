@@ -402,7 +402,7 @@ experiments:
         num_fewshot: 0
         metric: acc
         cot: false
-        test_samples: null
+        test_samples: 1000
         test_seed: 42
       - name: arc_challenge
         enabled: true

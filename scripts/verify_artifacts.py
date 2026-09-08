@@ -77,6 +77,16 @@ def _validate_tulu_lm_eval_result(results_path, selection_path, spec, *, experim
     mismatched = {key: (value, metadata.get(key)) for key, value in expected_metadata.items() if metadata.get(key) != value}
     if mismatched:
         raise ValueError(f"Tulu lm-eval result provenance mismatch at {results_path}: {mismatched}")
+    world_size = metadata.get("evaluation_world_size")
+    if not isinstance(world_size, int) or isinstance(world_size, bool) or world_size < 1:
+        raise ValueError(f"Invalid Tulu lm-eval evaluation_world_size at {results_path}")
+    expected_parallelism = "lm_eval_document_data_parallel" if world_size > 1 else "single_process"
+    if metadata.get("evaluation_parallelism") != expected_parallelism:
+        raise ValueError(f"Invalid Tulu lm-eval parallelism provenance at {results_path}")
+    if metadata.get("evaluation_model_replication") != "one_full_model_per_process":
+        raise ValueError(f"Invalid Tulu lm-eval model replication provenance at {results_path}")
+    if metadata.get("evaluation_batch_size_per_rank") != metadata.get("batch_size"):
+        raise ValueError(f"Invalid Tulu lm-eval per-rank batch-size provenance at {results_path}")
     selection = read_json(selection_path)
     selected = selection.get("selected_leaf_docs")
     if not isinstance(selected, list) or selection.get("selected_count") != len(selected):
