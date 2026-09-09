@@ -202,13 +202,31 @@ def test_deepspeed_zero3_cpu_offload_is_optimizer_only():
     assert config["fp16"]["enabled"] is False
 
 
-def test_non_qwen3_8b_training_memory_settings_remain_unchanged(generated_configs):
-    for path in generated_configs:
-        if path.stem.startswith("exp1_qwen3_8b_tldr__"):
-            continue
-        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+def test_qwen3_1_7b_training_memory_settings_remain_unchanged(generated_configs):
+    qwen3_1_7b = [
+        yaml.safe_load(path.read_text(encoding="utf-8"))
+        for path in generated_configs
+        if path.stem.startswith("exp1_qwen3_1_7b_tldr__")
+    ]
+    assert len(qwen3_1_7b) == 4
+    for cfg in qwen3_1_7b:
         assert cfg["training"]["gradient_checkpointing"] is False
         assert cfg["training"]["deepspeed_config"] == "configs/deepspeed_zero3.json"
+
+
+def test_tulu3_training_uses_cpu_optimizer_offload(generated_configs):
+    tulu3 = [
+        yaml.safe_load(path.read_text(encoding="utf-8"))
+        for path in generated_configs
+        if path.stem.startswith("exp2_llama3_8b_tulu3__")
+    ]
+    assert len(tulu3) == 4
+    for cfg in tulu3:
+        assert cfg["training"]["gradient_checkpointing"] is False
+        assert (
+            cfg["training"]["deepspeed_config"]
+            == "configs/deepspeed_zero3_cpu_offload.json"
+        )
 
 @pytest.mark.parametrize("mode", ["unaware", "phase_aware", "gif_aware"])
 def test_non_vanilla_accepts_pre_finetuning_conversion_bundle(generated_configs, mode):
@@ -271,3 +289,115 @@ def test_tulu_task_result_path_container_is_isolated_from_tldr(generated_configs
             assert task_path.parts[1] == "task_results"
         else:
             assert "task_results" not in cfg["evaluation"]
+
+
+@pytest.mark.parametrize("mode", ["vanilla", "unaware", "phase_aware", "gif_aware"])
+def test_tldr_full_run_paths_record_scheduler_warmup_and_aware_accumulation(
+    generated_configs, mode
+):
+    from snn2.artifacts import ArtifactLayout, safe_name
+
+    matching = [
+        path for path in generated_configs
+        if "tldr" in path.stem and path.stem.endswith(f"__{mode}")
+    ]
+    assert len(matching) == 2
+    for path in matching:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        training = cfg["training"]
+        model = safe_name(cfg["experiment"]["model_name"])
+        prefix = "prefix_enabled_false" if mode == "vanilla" else "prefix_enabled_ture"
+        learning = (
+            f"epochs_{training['num_train_epochs']}_"
+            + (f"num_samples_{cfg['calibration']['num_samples']}_" if mode in {"phase_aware", "gif_aware"} else "")
+            + f"lr{training['learning_rate']}_train_samples_{training['tldr_train_samples']}"
+            + (f"_calibration_group_size_{cfg['calibration']['group_size']}" if mode in {"phase_aware", "gif_aware"} else "")
+        )
+        if mode in {"phase_aware", "gif_aware"}:
+            prefix += f"_common_clip_enabled_{str(cfg['replacement']['common_clip_enabled']).lower()}"
+            phase_part = f"phase_T_{cfg['phase']['T']}_mtn_T_{cfg['mtn']['T']}"
+            if mode == "phase_aware":
+                phase_part += f"_surrogate_slope_{float(cfg['phase']['surrogate_slope'])}"
+            training_identity = (
+                f"{phase_part}_lr_scheduler_type_{training['lr_scheduler_type']}_"
+                f"warmup_ratio_{float(training['warmup_ratio'])}_"
+                f"gradient_accumulation_steps_{training['gradient_accumulation_steps']}"
+            )
+        else:
+            training_identity = (
+                f"lr_scheduler_type_{training['lr_scheduler_type']}_"
+                f"warmup_ratio_{float(training['warmup_ratio'])}"
+            )
+        expected = Path(
+            f"artifacts/{cfg['experiment']['id']}/tldr/{model}/{mode}/{learning}/"
+            f"{prefix}/{training_identity}/seed{cfg['experiment']['seed']}"
+        )
+        layout = ArtifactLayout(cfg)
+        assert layout.root == expected
+        if mode in {"vanilla", "unaware"}:
+            assert "gradient_accumulation_steps_" not in str(layout.root)
+
+
+def test_tulu_full_run_paths_remain_unchanged(generated_configs):
+    from snn2.artifacts import ArtifactLayout
+
+    expected = {
+        "vanilla": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/vanilla/lr1e-06_train_samples_10000/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.0/seed42",
+        "unaware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/unaware/lr1e-06_train_samples_10000/prefix_enabled_ture/lr_scheduler_type_cosine_warmup_ratio_0.0/seed42",
+        "phase_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/phase_aware/num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_T_4_mtn_T_4_surrogate_slope_1.0_lr_scheduler_type_cosine_warmup_ratio_0.0/seed42",
+        "gif_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/gif_aware/num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_T_4_mtn_T_4_lr_scheduler_type_cosine_warmup_ratio_0.0/seed42",
+    }
+    for path in generated_configs:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if cfg["experiment"]["task"] == "tulu3":
+            assert str(ArtifactLayout(cfg).root) == expected[cfg["experiment"]["ann_mode"]]
+
+
+@pytest.mark.parametrize("mode", ["vanilla", "unaware", "phase_aware", "gif_aware"])
+def test_tldr_scheduler_and_warmup_are_run_identity(generated_configs, mode):
+    import copy
+    from snn2.artifacts import ArtifactLayout
+
+    path = next(
+        path for path in generated_configs
+        if path.stem.startswith("exp1_qwen3_1_7b_tldr__")
+        and path.stem.endswith(f"__{mode}")
+    )
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    baseline = ArtifactLayout(cfg).root
+    scheduler = copy.deepcopy(cfg)
+    scheduler["training"]["lr_scheduler_type"] = "linear"
+    warmup = copy.deepcopy(cfg)
+    warmup["training"]["warmup_ratio"] = 0.25
+    assert ArtifactLayout(scheduler).root != baseline
+    assert ArtifactLayout(warmup).root != baseline
+
+
+def test_only_tldr_aware_modes_use_gradient_accumulation_as_run_identity(generated_configs):
+    import copy
+    from snn2.artifacts import ArtifactLayout
+
+    for path in generated_configs:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if cfg["experiment"]["task"] != "tldr":
+            continue
+        changed = copy.deepcopy(cfg)
+        changed["training"]["gradient_accumulation_steps"] += 1
+        mode = cfg["experiment"]["ann_mode"]
+        if mode in {"phase_aware", "gif_aware"}:
+            assert ArtifactLayout(changed).root != ArtifactLayout(cfg).root
+        else:
+            assert ArtifactLayout(changed).root == ArtifactLayout(cfg).root
+
+
+def test_tulu_gradient_accumulation_does_not_change_run_path(generated_configs):
+    import copy
+    from snn2.artifacts import ArtifactLayout
+
+    for path in generated_configs:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if cfg["experiment"]["task"] != "tulu3":
+            continue
+        changed = copy.deepcopy(cfg)
+        changed["training"]["gradient_accumulation_steps"] += 1
+        assert ArtifactLayout(changed).root == ArtifactLayout(cfg).root

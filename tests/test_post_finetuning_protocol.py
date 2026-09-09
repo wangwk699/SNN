@@ -24,7 +24,12 @@ def _cfg(mode, root="artifacts", common_clip_enabled=True, use_post=True):
             "id": "e", "task": "t", "model_name": "m", "seed": 42,
             "output_root": str(root), "ann_mode": mode,
         },
-        "training": {"learning_rate": 1e-6, "warmup_ratio": 0.03},
+        "training": {
+            "learning_rate": 1e-6,
+            "lr_scheduler_type": "cosine",
+            "warmup_ratio": 0.03,
+            "gradient_accumulation_steps": 8,
+        },
         "rotation": {"enabled": mode != "vanilla"},
         "prefix": {"enabled": mode != "vanilla"},
         "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
@@ -226,14 +231,14 @@ def test_vanilla_analysis_calibration_config_logs_and_sites_are_group_isolated()
 
 @pytest.mark.parametrize(
     ("configured", "suffix"),
-    [(None, "lr1e-06_train_samples_full/prefix_enabled_false/seed42"),
-     (128, "lr1e-06_train_samples_128/prefix_enabled_false/seed42")],
+    [(None, "lr1e-06_train_samples_full/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.03/seed42"),
+     (128, "lr1e-06_train_samples_128/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.03/seed42")],
 )
 def test_vanilla_tldr_path_records_no_pretraining_prefix(configured, suffix):
     cfg = _cfg("vanilla")
     cfg["experiment"]["task"] = "tldr"
     cfg["training"]["tldr_train_samples"] = configured
-    assert ArtifactLayout(cfg).root.parts[-3:] == Path(suffix).parts[-3:]
+    assert ArtifactLayout(cfg).root.parts[-4:] == Path(suffix).parts[-4:]
 
 
 def _write_prefix_state(cfg, layout, directory, token_ids):

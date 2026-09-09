@@ -45,11 +45,21 @@ def phase_training_dirname(*, phase_T: Any, mtn_T: Any, surrogate_slope: Any, wa
     )
 
 
-def gif_training_dirname(*, phase_T: Any, mtn_T: Any, warmup_ratio: Any, lr_scheduler_type: Any | None = None) -> str:
+def gif_training_dirname(
+    *,
+    phase_T: Any,
+    mtn_T: Any,
+    warmup_ratio: Any,
+    lr_scheduler_type: Any | None = None,
+    gradient_accumulation_steps: Any | None = None,
+) -> str:
     result = f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}"
     if lr_scheduler_type is not None:
         result += f"_lr_scheduler_type_{lr_scheduler_type}"
-    return result + f"_warmup_ratio_{float(warmup_ratio)}"
+    result += f"_warmup_ratio_{float(warmup_ratio)}"
+    if gradient_accumulation_steps is not None:
+        result += f"_gradient_accumulation_steps_{int(gradient_accumulation_steps)}"
+    return result
 
 def lm_eval_spec_dirname(spec: dict[str, Any]) -> str:
     samples = "full" if spec["test_samples"] is None else str(int(spec["test_samples"]))
@@ -142,7 +152,7 @@ class ArtifactLayout:
             / learning_rate
             / run_variant
         )
-        if exp["task"] == "tulu3" and exp["ann_mode"] in {"vanilla", "unaware"}:
+        if exp["task"] in {"tldr", "tulu3"} and exp["ann_mode"] in {"vanilla", "unaware"}:
             run_root = run_root / (
                 f"lr_scheduler_type_{cfg['training']['lr_scheduler_type']}_"
                 f"warmup_ratio_{float(cfg['training']['warmup_ratio'])}"
@@ -158,11 +168,27 @@ class ArtifactLayout:
                     f"_warmup_ratio_{float(cfg['training']['warmup_ratio'])}",
                     f"_lr_scheduler_type_{cfg['training']['lr_scheduler_type']}_warmup_ratio_{float(cfg['training']['warmup_ratio'])}",
                 ))
+            elif exp["task"] == "tldr":
+                run_root = run_root.parent / (run_root.name.replace(
+                    f"_warmup_ratio_{float(cfg['training']['warmup_ratio'])}",
+                    f"_lr_scheduler_type_{cfg['training']['lr_scheduler_type']}_"
+                    f"warmup_ratio_{float(cfg['training']['warmup_ratio'])}_"
+                    f"gradient_accumulation_steps_{int(cfg['training']['gradient_accumulation_steps'])}",
+                ))
         elif exp["ann_mode"] == "gif_aware":
             run_root = run_root / gif_training_dirname(
                 phase_T=cfg["phase"]["T"], mtn_T=cfg["mtn"]["T"],
                 warmup_ratio=cfg["training"]["warmup_ratio"],
-                lr_scheduler_type=cfg["training"]["lr_scheduler_type"] if exp["task"] == "tulu3" else None,
+                lr_scheduler_type=(
+                    cfg["training"]["lr_scheduler_type"]
+                    if exp["task"] in {"tldr", "tulu3"}
+                    else None
+                ),
+                gradient_accumulation_steps=(
+                    cfg["training"]["gradient_accumulation_steps"]
+                    if exp["task"] == "tldr"
+                    else None
+                ),
             )
         self.root = run_root / seed
         # 原始 Base 模型独立目录：
