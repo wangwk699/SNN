@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import copy
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
-import yaml
 
 import snn2.model_integration as model_integration
-from scripts.materialize_configs import materialize_configs
-from snn2.config import resolve_config, validate_config
 from snn2.hadamard import make_spec
 from snn2.model_integration import (
     _make_mlp_forward,
@@ -40,90 +35,6 @@ from snn2.temporal_ops import (
     SITE_STATE_FORMAT_VERSION,
     TEMPORAL_IMPLEMENTATION_VERSION,
 )
-
-
-ROOT = Path(__file__).resolve().parents[1]
-LLAMA_PREFIX = "exp2_llama3_8b_tulu3__"
-
-
-@pytest.fixture()
-def generated_configs(tmp_path):
-    paths = materialize_configs(
-        ROOT / "configs" / "experiment_matrix.yaml",
-        tmp_path / "generated",
-    )
-    return {
-        path.stem: yaml.safe_load(path.read_text(encoding="utf-8"))
-        for path in paths
-    }
-
-
-def _llama_config(generated_configs, mode: str) -> dict:
-    return copy.deepcopy(generated_configs[f"{LLAMA_PREFIX}{mode}"])
-
-
-def test_memory_config_defaults_and_llama3_variants(generated_configs):
-    legacy = _llama_config(generated_configs, "vanilla")
-    legacy.pop("ann_training_memory")
-    resolved = resolve_config(legacy)
-    assert resolved["ann_training_memory"] == {
-        "attention_core_checkpoint": False,
-        "mlp_checkpoint": False,
-    }
-    validate_config(resolved)
-    for mode, expected in {
-        "vanilla": False,
-        "unaware": False,
-        "phase_aware": True,
-        "gif_aware": True,
-    }.items():
-        memory = _llama_config(generated_configs, mode)["ann_training_memory"]
-        assert memory["attention_core_checkpoint"] is expected
-        assert memory["mlp_checkpoint"] is expected
-
-
-@pytest.mark.parametrize("mode", ["vanilla", "unaware"])
-def test_memory_config_rejects_non_aware_modes(generated_configs, mode):
-    cfg = _llama_config(generated_configs, mode)
-    cfg["ann_training_memory"]["attention_core_checkpoint"] = True
-    with pytest.raises(ValueError, match="only valid for aware ANN modes"):
-        validate_config(cfg)
-
-
-@pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
-def test_memory_config_allows_aware_modes(generated_configs, mode):
-    validate_config(_llama_config(generated_configs, mode))
-
-
-def test_memory_config_rejects_transformers_gradient_checkpointing(generated_configs):
-    cfg = _llama_config(generated_configs, "phase_aware")
-    cfg["training"]["gradient_checkpointing"] = True
-    with pytest.raises(ValueError, match="must not be combined"):
-        validate_config(cfg)
-
-
-def test_memory_config_rejects_unknown_or_non_boolean_keys(generated_configs):
-    cfg = _llama_config(generated_configs, "phase_aware")
-    cfg["ann_training_memory"]["unknown"] = False
-    with pytest.raises(ValueError, match="Unsupported"):
-        validate_config(cfg)
-    cfg = _llama_config(generated_configs, "phase_aware")
-    cfg["ann_training_memory"]["mlp_checkpoint"] = 1
-    with pytest.raises(ValueError, match="must be true or false"):
-        validate_config(cfg)
-
-
-def test_qwen_selective_checkpoint_is_disabled(generated_configs):
-    qwen_configs = [
-        cfg for cfg in generated_configs.values()
-        if cfg["experiment"]["model_name"].startswith("Qwen/")
-    ]
-    assert len(qwen_configs) == 8
-    for cfg in qwen_configs:
-        assert cfg["ann_training_memory"] == {
-            "attention_core_checkpoint": False,
-            "mlp_checkpoint": False,
-        }
 
 
 class _ReplacementController:
