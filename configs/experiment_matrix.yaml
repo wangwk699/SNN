@@ -519,7 +519,7 @@ experiments:
       use_post_finetuning_artifacts: false
     ann_training_memory:
       attention_core_checkpoint: true
-      mlp_checkpoint: false
+      mlp_checkpoint: true
 - name: exp2_llama3_8b_tulu3
   ann_modes: [gif_aware]
   config:
