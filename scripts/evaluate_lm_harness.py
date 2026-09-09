@@ -33,6 +33,7 @@ from snn2.evaluation import (
     evaluation_calibration_metadata,
     evaluation_forward_metadata,
     evaluation_ann_common_clip_enabled,
+    lm_eval_batch_size,
 )
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
@@ -458,12 +459,7 @@ def main():
             prefix_key_values_for_stage(cfg, layout, stage=prefix_stage),
         )
 
-        batch_size = int(
-            cfg["evaluation"].get(
-                "batch_size",
-                1,
-            )
-        )
+        batch_size = lm_eval_batch_size(cfg, neuron=args.neuron)
 
         harness_model = DistributedPreinitializedHFLM(
             accelerator=accelerator,

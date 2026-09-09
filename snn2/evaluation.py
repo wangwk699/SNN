@@ -84,6 +84,16 @@ def activation_neuron_operators_per_temporal_forward(
     raise ValueError(f"Unknown neuron: {neuron}")
 
 
+def lm_eval_batch_size(
+    cfg: dict[str, object], *, neuron: str
+) -> int:
+    """Resolve the logical lm-eval batch size for the selected runtime."""
+    evaluation = cfg["evaluation"]
+    if cfg["experiment"]["task"] == "tulu3" and neuron != "ann":
+        return int(evaluation["snn_batch_size"])
+    return int(evaluation["batch_size"])
+
+
 def final_ann_replacement_mode(cfg: dict[str, object]) -> str:
     """Return the non-temporal forward mode used by final ANN evaluation."""
     mode = cfg["experiment"]["ann_mode"]

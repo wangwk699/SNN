@@ -9,7 +9,7 @@ import json
 
 from scripts.materialize_configs import materialize_configs
 from snn2.config import validate_config
-from snn2.evaluation import final_ann_replacement_mode
+from snn2.evaluation import final_ann_replacement_mode, lm_eval_batch_size
 from snn2.temporal_ops import (
     GIF_HIGH_QMAX,
     GIF_LOCAL_STEPS,
@@ -256,13 +256,74 @@ def test_generated_evaluation_configs_are_task_specific(generated_configs):
         if cfg["experiment"]["task"] == "tldr":
             assert tldr_only <= set(evaluation)
             assert not (lm_eval_only & set(evaluation))
+            assert evaluation["batch_size"] == 8
+            assert "snn_batch_size" not in evaluation
         else:
             assert not (tldr_only & set(evaluation))
-            assert {"prefix_enabled", "batch_size", "lm_eval_revision", "apply_chat_template", "lm_eval_task_specs"} <= set(evaluation)
+            assert {
+                "prefix_enabled", "batch_size", "snn_batch_size",
+                "lm_eval_revision", "apply_chat_template", "lm_eval_task_specs",
+            } <= set(evaluation)
+            assert evaluation["batch_size"] == 8
+            assert evaluation["snn_batch_size"] == 1
             specs = evaluation["lm_eval_task_specs"]
             assert [spec["name"] for spec in specs] == expected_names
             assert [spec["name"] for spec in specs if spec["enabled"]] == expected_enabled
             assert all(spec["enabled"] is False for spec in specs[6:])
+
+
+@pytest.mark.parametrize(
+    ("neuron", "expected"),
+    [("ann", 8), ("phase", 1), ("gif", 1), ("mtn", 1)],
+)
+def test_tulu3_lm_eval_batch_size_uses_snn_setting_for_snn_neurons(
+    generated_configs, neuron, expected
+):
+    cfg = yaml.safe_load(next(
+        path for path in generated_configs
+        if path.stem.startswith("exp2_llama3_8b_tulu3__")
+    ).read_text(encoding="utf-8"))
+    assert lm_eval_batch_size(cfg, neuron=neuron) == expected
+
+
+@pytest.mark.parametrize("neuron", ["ann", "phase", "gif", "mtn"])
+def test_tldr_lm_eval_batch_size_keeps_existing_setting(generated_configs, neuron):
+    for path in generated_configs:
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if cfg["experiment"]["task"] == "tldr":
+            assert lm_eval_batch_size(cfg, neuron=neuron) == cfg["evaluation"]["batch_size"]
+
+
+def test_tulu3_snn_batch_size_is_required(generated_configs):
+    cfg = yaml.safe_load(next(
+        path for path in generated_configs
+        if path.stem.startswith("exp2_llama3_8b_tulu3__")
+    ).read_text(encoding="utf-8"))
+    cfg["evaluation"].pop("snn_batch_size")
+    with pytest.raises(ValueError, match="snn_batch_size must be a positive integer"):
+        validate_config(cfg)
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True, "1", None])
+def test_tulu3_snn_batch_size_must_be_positive_integer(generated_configs, value):
+    cfg = yaml.safe_load(next(
+        path for path in generated_configs
+        if path.stem.startswith("exp2_llama3_8b_tulu3__")
+    ).read_text(encoding="utf-8"))
+    cfg["evaluation"]["snn_batch_size"] = value
+    with pytest.raises(ValueError, match="snn_batch_size must be a positive integer"):
+        validate_config(cfg)
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True, "1", None])
+def test_tulu3_batch_size_must_be_positive_integer(generated_configs, value):
+    cfg = yaml.safe_load(next(
+        path for path in generated_configs
+        if path.stem.startswith("exp2_llama3_8b_tulu3__")
+    ).read_text(encoding="utf-8"))
+    cfg["evaluation"]["batch_size"] = value
+    with pytest.raises(ValueError, match="evaluation.batch_size must be a positive integer"):
+        validate_config(cfg)
 
 
 def test_tldr_aware_run_paths_include_epochs_before_calibration_identity(generated_configs):

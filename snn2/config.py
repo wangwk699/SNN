@@ -201,6 +201,23 @@ def validate_config(cfg: dict[str, Any]) -> None:
         train_seed = cfg["training"].get("train_seed")
         if not isinstance(train_seed, int) or isinstance(train_seed, bool):
             raise ValueError("training.train_seed must be an integer")
+        evaluation = cfg["evaluation"]
+        batch_size = evaluation.get("batch_size")
+        if (
+            not isinstance(batch_size, int)
+            or isinstance(batch_size, bool)
+            or batch_size <= 0
+        ):
+            raise ValueError("evaluation.batch_size must be a positive integer")
+        snn_batch_size = evaluation.get("snn_batch_size")
+        if (
+            not isinstance(snn_batch_size, int)
+            or isinstance(snn_batch_size, bool)
+            or snn_batch_size <= 0
+        ):
+            raise ValueError(
+                "Tulu-3 evaluation.snn_batch_size must be a positive integer"
+            )
         from .lm_eval_protocol import validate_lm_eval_task_specs
         validate_lm_eval_task_specs(cfg)
 

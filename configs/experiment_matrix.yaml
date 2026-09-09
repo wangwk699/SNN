@@ -396,6 +396,7 @@ experiments:
     evaluation:
       prefix_enabled: true
       batch_size: 8
+      snn_batch_size: 1
       lm_eval_revision: 6d2abda4fd171e68a8789330c4149e37c1ca0bda
       apply_chat_template: true
       lm_eval_task_specs:
