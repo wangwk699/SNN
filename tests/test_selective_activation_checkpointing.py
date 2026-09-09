@@ -1,34 +1,69 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 
-import yaml
-
 import pytest
 import torch
+import yaml
 
 import snn2.model_integration as model_integration
+from scripts.materialize_configs import materialize_configs
 from snn2.config import resolve_config, validate_config
+from snn2.hadamard import make_spec
 from snn2.model_integration import (
     _make_mlp_forward,
     _selective_checkpoint_allowed,
     snn2_eager_attention_forward,
 )
+from snn2.neurons import PhaseSurrogate, StaticGIF
+from snn2.phase_statistics import (
+    NEURON_PARAMETER_CLAMP_MAX,
+    NEURON_PARAMETER_CLAMP_MIN,
+    NEURON_PARAMETER_CLAMP_POLICY,
+    PHASE_TAU_ACCUMULATOR_DTYPE,
+    PHASE_TAU_CALIBRATION,
+    PHASE_TAU_CHANNEL_POLICY,
+    PHASE_TAU_EMA_FACTOR,
+    PHASE_TAU_REDUCTION_POLICY,
+)
+from snn2.temporal_ops import (
+    GIF_ADD_BITS,
+    GIF_BASE_BITS,
+    GIF_HIGH_QMAX,
+    GIF_INTEGER_DECOMPOSITION,
+    GIF_LOCAL_STEPS,
+    GIF_LOW_QMAX,
+    GIF_SALIENT_POLICY,
+    GIF_STEP_QMAX,
+    SITE_STATE_FORMAT_VERSION,
+    TEMPORAL_IMPLEMENTATION_VERSION,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
+LLAMA_PREFIX = "exp2_llama3_8b_tulu3__"
 
 
-def _generated_config(mode: str) -> dict:
-    return yaml.safe_load(
-        (ROOT / "configs" / "generated" / f"exp2_llama3_8b_tulu3__{mode}.yaml").read_text(
-            encoding="utf-8"
-        )
+@pytest.fixture()
+def generated_configs(tmp_path):
+    paths = materialize_configs(
+        ROOT / "configs" / "experiment_matrix.yaml",
+        tmp_path / "generated",
     )
+    return {
+        path.stem: yaml.safe_load(path.read_text(encoding="utf-8"))
+        for path in paths
+    }
 
-def test_memory_config_defaults_and_llama3_variants():
-    legacy = _generated_config("vanilla")
+
+def _llama_config(generated_configs, mode: str) -> dict:
+    return copy.deepcopy(generated_configs[f"{LLAMA_PREFIX}{mode}"])
+
+
+def test_memory_config_defaults_and_llama3_variants(generated_configs):
+    legacy = _llama_config(generated_configs, "vanilla")
     legacy.pop("ann_training_memory")
     resolved = resolve_config(legacy)
     assert resolved["ann_training_memory"] == {
@@ -42,41 +77,53 @@ def test_memory_config_defaults_and_llama3_variants():
         "phase_aware": True,
         "gif_aware": True,
     }.items():
-        memory = _generated_config(mode)["ann_training_memory"]
+        memory = _llama_config(generated_configs, mode)["ann_training_memory"]
         assert memory["attention_core_checkpoint"] is expected
         assert memory["mlp_checkpoint"] is expected
 
 
 @pytest.mark.parametrize("mode", ["vanilla", "unaware"])
-def test_memory_config_rejects_non_aware_modes(mode):
-    cfg = _generated_config(mode)
+def test_memory_config_rejects_non_aware_modes(generated_configs, mode):
+    cfg = _llama_config(generated_configs, mode)
     cfg["ann_training_memory"]["attention_core_checkpoint"] = True
     with pytest.raises(ValueError, match="only valid for aware ANN modes"):
         validate_config(cfg)
 
 
 @pytest.mark.parametrize("mode", ["phase_aware", "gif_aware"])
-def test_memory_config_allows_aware_modes(mode):
-    cfg = _generated_config(mode)
-    validate_config(cfg)
+def test_memory_config_allows_aware_modes(generated_configs, mode):
+    validate_config(_llama_config(generated_configs, mode))
 
 
-def test_memory_config_rejects_transformers_gradient_checkpointing():
-    cfg = _generated_config("phase_aware")
+def test_memory_config_rejects_transformers_gradient_checkpointing(generated_configs):
+    cfg = _llama_config(generated_configs, "phase_aware")
     cfg["training"]["gradient_checkpointing"] = True
     with pytest.raises(ValueError, match="must not be combined"):
         validate_config(cfg)
 
 
-def test_memory_config_rejects_unknown_or_non_boolean_keys():
-    cfg = _generated_config("phase_aware")
+def test_memory_config_rejects_unknown_or_non_boolean_keys(generated_configs):
+    cfg = _llama_config(generated_configs, "phase_aware")
     cfg["ann_training_memory"]["unknown"] = False
     with pytest.raises(ValueError, match="Unsupported"):
         validate_config(cfg)
-    cfg = _generated_config("phase_aware")
+    cfg = _llama_config(generated_configs, "phase_aware")
     cfg["ann_training_memory"]["mlp_checkpoint"] = 1
     with pytest.raises(ValueError, match="must be true or false"):
         validate_config(cfg)
+
+
+def test_qwen_selective_checkpoint_is_disabled(generated_configs):
+    qwen_configs = [
+        cfg for cfg in generated_configs.values()
+        if cfg["experiment"]["model_name"].startswith("Qwen/")
+    ]
+    assert len(qwen_configs) == 8
+    for cfg in qwen_configs:
+        assert cfg["ann_training_memory"] == {
+            "attention_core_checkpoint": False,
+            "mlp_checkpoint": False,
+        }
 
 
 class _ReplacementController:
@@ -117,16 +164,14 @@ def _attention_run(*, mode: str, checkpoint_enabled: bool, prefix: int = 0, drop
 def test_attention_checkpoint_forward_and_backward_match(mode):
     off = _attention_run(mode=mode, checkpoint_enabled=False)
     on = _attention_run(mode=mode, checkpoint_enabled=True)
-    for actual, expected in zip(on, off):
-        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    _assert_close_runs(on, off)
 
 
 def test_attention_checkpoint_supports_prefix_key_value_length():
     off = _attention_run(mode="phase", checkpoint_enabled=False, prefix=3)
     on = _attention_run(mode="phase", checkpoint_enabled=True, prefix=3)
     assert off[1].shape == (2, 4, 8, 11)
-    for actual, expected in zip(on, off):
-        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    _assert_close_runs(on, off)
 
 
 def test_attention_checkpoint_preserves_dropout_rng():
@@ -134,8 +179,162 @@ def test_attention_checkpoint_preserves_dropout_rng():
     off = _attention_run(mode="phase", checkpoint_enabled=False, dropout=0.25)
     torch.manual_seed(31)
     on = _attention_run(mode="phase", checkpoint_enabled=True, dropout=0.25)
-    for actual, expected in zip(on, off):
-        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    _assert_close_runs(on, off)
+
+
+def _state_header(kind: str) -> dict:
+    return {
+        "state_kind": kind,
+        "format_version": SITE_STATE_FORMAT_VERSION,
+        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
+    }
+
+
+def _real_phase_state(*, layout: str, channels: int | None = None, heads: int = 2) -> dict:
+    if layout == "last_dim_grouped":
+        if channels is None or channels % 2:
+            raise ValueError("last_dim_grouped Phase test requires an even channel count")
+        state_layout = {
+            "parameter_layout": layout,
+            "configured_group_size": 2,
+            "group_size": 2,
+            "num_heads": None,
+            "channels_per_head": channels,
+            "groups_per_head": channels // 2,
+        }
+        tau = torch.full((channels // 2,), 0.5)
+    elif layout == "attention_head_scalar":
+        state_layout = {
+            "parameter_layout": layout,
+            "configured_group_size": -1,
+            "group_size": -1,
+            "num_heads": heads,
+            "channels_per_head": None,
+            "groups_per_head": 1,
+        }
+        tau = torch.full((heads, 1), 0.5)
+    else:
+        raise ValueError(layout)
+    return {
+        **_state_header("phase"),
+        **state_layout,
+        "tau": tau,
+        "tau_calibration": PHASE_TAU_CALIBRATION,
+        "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
+        "tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
+        "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+        "tau_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "tau_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+        "tau_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
+    }
+
+
+def _real_gif_state(*, channels: int = 12) -> dict:
+    if channels % 2:
+        raise ValueError("last_dim_grouped GIF test requires an even channel count")
+    groups = channels // 2
+    return {
+        **_state_header("gif"),
+        "parameter_layout": "last_dim_grouped",
+        "configured_group_size": 2,
+        "group_size": 2,
+        "num_heads": None,
+        "channels_per_head": channels,
+        "groups_per_head": groups,
+        "gif_policy": GIF_SALIENT_POLICY,
+        "base_bits": GIF_BASE_BITS,
+        "add_bits": GIF_ADD_BITS,
+        "low_qmin": 0,
+        "low_qmax": GIF_LOW_QMAX,
+        "high_qmin": 0,
+        "high_qmax": GIF_HIGH_QMAX,
+        "temporal_steps": GIF_LOCAL_STEPS,
+        "per_step_qmin": 0,
+        "per_step_qmax": GIF_STEP_QMAX,
+        "integer_decomposition": GIF_INTEGER_DECOMPOSITION,
+        "low_scale": torch.full((groups,), 0.1),
+        "low_zero": torch.zeros(groups),
+        "high_scale": torch.full((groups,), 0.05),
+        "high_zero": torch.zeros(groups),
+        "mask_low": torch.tensor(
+            [True, False] * (channels // 2), dtype=torch.bool
+        ),
+    }
+
+
+class _RealPhaseAttentionController:
+    def __init__(self, checkpoint_enabled: bool):
+        self.mode = "phase"
+        self.checkpoint_attention_core = checkpoint_enabled
+        self.checkpoint_mlp = False
+        self.regression_recorder = None
+        self.phase = PhaseSurrogate(
+            _real_phase_state(layout="attention_head_scalar"),
+            T=4,
+            surrogate_slope=1.0,
+        )
+
+    def apply(self, _layer: int, site: int, value: torch.Tensor, **_kwargs) -> torch.Tensor:
+        return self.phase(value) if site == 5 else value
+
+
+class _RealPhaseMLPController:
+    def __init__(self, checkpoint_enabled: bool):
+        self.mode = "phase"
+        self.checkpoint_attention_core = False
+        self.checkpoint_mlp = checkpoint_enabled
+        self.regression_recorder = None
+        self.modules = {
+            site: PhaseSurrogate(
+                _real_phase_state(layout="last_dim_grouped", channels=12),
+                T=4,
+                surrogate_slope=1.0,
+            )
+            for site in (8, 9, 10)
+        }
+
+    def apply(self, _layer: int, site: int, value: torch.Tensor, **_kwargs) -> torch.Tensor:
+        return self.modules[site](value) if site in self.modules else value
+
+
+class _RealGIFMLPController:
+    def __init__(self, checkpoint_enabled: bool):
+        self.mode = "gif"
+        self.checkpoint_attention_core = False
+        self.checkpoint_mlp = checkpoint_enabled
+        self.regression_recorder = None
+        self.modules = {site: StaticGIF(_real_gif_state()) for site in (8, 9, 10)}
+
+    def apply(self, _layer: int, site: int, value: torch.Tensor, **_kwargs) -> torch.Tensor:
+        return self.modules[site](value) if site in self.modules else value
+
+
+def _real_phase_attention_run(checkpoint_enabled: bool):
+    torch.manual_seed(211)
+    query = (torch.randn(1, 2, 4, 4) * 0.5).requires_grad_()
+    key = (torch.randn(1, 2, 4, 4) * 0.5).requires_grad_()
+    value = (torch.randn(1, 2, 4, 4) * 0.5).requires_grad_()
+    controller = _RealPhaseAttentionController(checkpoint_enabled)
+    module = SimpleNamespace(
+        _snn2_controller=controller,
+        _snn2_layer_index=0,
+        num_key_value_groups=1,
+        scaling=0.5,
+        training=True,
+    )
+    output, weights = snn2_eager_attention_forward(
+        module, query, key, value, torch.zeros(1, 1, 4, 4), dropout=0.0
+    )
+    output.float().square().mean().backward()
+    return output.detach(), weights.detach(), query.grad, key.grad, value.grad
+
+
+def test_real_phase_attention_checkpoint_forward_backward_match():
+    off = _real_phase_attention_run(False)
+    on = _real_phase_attention_run(True)
+    _assert_close_runs(on, off)
+    assert torch.count_nonzero(on[2]) > 0
 
 
 class _MLP(torch.nn.Module):
@@ -158,15 +357,59 @@ def _mlp_run(*, checkpoint_enabled: bool, r4, monkeypatch):
     return output.detach(), x.grad, mlp.gate_proj.weight.grad, mlp.up_proj.weight.grad, mlp.down_proj.weight.grad, controller.gain.grad
 
 
-@pytest.mark.parametrize("r4", [None, object()])
-def test_mlp_checkpoint_forward_and_backward_match(monkeypatch, r4):
-    off = _mlp_run(checkpoint_enabled=False, r4=r4, monkeypatch=monkeypatch)
-    on = _mlp_run(checkpoint_enabled=True, r4=r4, monkeypatch=monkeypatch)
-    for actual, expected in zip(on, off):
-        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+def test_mlp_checkpoint_forward_and_backward_match(monkeypatch):
+    off = _mlp_run(checkpoint_enabled=False, r4=None, monkeypatch=monkeypatch)
+    on = _mlp_run(checkpoint_enabled=True, r4=None, monkeypatch=monkeypatch)
+    _assert_close_runs(on, off)
 
 
-@pytest.mark.parametrize("mode", ["identity", "none", "collect", "deploy_phase", "deploy_gif", "deploy_mtn"])
+def _real_mlp_run(controller_cls, *, checkpoint_enabled: bool, r4=None):
+    torch.manual_seed(307)
+    mlp = _MLP()
+    x = (torch.randn(2, 5, 6) * 0.25 + 0.2).requires_grad_()
+    controller = controller_cls(checkpoint_enabled)
+    output = _make_mlp_forward(controller, 0, r4)(mlp, x)
+    output.float().square().mean().backward()
+    return (
+        output.detach(),
+        x.grad,
+        mlp.gate_proj.weight.grad,
+        mlp.up_proj.weight.grad,
+        mlp.down_proj.weight.grad,
+    )
+
+
+def test_real_phase_mlp_checkpoint_forward_backward_match():
+    off = _real_mlp_run(_RealPhaseMLPController, checkpoint_enabled=False)
+    on = _real_mlp_run(_RealPhaseMLPController, checkpoint_enabled=True)
+    _assert_close_runs(on, off)
+    assert torch.count_nonzero(on[1]) > 0
+
+
+def test_real_static_gif_mlp_checkpoint_forward_backward_match():
+    off = _real_mlp_run(_RealGIFMLPController, checkpoint_enabled=False)
+    on = _real_mlp_run(_RealGIFMLPController, checkpoint_enabled=True)
+    _assert_close_runs(on, off)
+    assert torch.isfinite(on[1]).all()
+    assert torch.count_nonzero(on[1]) > 0
+
+
+def test_real_phase_r4_mlp_checkpoint_forward_backward_match():
+    r4 = make_spec("R4_test", dimension=12, seed=123)
+    off = _real_mlp_run(_RealPhaseMLPController, checkpoint_enabled=False, r4=r4)
+    on = _real_mlp_run(_RealPhaseMLPController, checkpoint_enabled=True, r4=r4)
+    _assert_close_runs(on, off)
+    assert torch.count_nonzero(on[2]) > 0
+
+
+def _assert_close_runs(actual, expected) -> None:
+    for value, reference in zip(actual, expected):
+        torch.testing.assert_close(value, reference, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "mode", ["identity", "none", "collect", "deploy_phase", "deploy_gif", "deploy_mtn"]
+)
 def test_checkpoint_guard_rejects_non_aware_modes(mode):
     controller = _ReplacementController(mode, attention=True, mlp=True)
     module = torch.nn.Linear(2, 2).train()
@@ -181,6 +424,14 @@ def test_checkpoint_guard_rejects_eval_and_regression_recording():
     module.train()
     controller.regression_recorder = object()
     assert not _selective_checkpoint_allowed(module, controller, kind="mlp")
+
+
+def test_checkpoint_guard_rejects_no_grad():
+    controller = _ReplacementController("phase", attention=True, mlp=True)
+    module = torch.nn.Linear(2, 2).train()
+    with torch.no_grad():
+        assert not _selective_checkpoint_allowed(module, controller, kind="attention")
+        assert not _selective_checkpoint_allowed(module, controller, kind="mlp")
 
 
 def test_checkpoint_guard_rejects_unknown_kind():
