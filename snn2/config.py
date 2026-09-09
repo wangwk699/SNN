@@ -56,6 +56,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
 def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     cfg = copy.deepcopy(raw)
     cfg["replacement"].setdefault("common_clip_enabled", True)
+    cfg.setdefault("ann_training_memory", {})
+    cfg["ann_training_memory"].setdefault("attention_core_checkpoint", False)
+    cfg["ann_training_memory"].setdefault("mlp_checkpoint", False)
     cfg.setdefault("ann_training", {})
     cfg.setdefault("rotated_pre_finetuning", {})
     cfg["rotated_pre_finetuning"].setdefault("prefix_enabled", True)
@@ -108,6 +111,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
         "evaluation",
         "post_finetuning",
         "conversion",
+        "ann_training_memory",
     }
     missing = required - cfg.keys()
     if missing:
@@ -115,6 +119,31 @@ def validate_config(cfg: dict[str, Any]) -> None:
     mode = cfg["experiment"].get("ann_mode")
     if mode not in ANN_MODES:
         raise ValueError(f"ann_mode must be one of {sorted(ANN_MODES)}, got {mode}")
+    memory_cfg = cfg["ann_training_memory"]
+    if not isinstance(memory_cfg, dict):
+        raise ValueError("ann_training_memory must be a mapping")
+    supported_memory_keys = {"attention_core_checkpoint", "mlp_checkpoint"}
+    unknown_memory_keys = sorted(set(memory_cfg) - supported_memory_keys)
+    if unknown_memory_keys:
+        raise ValueError(
+            "Unsupported ann_training_memory keys: "
+            f"{unknown_memory_keys}"
+        )
+    for key in sorted(supported_memory_keys):
+        if not isinstance(memory_cfg.get(key), bool):
+            raise ValueError(f"ann_training_memory.{key} must be true or false")
+    selective_checkpointing_enabled = (
+        memory_cfg["attention_core_checkpoint"] or memory_cfg["mlp_checkpoint"]
+    )
+    if selective_checkpointing_enabled and not is_aware_ann_mode(cfg):
+        raise ValueError("Selective ANN checkpointing is only valid for aware ANN modes")
+    if selective_checkpointing_enabled and bool(
+        cfg["training"].get("gradient_checkpointing", False)
+    ):
+        raise ValueError(
+            "Selective ANN checkpointing must not be combined with "
+            "Transformers gradient_checkpointing"
+        )
     num_samples = cfg["calibration"].get("num_samples")
     if not isinstance(num_samples, int) or isinstance(num_samples, bool) or num_samples <= 0:
         raise ValueError("calibration.num_samples must be a positive integer")

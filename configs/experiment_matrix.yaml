@@ -36,6 +36,9 @@ experiments:
       loss_masked: true
     ann_training:
       prefix_enabled: true
+    ann_training_memory:
+      attention_core_checkpoint: false
+      mlp_checkpoint: false
     conversion:
       use_post_finetuning_artifacts: true
     post_finetuning:
@@ -168,6 +171,9 @@ experiments:
       loss_masked: true
     ann_training:
       prefix_enabled: true
+    ann_training_memory:
+      attention_core_checkpoint: false
+      mlp_checkpoint: false
     conversion:
       use_post_finetuning_artifacts: true
     post_finetuning:
@@ -301,6 +307,9 @@ experiments:
       loss_masked: true
     ann_training:
       prefix_enabled: true
+    ann_training_memory:
+      attention_core_checkpoint: false
+      mlp_checkpoint: false
     conversion:
       use_post_finetuning_artifacts: true
     post_finetuning:
@@ -508,9 +517,15 @@ experiments:
     <<: *exp2_llama3_8b_tulu3_base
     conversion:
       use_post_finetuning_artifacts: false
+    ann_training_memory:
+      attention_core_checkpoint: true
+      mlp_checkpoint: true
 - name: exp2_llama3_8b_tulu3
   ann_modes: [gif_aware]
   config:
     <<: *exp2_llama3_8b_tulu3_base
     conversion:
       use_post_finetuning_artifacts: false
+    ann_training_memory:
+      attention_core_checkpoint: true
+      mlp_checkpoint: true

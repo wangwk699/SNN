@@ -193,6 +193,7 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
     model = load_model(cfg, source, training=True)
     mode = cfg["replacement"]["train_mode"]
     common_clip_enabled = training_common_clip_enabled(cfg)
+    memory_cfg = cfg.get("ann_training_memory", {})
     controller = SiteController(
         mode=mode,
         site_root=layout.ann_training_site_dir,
@@ -205,6 +206,10 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         phase_surrogate_slope=(
             float(cfg["phase"]["surrogate_slope"]) if mode == "phase" else None
         ),
+        checkpoint_attention_core=bool(
+            memory_cfg.get("attention_core_checkpoint", False)
+        ),
+        checkpoint_mlp=bool(memory_cfg.get("mlp_checkpoint", False)),
     )
     if is_aware_ann_mode(cfg):
         validate_site_state_bundle(layout.ann_training_site_dir, clip_policy="forbid_all")
@@ -334,6 +339,13 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             "best_metric": trainer.state.best_metric,
             "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
             "fused_rotation_weights_trained": bool(cfg["rotation"]["enabled"]),
+            "attention_core_checkpoint": bool(
+                memory_cfg.get("attention_core_checkpoint", False)
+            ),
+            "mlp_checkpoint": bool(memory_cfg.get("mlp_checkpoint", False)),
+            "transformers_gradient_checkpointing": bool(
+                training_cfg.get("gradient_checkpointing", False)
+            ),
             "prefix_enabled": training_prefix_enabled(cfg),
             **ann_training_common_clip_metadata(cfg),
             "train_samples": len(train_dataset),

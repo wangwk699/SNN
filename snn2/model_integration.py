@@ -6,6 +6,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from .controller import SiteController
 from .hadamard import HadamardSpec, random_hadamard
@@ -42,6 +43,28 @@ def _record_regression(
     recorder = getattr(controller, "regression_recorder", None)
     if recorder is not None:
         recorder.record(name, value, temporal=controller.mode.startswith("deploy_"))
+
+
+def _selective_checkpoint_allowed(
+    module: torch.nn.Module,
+    controller: SiteController,
+    *,
+    kind: str,
+) -> bool:
+    """Whether an ANN replacement core can safely be recomputed in backward."""
+    if controller.mode not in {"phase", "gif"}:
+        return False
+    if not bool(getattr(module, "training", False)):
+        return False
+    if not torch.is_grad_enabled():
+        return False
+    if getattr(controller, "regression_recorder", None) is not None:
+        return False
+    if kind == "attention":
+        return bool(getattr(controller, "checkpoint_attention_core", False))
+    if kind == "mlp":
+        return bool(getattr(controller, "checkpoint_mlp", False))
+    raise ValueError(kind)
 
 
 def repeat_kv(hidden_states: torch.Tensor, groups: int) -> torch.Tensor:
@@ -145,23 +168,45 @@ def snn2_eager_attention_forward(
             controller, layer_index, 3, key_score, source="spikellm_qk_k_fp64"
         )
 
-    qk = torch.matmul(query, key.transpose(2, 3))
-    scale = float(scaling if scaling is not None else getattr(module, "scaling", 1.0 / math.sqrt(query.shape[-1])))
-    weights = qk * scale
-    _record_regression(controller, f"layer_{layer_index:03d}/attn/qk_scaled", weights)
-    if attention_mask is not None:
-        weights = weights + attention_mask[..., : key.shape[-2]]
-    if kwargs.get("softcap") is not None:
-        cap = float(kwargs["softcap"])
-        weights = torch.tanh(weights / cap) * cap
-    weights = F.softmax(weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    _record_regression(controller, f"layer_{layer_index:03d}/attn/softmax_before_site5", weights)
-    if controller.mode == "collect":
-        statistics_weights = weights[..., past_length:] if past_length else weights
-        controller.record_activation(layer_index, 5, statistics_weights)
+    def attention_core(
+        core_query: torch.Tensor,
+        core_key: torch.Tensor,
+        core_value: torch.Tensor,
+        core_attention_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        qk = torch.matmul(core_query, core_key.transpose(2, 3))
+        scale = float(
+            scaling if scaling is not None else getattr(
+                module, "scaling", 1.0 / math.sqrt(core_query.shape[-1])
+            )
+        )
+        weights = qk * scale
+        _record_regression(
+            controller, f"layer_{layer_index:03d}/attn/qk_scaled", weights
+        )
+        if core_attention_mask is not None:
+            weights = weights + core_attention_mask[..., : core_key.shape[-2]]
+        if kwargs.get("softcap") is not None:
+            cap = float(kwargs["softcap"])
+            weights = torch.tanh(weights / cap) * cap
+        weights = F.softmax(weights, dim=-1, dtype=torch.float32).to(core_query.dtype)
+        _record_regression(
+            controller, f"layer_{layer_index:03d}/attn/softmax_before_site5", weights
+        )
+        if controller.mode == "collect":
+            statistics_weights = weights[..., past_length:] if past_length else weights
+            controller.record_activation(layer_index, 5, statistics_weights)
+        else:
+            weights = controller.apply(layer_index, 5, weights)
+        weights = F.dropout(weights, p=dropout, training=module.training)
+        return torch.matmul(weights, core_value), weights
+
+    if _selective_checkpoint_allowed(module, controller, kind="attention"):
+        output_heads, weights = checkpoint(
+            attention_core, query, key, value, attention_mask, use_reentrant=False
+        )
     else:
-        weights = controller.apply(layer_index, 5, weights)
-    weights = F.dropout(weights, p=dropout, training=module.training)
+        output_heads, weights = attention_core(query, key, value, attention_mask)
 
     if controller.mode == "collect":
         p64 = weights.detach().to(torch.float64)
@@ -174,7 +219,6 @@ def snn2_eager_attention_forward(
             controller, layer_index, 4, value_score, source="spikellm_pv_v_fp64"
         )
 
-    output_heads = torch.matmul(weights, value)
     _record_regression(controller, f"layer_{layer_index:03d}/attn/pv_head_output_before_merge", output_heads)
     output = merge_attention_heads(output_heads)
     _record_regression(controller, f"layer_{layer_index:03d}/attn/pv_merged_before_site6", output)
@@ -216,47 +260,50 @@ def register_attention_backend() -> None:
 
 def _make_mlp_forward(controller: SiteController, layer_index: int, r4: HadamardSpec | None):
     def forward(mlp, x: torch.Tensor):
-        gate_projection = mlp.gate_proj(x)
-        _record_regression(
-            controller, f"layer_{layer_index:03d}/mlp/gate_proj", gate_projection
-        )
-        up_projection = mlp.up_proj(x)
-        _record_regression(
-            controller, f"layer_{layer_index:03d}/mlp/up_proj", up_projection
-        )
-        if controller.mode.startswith("deploy_"):
-            steps = int(controller.temporal_steps or 0)
-            gate = from_temporal(temporal_silu(to_temporal(gate_projection, steps)))
-            gate = controller.apply(layer_index, 8, gate)
-            up = controller.apply(layer_index, 9, up_projection)
-            product = from_temporal(
-                temporal_symmetric_hadamard(
-                    to_temporal(gate, steps), to_temporal(up, steps)
-                )
+        def mlp_core(core_x: torch.Tensor) -> torch.Tensor:
+            gate_projection = mlp.gate_proj(core_x)
+            _record_regression(
+                controller, f"layer_{layer_index:03d}/mlp/gate_proj", gate_projection
             )
-        else:
-            gate = mlp.act_fn(gate_projection)
-            gate = controller.apply(layer_index, 8, gate)
-            up = up_projection
-            up = controller.apply(layer_index, 9, up)
-            product = gate * up
-        if r4 is not None:
-            product_dtype = product.dtype
-            product = random_hadamard(product.to(torch.float32), r4).to(product_dtype)
-        _record_regression(
-            controller,
-            f"layer_{layer_index:03d}/mlp/product_before_site10",
-            product,
-        )
-        product = controller.apply(layer_index, 10, product)
-        output = mlp.down_proj(product)
-        _record_regression(
-            controller, f"layer_{layer_index:03d}/mlp/down_proj_output", output
-        )
-        return output
+            up_projection = mlp.up_proj(core_x)
+            _record_regression(
+                controller, f"layer_{layer_index:03d}/mlp/up_proj", up_projection
+            )
+            if controller.mode.startswith("deploy_"):
+                steps = int(controller.temporal_steps or 0)
+                gate = from_temporal(temporal_silu(to_temporal(gate_projection, steps)))
+                gate = controller.apply(layer_index, 8, gate)
+                up = controller.apply(layer_index, 9, up_projection)
+                product = from_temporal(
+                    temporal_symmetric_hadamard(
+                        to_temporal(gate, steps), to_temporal(up, steps)
+                    )
+                )
+            else:
+                gate = mlp.act_fn(gate_projection)
+                gate = controller.apply(layer_index, 8, gate)
+                up = controller.apply(layer_index, 9, up_projection)
+                product = gate * up
+            if r4 is not None:
+                product_dtype = product.dtype
+                product = random_hadamard(product.to(torch.float32), r4).to(product_dtype)
+            _record_regression(
+                controller,
+                f"layer_{layer_index:03d}/mlp/product_before_site10",
+                product,
+            )
+            product = controller.apply(layer_index, 10, product)
+            output = mlp.down_proj(product)
+            _record_regression(
+                controller, f"layer_{layer_index:03d}/mlp/down_proj_output", output
+            )
+            return output
+
+        if _selective_checkpoint_allowed(mlp, controller, kind="mlp"):
+            return checkpoint(mlp_core, x, use_reentrant=False)
+        return mlp_core(x)
 
     return forward
-
 
 def _linear_score(
     inputs: torch.Tensor, output_or_weight: torch.Tensor, weight: torch.Tensor | None = None

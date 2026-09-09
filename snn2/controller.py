@@ -25,6 +25,8 @@ class SiteController:
         mtn_K: int | None = None,
         mtn_threshold_factor: float | None = None,
         phase_surrogate_slope: float | None = None,
+        checkpoint_attention_core: bool = False,
+        checkpoint_mlp: bool = False,
     ):
         self.mode = mode
         self.common_clip_enabled = bool(common_clip_enabled)
@@ -33,6 +35,8 @@ class SiteController:
         self.mtn_T = None if mtn_T is None else int(mtn_T)
         self.mtn_K = None if mtn_K is None else int(mtn_K)
         self.mtn_threshold_factor = None if mtn_threshold_factor is None else float(mtn_threshold_factor)
+        self.checkpoint_attention_core = bool(checkpoint_attention_core)
+        self.checkpoint_mlp = bool(checkpoint_mlp)
         if self.mode == "phase" and (self.phase_surrogate_slope is None or self.phase_T is None):
             raise ValueError("Phase ANN replacement requires explicit phase_T and phase_surrogate_slope")
         if self.mode not in {"phase", "gif"} and self.common_clip_enabled:
