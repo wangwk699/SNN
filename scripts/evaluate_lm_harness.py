@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import copy
 import time
+from pathlib import Path
 from types import MethodType
 
 from accelerate import Accelerator
@@ -56,6 +57,60 @@ def execution_counter_delta(before, after):
     """Return a task-local counter delta without changing the proxy's cumulative state."""
     return {key: int(after.get(key, 0)) - int(before.get(key, 0))
             for key in set(before) | set(after)}
+
+
+def _run_simple_evaluate(
+    simple_evaluate,
+    *,
+    harness_model,
+    spec,
+    task_manager,
+    batch_size: int,
+    experiment_seed: int,
+    apply_chat_template: bool,
+    is_tulu_lm_eval: bool,
+):
+    """Run one lm-eval task with Tulu3 sample logging disabled at the source."""
+    return simple_evaluate(
+        model=harness_model,
+        tasks=[spec["name"]],
+        task_manager=task_manager,
+        num_fewshot=int(spec["num_fewshot"]),
+        batch_size=batch_size,
+        limit=None,
+        random_seed=experiment_seed,
+        numpy_random_seed=experiment_seed,
+        torch_random_seed=experiment_seed,
+        fewshot_random_seed=experiment_seed,
+        apply_chat_template=apply_chat_template,
+        log_samples=False if is_tulu_lm_eval else True,
+    )
+
+
+def _write_json_atomic(path, payload):
+    """Replace a repeatedly updated JSON file without exposing a partial write."""
+    path = Path(path)
+    temporary = path.with_name(f".{path.name}.tmp")
+    write_json(temporary, payload)
+    os.replace(temporary, path)
+    return path
+
+
+def _write_tulu_summary(output_root, *, task_times, task_metrics):
+    summary = {
+        "task_times": dict(task_times),
+        "task_metrics": dict(task_metrics),
+    }
+    _write_json_atomic(Path(output_root) / "evaluation_summary.json", summary)
+    return summary
+
+
+def _write_task_result_files(output_dir, *, result, test_selection):
+    """Persist one task immediately; task result objects never span task boundaries."""
+    output_dir = Path(output_dir)
+    write_json(output_dir / "results.json", result)
+    write_json(output_dir / "test_selection.json", test_selection)
+    return output_dir
 
 
 class _ZeroShotLmEvalWarningFilter(logging.Filter):
@@ -427,64 +482,6 @@ def main():
 
         task_specs = enabled_lm_eval_task_specs(cfg)
         is_tulu_lm_eval = cfg["experiment"]["task"] == "tulu3"
-        task_results: dict[str, tuple] = {}
-        for spec in task_specs:
-            # cot is checked by enabled_lm_eval_task_specs; it is intentionally not
-            # passed to simple_evaluate because lm-eval 0.4.8 has no such argument.
-            task_started = time.perf_counter() if is_tulu_lm_eval else None
-            with _suppress_zero_shot_lm_eval_warnings(enabled=int(spec["num_fewshot"]) == 0):
-                task_manager, test_selection = _selected_lm_eval_tasks(spec["name"], spec)
-                setup_seconds = (time.perf_counter() - task_started if task_started is not None else None)
-                before_counter = dict(proxy.execution_counter)
-                evaluation_started = (time.perf_counter() if is_tulu_lm_eval else None)
-                task_result = simple_evaluate(
-                    model=harness_model,
-                    tasks=[spec["name"]],
-                    task_manager=task_manager,
-                    num_fewshot=int(spec["num_fewshot"]),
-                    batch_size=batch_size,
-                    limit=None,
-                    random_seed=int(cfg["experiment"]["seed"]),
-                    numpy_random_seed=int(cfg["experiment"]["seed"]),
-                    torch_random_seed=int(cfg["experiment"]["seed"]),
-                    fewshot_random_seed=int(cfg["experiment"]["seed"]),
-                    apply_chat_template=bool(cfg["evaluation"].get("apply_chat_template", True)),
-                )
-            local_timing = (
-                {
-                    "selection_setup_seconds": setup_seconds,
-                    "lm_eval_seconds": time.perf_counter() - evaluation_started,
-                    "total_seconds": time.perf_counter() - task_started,
-                    "selected_documents": int(test_selection["selected_count"]),
-                }
-                if is_tulu_lm_eval else None
-            )
-            after_counter = dict(proxy.execution_counter)
-            local_counter = (execution_counter_delta(before_counter, after_counter)
-                             if is_tulu_lm_eval else after_counter)
-            task_counter = gather_sum_execution_counter(local_counter, world_size=world_size)
-            timing = (
-                {
-                    "selection_setup_seconds": distributed_max_seconds(
-                        local_timing["selection_setup_seconds"], device=device, world_size=world_size),
-                    "lm_eval_seconds": distributed_max_seconds(
-                        local_timing["lm_eval_seconds"], device=device, world_size=world_size),
-                    "total_seconds": distributed_max_seconds(
-                        local_timing["total_seconds"], device=device, world_size=world_size),
-                    "selected_documents": local_timing["selected_documents"],
-                }
-                if is_tulu_lm_eval else None
-            )
-            if accelerator.is_main_process:
-                if task_result is None:
-                    raise RuntimeError(f"lm-eval returned no result on main rank for {spec['name']!r}")
-                correct_effective_sample_counts(task_result, test_selection)
-                if not result_contains_metric(task_result, spec["metric"]):
-                    raise ValueError(f"lm-eval result for {spec['name']!r} does not contain configured metric {spec['metric']!r}")
-                task_results[spec["name"]] = (task_result, test_selection, task_counter, timing)
-            elif task_result is not None:
-                raise RuntimeError(f"lm-eval unexpectedly returned a result on worker rank {rank} for {spec['name']!r}")
-            accelerator.wait_for_everyone()
 
         layers = int(
             getattr(
@@ -637,14 +634,62 @@ def main():
             output_root, cfg, base=args.base,
             rotated_pre_finetuning=args.rotated_pre_finetuning, neuron=args.neuron,
         )
-        if accelerator.is_main_process:
-            task_results_root = output_root / "task_results" if is_tulu_lm_eval else output_root
-            task_times = {}
-            task_metrics = {}
-            for spec in task_specs:
+        task_results_root = output_root / "task_results" if is_tulu_lm_eval else output_root
+        task_times = {}
+        task_metrics = {}
+
+        for spec in task_specs:
+            # cot is checked by enabled_lm_eval_task_specs; it is intentionally not
+            # passed to simple_evaluate because lm-eval 0.4.8 has no such argument.
+            task_started = time.perf_counter() if is_tulu_lm_eval else None
+            with _suppress_zero_shot_lm_eval_warnings(enabled=int(spec["num_fewshot"]) == 0):
+                task_manager, test_selection = _selected_lm_eval_tasks(spec["name"], spec)
+                setup_seconds = (time.perf_counter() - task_started if task_started is not None else None)
+                before_counter = dict(proxy.execution_counter)
+                evaluation_started = (time.perf_counter() if is_tulu_lm_eval else None)
+                task_result = _run_simple_evaluate(
+                    simple_evaluate,
+                    harness_model=harness_model,
+                    spec=spec,
+                    task_manager=task_manager,
+                    batch_size=batch_size,
+                    experiment_seed=int(cfg["experiment"]["seed"]),
+                    apply_chat_template=bool(cfg["evaluation"].get("apply_chat_template", True)),
+                    is_tulu_lm_eval=is_tulu_lm_eval,
+                )
+            local_timing = (
+                {
+                    "selection_setup_seconds": setup_seconds,
+                    "lm_eval_seconds": time.perf_counter() - evaluation_started,
+                    "total_seconds": time.perf_counter() - task_started,
+                    "selected_documents": int(test_selection["selected_count"]),
+                }
+                if is_tulu_lm_eval else None
+            )
+            after_counter = dict(proxy.execution_counter)
+            local_counter = (execution_counter_delta(before_counter, after_counter)
+                             if is_tulu_lm_eval else after_counter)
+            task_counter = gather_sum_execution_counter(local_counter, world_size=world_size)
+            timing = (
+                {
+                    "selection_setup_seconds": distributed_max_seconds(
+                        local_timing["selection_setup_seconds"], device=device, world_size=world_size),
+                    "lm_eval_seconds": distributed_max_seconds(
+                        local_timing["lm_eval_seconds"], device=device, world_size=world_size),
+                    "total_seconds": distributed_max_seconds(
+                        local_timing["total_seconds"], device=device, world_size=world_size),
+                    "selected_documents": local_timing["selected_documents"],
+                }
+                if is_tulu_lm_eval else None
+            )
+            if accelerator.is_main_process:
+                if task_result is None:
+                    raise RuntimeError(f"lm-eval returned no result on main rank for {spec['name']!r}")
+                correct_effective_sample_counts(task_result, test_selection)
+                if not result_contains_metric(task_result, spec["metric"]):
+                    raise ValueError(f"lm-eval result for {spec['name']!r} does not contain configured metric {spec['metric']!r}")
                 name = spec["name"]
-                task_result, selection, task_counter, timing = task_results[name]
-                actual = int(selection["selected_count"])
+                actual = int(test_selection["selected_count"])
                 task_temporal_forwards = task_counter.get("temporal_sample_step_forwards", 0)
                 task_temporal_slots = task_counter.get("batched_temporal_sample_slots", 0)
                 result = {
@@ -656,25 +701,44 @@ def main():
                         "batched_activation_site_temporal_slots": task_temporal_slots * per_forward_operators,
                         "lm_eval_task_spec": spec, "lm_eval_revision": LM_EVAL_PINNED_REVISION,
                         "cot_semantic_source": "project_audited_pinned_lm_eval_0_4_8",
-                        "test_sampling": selection["sampling"], "actual_test_samples": actual,
+                        "test_sampling": test_selection["sampling"], "actual_test_samples": actual,
                         "fewshot_random_seed": int(cfg["experiment"]["seed"]), "test_seed": spec["test_seed"]},
                 }
                 output_dir = task_results_root / safe_name(name) / lm_eval_spec_dirname(spec)
-                write_json(output_dir / "results.json", result)
-                write_json(output_dir / "test_selection.json", selection)
+                _write_task_result_files(
+                    output_dir, result=result, test_selection=test_selection
+                )
                 if is_tulu_lm_eval:
                     task_times[name] = seconds_to_hms(timing["lm_eval_seconds"])
-                    task_metrics[name] = extract_metric_value(task_result, spec["metric"], task_name=name)
+                    task_metrics[name] = extract_metric_value(
+                        task_result, spec["metric"], task_name=name
+                    )
+                    _write_tulu_summary(
+                        output_root,
+                        task_times=task_times,
+                        task_metrics=task_metrics,
+                    )
                 run.event("evaluation_saved", output_dir=str(output_dir),
                           model_variant=common_snn2_metadata["model_variant"], tasks=[name],
                           **({"lm_eval_seconds": timing["lm_eval_seconds"],
                               "total_seconds": timing["total_seconds"],
                               "selected_documents": timing["selected_documents"]}
                              if is_tulu_lm_eval else {}))
-            if is_tulu_lm_eval:
-                summary = {"task_times": task_times, "task_metrics": task_metrics}
-                write_json(output_root / "evaluation_summary.json", summary)
-                run.event("lm_eval_summary_saved", output_dir=str(output_root), **summary)
+                del result
+            elif task_result is not None:
+                raise RuntimeError(f"lm-eval unexpectedly returned a result on worker rank {rank} for {spec['name']!r}")
+            del task_result
+            del test_selection
+            del task_manager
+            accelerator.wait_for_everyone()
+
+        if accelerator.is_main_process and is_tulu_lm_eval:
+            summary = _write_tulu_summary(
+                output_root,
+                task_times=task_times,
+                task_metrics=task_metrics,
+            )
+            run.event("lm_eval_summary_saved", output_dir=str(output_root), **summary)
 
 
 if __name__ == "__main__":
