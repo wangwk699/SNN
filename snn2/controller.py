@@ -105,9 +105,17 @@ class SiteController:
         if int(stats["calls"]) >= self.diagnostics_max_calls_per_site:
             return
         with torch.no_grad():
-            source = x.detach().float()
-            quantized_value = quantized.detach().float()
-            final = output.detach().float()
+            total_elements = x.numel()
+            if total_elements == 0:
+                return
+            max_elements = 65_536
+            stride = max(1, (total_elements + max_elements - 1) // max_elements)
+            indices = torch.arange(
+                0, total_elements, stride, device=x.device
+            )[:max_elements]
+            source = torch.take(x.detach(), indices).float()
+            quantized_value = torch.take(quantized.detach(), indices).float()
+            final = torch.take(output.detach(), indices).float()
             quantization_error = quantized_value - source
             output_error = final - source
             stats["calls"] = int(stats["calls"]) + 1
@@ -212,7 +220,8 @@ class SiteController:
                 float(raw_global["output_abs_max"]), float(stats["output_abs_max"])
             )
         return {
-            "scope": "rank_local_first_calls_per_site",
+            "scope": "rank_local_first_calls_per_site_deterministic_strided_sample",
+            "max_elements_per_call": 65_536,
             "max_calls_per_site": self.diagnostics_max_calls_per_site,
             "gif_quantizer_clip_backward": self.gif_quantizer_clip_backward,
             "outer_clip_backward": self.outer_clip_backward,

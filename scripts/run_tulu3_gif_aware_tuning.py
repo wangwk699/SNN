@@ -121,6 +121,7 @@ def fixed_base_config(source: dict[str, Any]) -> dict[str, Any]:
             "replacement_diagnostics_max_calls_per_site": 1,
         }
     )
+    cfg["ann_training_memory"]["mlp_checkpoint"] = True
     cfg["gif"]["quantizer_clip_backward"] = "hard_clip"
     cfg["replacement"]["outer_clip_backward"] = "hard_clip"
     cfg["phase"]["T"] = 4
@@ -291,6 +292,7 @@ class TuningRun:
                     "calibration.group_size": 128,
                     "ann_training.prefix_enabled": True,
                     "replacement.common_clip_enabled": True,
+                    "ann_training_memory.mlp_checkpoint": True,
                 },
                 "stages": {
                     "stage1_learning_rate": [float(x) for x in STAGE1_LEARNING_RATES],

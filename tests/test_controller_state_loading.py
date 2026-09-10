@@ -241,3 +241,20 @@ def test_snn_deployment_rejects_common_clip_switch(tmp_path):
     )
     with pytest.raises(ValueError, match="cannot enable common Clip"):
         controller.set_deployment("gif", clip_bundle_policy="forbid_all")
+
+def test_replacement_diagnostics_use_bounded_strided_samples(tmp_path):
+    controller = SiteController(
+        mode="gif",
+        site_root=tmp_path,
+        diagnostics_max_calls_per_site=1,
+    )
+    source = torch.arange(100_000, dtype=torch.float32)
+    quantized = source + 1.0
+    output = quantized.clone()
+    controller._record_replacement_diagnostics(
+        "layer_000/site_05", source, quantized, output, role=None
+    )
+    snapshot = controller.replacement_diagnostics_snapshot()
+    assert snapshot["max_elements_per_call"] == 65_536
+    assert snapshot["global"]["elements"] == 50_000
+    assert snapshot["global"]["calls"] == 1

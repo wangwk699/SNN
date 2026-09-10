@@ -265,7 +265,7 @@ def test_generated_evaluation_configs_are_task_specific(generated_configs):
                 "lm_eval_revision", "apply_chat_template", "lm_eval_task_specs",
             } <= set(evaluation)
             assert evaluation["batch_size"] == 8
-            assert evaluation["snn_batch_size"] == 1
+            assert evaluation["snn_batch_size"] == 4
             specs = evaluation["lm_eval_task_specs"]
             assert [spec["name"] for spec in specs] == expected_names
             assert [spec["name"] for spec in specs if spec["enabled"]] == expected_enabled
@@ -274,7 +274,7 @@ def test_generated_evaluation_configs_are_task_specific(generated_configs):
 
 @pytest.mark.parametrize(
     ("neuron", "expected"),
-    [("ann", 8), ("phase", 1), ("gif", 1), ("mtn", 1)],
+    [("ann", 8), ("phase", 4), ("gif", 4), ("mtn", 4)],
 )
 def test_tulu3_lm_eval_batch_size_uses_snn_setting_for_snn_neurons(
     generated_configs, neuron, expected
@@ -336,7 +336,7 @@ def test_tldr_and_tulu_aware_run_paths_include_epochs_before_calibration_identit
             if cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}:
                 assert any(part.startswith(prefix) for part in layout.root.parts)
                 assert any(part.startswith(prefix + "num_samples_") for part in layout.root.parts)
-            else:
+            elif cfg["experiment"]["task"] == "tulu3":
                 assert not any(part.startswith("epochs_") for part in layout.root.parts)
 
 

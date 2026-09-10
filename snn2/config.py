@@ -59,7 +59,7 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     cfg = copy.deepcopy(raw)
     cfg["replacement"].setdefault("common_clip_enabled", True)
     cfg["replacement"].setdefault("outer_clip_backward", "hard_clip")
-    cfg["gif"].setdefault("quantizer_clip_backward", "hard_clip")
+    cfg.setdefault("gif", {}).setdefault("quantizer_clip_backward", "hard_clip")
     cfg.setdefault("ann_training_memory", {})
     cfg["ann_training_memory"].setdefault("attention_core_checkpoint", False)
     cfg["ann_training_memory"].setdefault("mlp_checkpoint", False)
