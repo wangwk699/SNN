@@ -106,6 +106,7 @@ class ArtifactLayout:
         model_root = task_root / model
         seed = f"seed{int(exp['seed'])}"
         learning_rate = f"lr{cfg['training']['learning_rate']}"
+        epochs = cfg["training"].get("num_train_epochs")
         if exp["task"] == "tldr":
             configured_train_samples = cfg["training"].get("tldr_train_samples")
             if configured_train_samples is None:
@@ -118,7 +119,6 @@ class ArtifactLayout:
                     )
                 train_samples = str(configured_train_samples)
             learning_rate = f"{learning_rate}_train_samples_{train_samples}"
-            epochs = cfg["training"].get("num_train_epochs")
             if epochs is not None and not is_aware_ann_mode(cfg):
                 learning_rate = f"epochs_{epochs}_{learning_rate}"
         elif exp["task"] == "tulu3":
@@ -131,7 +131,7 @@ class ArtifactLayout:
                 f"{learning_rate}_"
                 f"{calibration_group_dirname(cfg['calibration']['group_size'])}"
             )
-            if exp["task"] == "tldr" and epochs is not None:
+            if exp["task"] in {"tldr", "tulu3"} and epochs is not None:
                 learning_rate = f"epochs_{epochs}_{learning_rate}"
 
         self.model_root = model_root
@@ -166,7 +166,7 @@ class ArtifactLayout:
             if exp["task"] == "tulu3":
                 run_root = run_root.parent / (run_root.name.replace(
                     f"_warmup_ratio_{float(cfg['training']['warmup_ratio'])}",
-                    f"_lr_scheduler_type_{cfg['training']['lr_scheduler_type']}_warmup_ratio_{float(cfg['training']['warmup_ratio'])}",
+                    f"_lr_scheduler_type_{cfg['training']['lr_scheduler_type']}_warmup_ratio_{float(cfg['training']['warmup_ratio'])}_gradient_accumulation_steps_{int(cfg['training']['gradient_accumulation_steps'])}",
                 ))
             elif exp["task"] == "tldr":
                 run_root = run_root.parent / (run_root.name.replace(
@@ -186,7 +186,7 @@ class ArtifactLayout:
                 ),
                 gradient_accumulation_steps=(
                     cfg["training"]["gradient_accumulation_steps"]
-                    if exp["task"] == "tldr"
+                    if exp["task"] in {"tldr", "tulu3"}
                     else None
                 ),
             )
