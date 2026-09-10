@@ -472,3 +472,69 @@ def test_static_gif_ann_mixed_quant_matches_legacy_clamp_boundary_gradients():
     reference.backward(grad)
     optimized.backward(grad)
     torch.testing.assert_close(x_optimized.grad, x_reference.grad, rtol=0, atol=0)
+
+def test_gif_quantizer_clip_ste_preserves_forward_and_bypasses_clamp_gradient():
+    state = _gif_state()
+    hard = StaticGIF(state, quantizer_clip_backward="hard_clip")
+    ste = StaticGIF(state, quantizer_clip_backward="ste")
+    values = torch.tensor([[[-1.0, 0.17, 0.42, 2.0]]])
+    hard_input = values.clone().requires_grad_(True)
+    ste_input = values.clone().requires_grad_(True)
+    hard_output = hard(hard_input)
+    ste_output = ste(ste_input)
+    torch.testing.assert_close(ste_output, hard_output, rtol=0, atol=0)
+    hard_output.sum().backward()
+    ste_output.sum().backward()
+    torch.testing.assert_close(
+        hard_input.grad,
+        torch.tensor([[[0.0, 1.0, 1.0, 0.0]]]),
+        rtol=0,
+        atol=0,
+    )
+    torch.testing.assert_close(
+        ste_input.grad, torch.ones_like(ste_input), rtol=0, atol=0
+    )
+
+
+def test_outer_clip_ste_preserves_forward_and_bypasses_clamp_gradient():
+    state = {
+        **_header("clip"),
+        **_layout(),
+        "ordinary_gif_high_qmax": 30,
+        "ordinary_gif_per_step_qmax": 15,
+        "gif_integer_decomposition": GIF_INTEGER_DECOMPOSITION,
+        "clip_role_policy": "single",
+        "lower": torch.full((2,), -0.5),
+        "upper": torch.full((2,), 0.5),
+    }
+    hard = Clipper(state, backward_policy="hard_clip")
+    ste = Clipper(state, backward_policy="ste")
+    values = torch.tensor([[[-1.0, -0.25, 0.25, 1.0]]])
+    hard_input = values.clone().requires_grad_(True)
+    ste_input = values.clone().requires_grad_(True)
+    hard_output = hard(hard_input)
+    ste_output = ste(ste_input)
+    torch.testing.assert_close(ste_output, hard_output, rtol=0, atol=0)
+    hard_output.sum().backward()
+    ste_output.sum().backward()
+    torch.testing.assert_close(
+        hard_input.grad,
+        torch.tensor([[[0.0, 1.0, 1.0, 0.0]]]),
+        rtol=0,
+        atol=0,
+    )
+    torch.testing.assert_close(
+        ste_input.grad, torch.ones_like(ste_input), rtol=0, atol=0
+    )
+
+
+def test_identity_gif_ignores_quantizer_backward_policy_and_remains_identity():
+    identity = {
+        **_header("gif"),
+        "gif_policy": "identity",
+        "quantization_applied": False,
+        "temporal_steps": 2,
+    }
+    module = gif_module_from_state(identity, quantizer_clip_backward="ste")
+    x = torch.randn(2, 3, requires_grad=True)
+    assert module(x) is x

@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,7 @@ ANN_MODES = {"vanilla", "unaware", "phase_aware", "gif_aware"}
 AWARE_ANN_MODES = {"phase_aware", "gif_aware"}
 SNN_NEURONS = {"phase", "gif", "mtn"}
 
+CLIP_BACKWARD_POLICIES = {"hard_clip", "ste"}
 
 def load_config(path: str | Path) -> dict[str, Any]:
     path = Path(path)
@@ -56,6 +58,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
 def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     cfg = copy.deepcopy(raw)
     cfg["replacement"].setdefault("common_clip_enabled", True)
+    cfg["replacement"].setdefault("outer_clip_backward", "hard_clip")
+    cfg["gif"].setdefault("quantizer_clip_backward", "hard_clip")
     cfg.setdefault("ann_training_memory", {})
     cfg["ann_training_memory"].setdefault("attention_core_checkpoint", False)
     cfg["ann_training_memory"].setdefault("mlp_checkpoint", False)
@@ -313,6 +317,36 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("replacement.common_clip_enabled must be true or false")
     if not is_aware_ann_mode(cfg) and common_clip_enabled:
         raise ValueError(f"{mode} requires replacement.common_clip_enabled=false")
+    for section, key in (
+        ("gif", "quantizer_clip_backward"),
+        ("replacement", "outer_clip_backward"),
+    ):
+        value = cfg[section].get(key, "hard_clip")
+        if value not in CLIP_BACKWARD_POLICIES:
+            raise ValueError(
+                f"{section}.{key} must be one of "
+                f"{sorted(CLIP_BACKWARD_POLICIES)}, got {value!r}"
+            )
+    tuning_run_id = cfg["training"].get("tuning_run_id")
+    if tuning_run_id is not None:
+        if not isinstance(tuning_run_id, str) or not tuning_run_id.strip():
+            raise ValueError("training.tuning_run_id must be a non-empty string or null")
+        if re.sub(r"[^A-Za-z0-9._-]+", "_", tuning_run_id).strip("_") != tuning_run_id:
+            raise ValueError(
+                "training.tuning_run_id may contain only letters, digits, '.', '_' and '-'"
+            )
+    diagnostic_calls = cfg["training"].get(
+        "replacement_diagnostics_max_calls_per_site", 0
+    )
+    if (
+        not isinstance(diagnostic_calls, int)
+        or isinstance(diagnostic_calls, bool)
+        or diagnostic_calls < 0
+    ):
+        raise ValueError(
+            "training.replacement_diagnostics_max_calls_per_site must be a "
+            "non-negative integer"
+        )
     for section in ("ann_training", "rotated_pre_finetuning", "post_finetuning", "evaluation"):
         value = cfg[section].get("prefix_enabled")
         if not isinstance(value, bool):

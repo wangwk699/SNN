@@ -20,6 +20,9 @@ class SiteController:
         *,
         clip_root: str | Path | None = None,
         common_clip_enabled: bool = False,
+        gif_quantizer_clip_backward: str = "hard_clip",
+        outer_clip_backward: str = "hard_clip",
+        diagnostics_max_calls_per_site: int = 0,
         phase_T: int | None = None,
         mtn_T: int | None = None,
         mtn_K: int | None = None,
@@ -30,6 +33,16 @@ class SiteController:
     ):
         self.mode = mode
         self.common_clip_enabled = bool(common_clip_enabled)
+        self.gif_quantizer_clip_backward = gif_quantizer_clip_backward
+        self.outer_clip_backward = outer_clip_backward
+        self.diagnostics_max_calls_per_site = int(diagnostics_max_calls_per_site)
+        if self.gif_quantizer_clip_backward not in {"hard_clip", "ste"}:
+            raise ValueError("Invalid GIF quantizer clip backward policy")
+        if self.outer_clip_backward not in {"hard_clip", "ste"}:
+            raise ValueError("Invalid outer Clip backward policy")
+        if self.diagnostics_max_calls_per_site < 0:
+            raise ValueError("diagnostics_max_calls_per_site must be non-negative")
+        self._replacement_diagnostics: dict[str, dict[str, float | int]] = {}
         self.phase_surrogate_slope = None if phase_surrogate_slope is None else float(phase_surrogate_slope)
         self.phase_T = None if phase_T is None else int(phase_T)
         self.mtn_T = None if mtn_T is None else int(mtn_T)
@@ -60,6 +73,155 @@ class SiteController:
         recorder = self.regression_recorder
         if recorder is not None:
             recorder.record(name, value, temporal=self.mode.startswith("deploy_"))
+
+    def _record_replacement_diagnostics(
+        self,
+        key: str,
+        x: torch.Tensor,
+        quantized: torch.Tensor,
+        output: torch.Tensor,
+        *,
+        role: str | None,
+    ) -> None:
+        if self.diagnostics_max_calls_per_site == 0:
+            return
+        diagnostic_key = key if role is None else f"{key}/role_{role}"
+        stats = self._replacement_diagnostics.setdefault(
+            diagnostic_key,
+            {
+                "calls": 0,
+                "elements": 0,
+                "quantization_changed": 0,
+                "outer_clip_changed": 0,
+                "quantization_error_sq": 0.0,
+                "output_error_sq": 0.0,
+                "input_sq": 0.0,
+                "output_sq": 0.0,
+                "input_output_dot": 0.0,
+                "input_abs_max": 0.0,
+                "output_abs_max": 0.0,
+            },
+        )
+        if int(stats["calls"]) >= self.diagnostics_max_calls_per_site:
+            return
+        with torch.no_grad():
+            source = x.detach().float()
+            quantized_value = quantized.detach().float()
+            final = output.detach().float()
+            quantization_error = quantized_value - source
+            output_error = final - source
+            stats["calls"] = int(stats["calls"]) + 1
+            stats["elements"] = int(stats["elements"]) + source.numel()
+            stats["quantization_changed"] = int(stats["quantization_changed"]) + int(
+                torch.count_nonzero(quantized_value != source).item()
+            )
+            stats["outer_clip_changed"] = int(stats["outer_clip_changed"]) + int(
+                torch.count_nonzero(final != quantized_value).item()
+            )
+            stats["quantization_error_sq"] = float(stats["quantization_error_sq"]) + float(
+                torch.sum(quantization_error.square()).item()
+            )
+            stats["output_error_sq"] = float(stats["output_error_sq"]) + float(
+                torch.sum(output_error.square()).item()
+            )
+            stats["input_sq"] = float(stats["input_sq"]) + float(
+                torch.sum(source.square()).item()
+            )
+            stats["output_sq"] = float(stats["output_sq"]) + float(
+                torch.sum(final.square()).item()
+            )
+            stats["input_output_dot"] = float(stats["input_output_dot"]) + float(
+                torch.sum(source * final).item()
+            )
+            stats["input_abs_max"] = max(
+                float(stats["input_abs_max"]), float(source.abs().max().item())
+            )
+            stats["output_abs_max"] = max(
+                float(stats["output_abs_max"]), float(final.abs().max().item())
+            )
+
+    @staticmethod
+    def _summarize_replacement_diagnostics(
+        stats: dict[str, float | int],
+    ) -> dict[str, float | int]:
+        elements = int(stats["elements"])
+        input_sq = float(stats["input_sq"])
+        output_sq = float(stats["output_sq"])
+        denominator = (input_sq * output_sq) ** 0.5
+        return {
+            "calls": int(stats["calls"]),
+            "elements": elements,
+            "quantization_change_ratio": (
+                int(stats["quantization_changed"]) / elements if elements else 0.0
+            ),
+            "outer_clip_saturation_ratio": (
+                int(stats["outer_clip_changed"]) / elements if elements else 0.0
+            ),
+            "quantization_mse": (
+                float(stats["quantization_error_sq"]) / elements if elements else 0.0
+            ),
+            "output_mse": (
+                float(stats["output_error_sq"]) / elements if elements else 0.0
+            ),
+            "output_relative_l2": (
+                (float(stats["output_error_sq"]) / input_sq) ** 0.5
+                if input_sq > 0.0
+                else 0.0
+            ),
+            "input_output_cosine": (
+                float(stats["input_output_dot"]) / denominator
+                if denominator > 0.0
+                else 0.0
+            ),
+            "input_abs_max": float(stats["input_abs_max"]),
+            "output_abs_max": float(stats["output_abs_max"]),
+        }
+
+    def replacement_diagnostics_snapshot(self) -> dict[str, object]:
+        raw_global: dict[str, float | int] = {
+            "calls": 0,
+            "elements": 0,
+            "quantization_changed": 0,
+            "outer_clip_changed": 0,
+            "quantization_error_sq": 0.0,
+            "output_error_sq": 0.0,
+            "input_sq": 0.0,
+            "output_sq": 0.0,
+            "input_output_dot": 0.0,
+            "input_abs_max": 0.0,
+            "output_abs_max": 0.0,
+        }
+        sum_fields = {
+            "calls",
+            "elements",
+            "quantization_changed",
+            "outer_clip_changed",
+            "quantization_error_sq",
+            "output_error_sq",
+            "input_sq",
+            "output_sq",
+            "input_output_dot",
+        }
+        for stats in self._replacement_diagnostics.values():
+            for field in sum_fields:
+                raw_global[field] = raw_global[field] + stats[field]
+            raw_global["input_abs_max"] = max(
+                float(raw_global["input_abs_max"]), float(stats["input_abs_max"])
+            )
+            raw_global["output_abs_max"] = max(
+                float(raw_global["output_abs_max"]), float(stats["output_abs_max"])
+            )
+        return {
+            "scope": "rank_local_first_calls_per_site",
+            "max_calls_per_site": self.diagnostics_max_calls_per_site,
+            "gif_quantizer_clip_backward": self.gif_quantizer_clip_backward,
+            "outer_clip_backward": self.outer_clip_backward,
+            "global": self._summarize_replacement_diagnostics(raw_global),
+            "per_site": {
+                key: self._summarize_replacement_diagnostics(value)
+                for key, value in sorted(self._replacement_diagnostics.items())
+            },
+        }
 
     def _load(self, layer_index: int, site_index: int) -> dict[str, torch.nn.Module]:
         key = site_key(layer_index, site_index)
@@ -100,9 +262,14 @@ class SiteController:
                     threshold_factor=float(self.mtn_threshold_factor),
                 )
             elif name == "gif":
-                modules[name] = gif_module_from_state(state)
+                modules[name] = gif_module_from_state(
+                    state,
+                    quantizer_clip_backward=self.gif_quantizer_clip_backward,
+                )
             else:
-                modules[name] = Clipper(state)
+                modules[name] = Clipper(
+                    state, backward_policy=self.outer_clip_backward
+                )
         return modules
 
     def set_deployment(
@@ -144,7 +311,9 @@ class SiteController:
             if self.clip_root is None:
                 raise RuntimeError("Role Clip requires Stage B clip_root")
             state = torch.load(self.clip_root / key / "clip_state.pt", map_location="cpu", weights_only=False)
-            modules["clip"] = Clipper(state)
+            modules["clip"] = Clipper(
+                state, backward_policy=self.outer_clip_backward
+            )
         clip = modules["clip"]
         first_buffer = next(clip.buffers(), None)
         if first_buffer is not None and first_buffer.device != x.device:
@@ -208,8 +377,21 @@ class SiteController:
                 self.record_regression(f"{checkpoint}/post", output)
             return output
         if self.mode == "gif":
-            output = modules["gif"](x, role=gif_role)
-            output = self.apply_role_clip(layer_index, site_index, output, role=gif_role) if site_index in {1, 7} and self.common_clip_enabled else (modules["clip"](output) if "clip" in modules else output)
+            quantized = modules["gif"](x, role=gif_role)
+            output = (
+                self.apply_role_clip(
+                    layer_index, site_index, quantized, role=gif_role
+                )
+                if site_index in {1, 7} and self.common_clip_enabled
+                else (modules["clip"](quantized) if "clip" in modules else quantized)
+            )
+            self._record_replacement_diagnostics(
+                site_key(layer_index, site_index),
+                x,
+                quantized,
+                output,
+                role=gif_role,
+            )
             if recorder is not None:
                 self.record_regression(f"{checkpoint}/post", output)
             return output

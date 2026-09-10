@@ -187,6 +187,24 @@ def hard_clip(x: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor) -> torc
     return torch.maximum(torch.minimum(x, upper), lower)
 
 
+def clamp_with_backward(
+    x: torch.Tensor,
+    lower: torch.Tensor | int | float,
+    upper: torch.Tensor | int | float,
+    *,
+    backward_policy: str,
+) -> torch.Tensor:
+    """Clamp identically in the forward pass, with selectable clamp gradients."""
+    if backward_policy not in {"hard_clip", "ste"}:
+        raise ValueError(f"Unknown clip backward policy: {backward_policy!r}")
+    lower_tensor = torch.as_tensor(lower, dtype=x.dtype, device=x.device)
+    upper_tensor = torch.as_tensor(upper, dtype=x.dtype, device=x.device)
+    clipped = hard_clip(x, lower_tensor, upper_tensor)
+    if backward_policy == "ste":
+        return x + (clipped - x).detach()
+    return clipped
+
+
 class PhaseSurrogate(nn.Module):
     def __init__(
         self,
@@ -275,8 +293,18 @@ class PhaseSurrogate(nn.Module):
 
 
 class StaticGIF(nn.Module):
-    def __init__(self, state: dict[str, Any]):
+    def __init__(
+        self,
+        state: dict[str, Any],
+        *,
+        quantizer_clip_backward: str = "hard_clip",
+    ):
         super().__init__()
+        if quantizer_clip_backward not in {"hard_clip", "ste"}:
+            raise ValueError(
+                f"Unknown GIF quantizer clip backward policy: {quantizer_clip_backward!r}"
+            )
+        self.quantizer_clip_backward = quantizer_clip_backward
         _validate_state_header(state, "gif")
         self.base_bits = int(state["base_bits"])
         self.add_bits = int(state["add_bits"])
@@ -353,8 +381,11 @@ class StaticGIF(nn.Module):
         qmin, qmax = int(qmin), int(qmax)
         if qmin != 0 or qmax <= qmin:
             raise ValueError(f"Invalid unsigned GIF range [{qmin}, {qmax}]")
-        q = (self.round_ste(x.float() / scale.float()) + zero.float()).clamp(
-            qmin, qmax
+        q = clamp_with_backward(
+            self.round_ste(x.float() / scale.float()) + zero.float(),
+            qmin,
+            qmax,
+            backward_policy=self.quantizer_clip_backward,
         )
         dequantized = (q - zero.float()) * scale.float()
         return dequantized.to(x.dtype), q, zero.float()
@@ -384,10 +415,11 @@ class StaticGIF(nn.Module):
             torch.as_tensor(GIF_LOW_QMAX, dtype=q.dtype, device=q.device),
             torch.as_tensor(self.high_qmax, dtype=q.dtype, device=q.device),
         )
-        q = torch.clamp(
+        q = clamp_with_backward(
             q,
-            min=torch.zeros((), dtype=q.dtype, device=q.device),
-            max=qmax,
+            torch.zeros((), dtype=q.dtype, device=q.device),
+            qmax,
+            backward_policy=self.quantizer_clip_backward,
         )
         return ((q - zero.float()) * scale.float()).to(x.dtype)
 
@@ -510,8 +542,16 @@ class MultiThresholdNeuron(nn.Module):
 
 
 class Clipper(nn.Module):
-    def __init__(self, state: dict[str, Any]):
+    def __init__(
+        self,
+        state: dict[str, Any],
+        *,
+        backward_policy: str = "hard_clip",
+    ):
         super().__init__()
+        if backward_policy not in {"hard_clip", "ste"}:
+            raise ValueError(f"Unknown Clip backward policy: {backward_policy!r}")
+        self.backward_policy = backward_policy
         _validate_state_header(state, "clip")
         expected = {
             "ordinary_gif_high_qmax": GIF_HIGH_QMAX,
@@ -560,7 +600,9 @@ class Clipper(nn.Module):
             lower_values, upper_values = self.lower, self.upper
         lower = _parameter_values(x, lower_values, self.layout)
         upper = _parameter_values(x, upper_values, self.layout)
-        return hard_clip(x, lower, upper)
+        return clamp_with_backward(
+            x, lower, upper, backward_policy=self.backward_policy
+        )
 
 
 class SoftmaxIdentityGIF(nn.Module):
@@ -626,8 +668,18 @@ class SoftmaxIdentityGIF(nn.Module):
 
 
 class AllLowStaticGIF(StaticGIF):
-    def __init__(self, state: dict[str, Any]):
+    def __init__(
+        self,
+        state: dict[str, Any],
+        *,
+        quantizer_clip_backward: str = "hard_clip",
+    ):
         nn.Module.__init__(self)
+        if quantizer_clip_backward not in {"hard_clip", "ste"}:
+            raise ValueError(
+                f"Unknown GIF quantizer clip backward policy: {quantizer_clip_backward!r}"
+            )
+        self.quantizer_clip_backward = quantizer_clip_backward
         _validate_state_header(state, "gif")
         expected = {
             "gif_policy": GIF_ALL_LOW_POLICY,
@@ -709,12 +761,16 @@ class IdentityGIF(nn.Module):
         return incoming
 
 
-def gif_module_from_state(state: dict[str, Any]) -> nn.Module:
+def gif_module_from_state(
+    state: dict[str, Any], *, quantizer_clip_backward: str = "hard_clip"
+) -> nn.Module:
     policy = state.get("gif_policy")
     if policy == SOFTMAX_SITE5_GIF_POLICY:
         return SoftmaxIdentityGIF(state)
     if policy == GIF_ALL_LOW_POLICY:
-        return AllLowStaticGIF(state)
+        return AllLowStaticGIF(
+            state, quantizer_clip_backward=quantizer_clip_backward
+        )
     if policy == GIF_IDENTITY_POLICY:
         return IdentityGIF(state)
-    return StaticGIF(state)
+    return StaticGIF(state, quantizer_clip_backward=quantizer_clip_backward)

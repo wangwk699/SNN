@@ -199,6 +199,11 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         site_root=layout.ann_training_site_dir,
         clip_root=layout.ann_training_clip_profile_dir,
         common_clip_enabled=common_clip_enabled,
+        gif_quantizer_clip_backward=cfg["gif"]["quantizer_clip_backward"],
+        outer_clip_backward=cfg["replacement"]["outer_clip_backward"],
+        diagnostics_max_calls_per_site=int(
+            cfg["training"].get("replacement_diagnostics_max_calls_per_site", 0)
+        ),
         phase_T=int(cfg["phase"]["T"]),
         mtn_T=int(cfg["mtn"]["T"]),
         mtn_K=int(cfg["mtn"]["K"]),
@@ -348,6 +353,9 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             ),
             "prefix_enabled": training_prefix_enabled(cfg),
             **ann_training_common_clip_metadata(cfg),
+            "gif_quantizer_clip_backward": cfg["gif"]["quantizer_clip_backward"],
+            "outer_clip_backward": cfg["replacement"]["outer_clip_backward"],
+            "replacement_diagnostics_max_calls_per_site": controller.diagnostics_max_calls_per_site,
             "train_samples": len(train_dataset),
             "validation_samples": len(validation_dataset),
             "world_size": int(os.environ.get("WORLD_SIZE", "1")),
@@ -362,6 +370,11 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
     if "train_runtime" in metrics:
         metrics["train_runtime_hms"] = format_runtime_hms(metrics["train_runtime"])
     if trainer.is_world_process_zero():
+        if controller.diagnostics_max_calls_per_site > 0:
+            write_json(
+                layout.ann_dir / "training_replacement_diagnostics.json",
+                controller.replacement_diagnostics_snapshot(),
+            )
         write_json(layout.ann_dir / "training_result.json", metrics)
         write_json(layout.ann_dir / "trainer_log_history.json", trainer.state.log_history)
     return metrics

@@ -466,3 +466,46 @@ def test_tulu_gradient_accumulation_changes_only_aware_run_paths(generated_confi
             assert ArtifactLayout(changed).root != ArtifactLayout(cfg).root
         else:
             assert ArtifactLayout(changed).root == ArtifactLayout(cfg).root
+
+def test_clip_backward_policies_are_validated(generated_configs):
+    cfg = yaml.safe_load(
+        next(
+            path
+            for path in generated_configs
+            if path.stem.endswith("__gif_aware")
+        ).read_text(encoding="utf-8")
+    )
+    cfg["gif"]["quantizer_clip_backward"] = "ste"
+    cfg["replacement"]["outer_clip_backward"] = "ste"
+    validate_config(cfg)
+    cfg["gif"]["quantizer_clip_backward"] = "invalid"
+    with pytest.raises(ValueError, match="quantizer_clip_backward"):
+        validate_config(cfg)
+
+
+def test_tuning_run_id_is_an_optional_run_identity(generated_configs):
+    from snn2.artifacts import ArtifactLayout
+
+    cfg = yaml.safe_load(
+        next(
+            path
+            for path in generated_configs
+            if "tulu3" in path.stem and path.stem.endswith("__gif_aware")
+        ).read_text(encoding="utf-8")
+    )
+    baseline = ArtifactLayout(cfg).root
+    cfg["training"]["tuning_run_id"] = "s3_qste_cste"
+    tuned = ArtifactLayout(cfg).root
+    assert tuned != baseline
+    assert tuned.parent.name == "tuning_s3_qste_cste"
+    validate_config(cfg)
+    cfg["training"]["tuning_run_id"] = "../unsafe"
+    with pytest.raises(ValueError, match="tuning_run_id"):
+        validate_config(cfg)
+
+
+@pytest.mark.parametrize("value", [0, 1, 2])
+def test_replacement_diagnostic_sample_count_is_valid(generated_configs, value):
+    cfg = yaml.safe_load(generated_configs[0].read_text(encoding="utf-8"))
+    cfg["training"]["replacement_diagnostics_max_calls_per_site"] = value
+    validate_config(cfg)

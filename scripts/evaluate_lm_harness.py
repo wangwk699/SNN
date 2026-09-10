@@ -736,6 +736,14 @@ def main():
             )
             run.event("lm_eval_summary_saved", output_dir=str(output_root), **summary)
 
+            if controller.diagnostics_max_calls_per_site > 0:
+                diagnostic_path = (
+                    Path(output_root) / "replacement_diagnostics_rank0.json"
+                )
+                _write_json_atomic(
+                    diagnostic_path, controller.replacement_diagnostics_snapshot()
+                )
+                run.event("replacement_diagnostics_saved", path=str(diagnostic_path))
 
 if __name__ == "__main__":
     main()

@@ -190,6 +190,13 @@ class ArtifactLayout:
                     else None
                 ),
             )
+        tuning_run_id = cfg["training"].get("tuning_run_id")
+        if tuning_run_id is not None:
+            tuning_run_id = str(tuning_run_id)
+            normalized_tuning_run_id = safe_name(tuning_run_id)
+            if not normalized_tuning_run_id or normalized_tuning_run_id != tuning_run_id:
+                raise ValueError(f"Invalid training.tuning_run_id: {tuning_run_id!r}")
+            run_root = run_root / f"tuning_{normalized_tuning_run_id}"
         self.root = run_root / seed
         # 原始 Base 模型独立目录：
         # 不依赖 ann_mode，也不依赖 learning_rate

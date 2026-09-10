@@ -173,6 +173,15 @@ def build_evaluation_controller(
             mode=mode,
             site_root=layout.ann_training_site_dir if aware else None,
             clip_root=layout.ann_training_clip_profile_dir if aware else None,
+            gif_quantizer_clip_backward=cfg.get("gif", {}).get(
+                "quantizer_clip_backward", "hard_clip"
+            ),
+            outer_clip_backward=cfg.get("replacement", {}).get(
+                "outer_clip_backward", "hard_clip"
+            ),
+            diagnostics_max_calls_per_site=int(
+                cfg.get("training", {}).get("replacement_diagnostics_max_calls_per_site", 0)
+            ),
             phase_T=int(cfg["phase"]["T"]),
             mtn_T=int(cfg["mtn"]["T"]),
             mtn_K=int(cfg["mtn"]["K"]),
@@ -243,6 +252,9 @@ def evaluation_forward_metadata(
         "static_replacement_enabled": enabled,
         "static_replacement_impl": implementation,
         "evaluation_common_clip_applied": clip_applied,
+        "gif_quantizer_clip_backward": controller.gif_quantizer_clip_backward,
+        "outer_clip_backward": controller.outer_clip_backward,
+        "replacement_diagnostics_max_calls_per_site": controller.diagnostics_max_calls_per_site,
         "replacement_state_root": root,
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
