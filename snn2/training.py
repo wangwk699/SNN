@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,40 @@ from .modeling import load_model, load_tokenizer, model_source_for_stage, prefix
 from .prefix_cache import install_prefix_kv_forward
 from .state_validation import validate_clip_profile, validate_site_state_bundle
 from .temporal_ops import CALIBRATION_GROUPING_POLICY, STATISTICS_FORMAT_VERSION
+
+def tokenized_supervision_summary(dataset: Any, *, split: str) -> dict[str, Any]:
+    counts = [int(value) for value in dataset["causal_supervised_token_count"]]
+    fallbacks = [
+        bool(value) for value in dataset["assistant_aware_truncation_applied"]
+    ]
+    if not counts:
+        raise ValueError(f"Tokenized {split} dataset is empty")
+    invalid = [index for index, count in enumerate(counts) if count <= 0]
+    if invalid:
+        raise ValueError(
+            f"Tokenized {split} dataset contains {len(invalid)} examples without "
+            "causal LM supervision"
+        )
+    return {
+        "samples": len(counts),
+        "assistant_aware_truncation_fallbacks": sum(fallbacks),
+        "min_causal_supervised_tokens": min(counts),
+        "max_causal_supervised_tokens": max(counts),
+        "mean_causal_supervised_tokens": sum(counts) / len(counts),
+    }
+
+
+def finite_eval_losses(
+    history: list[dict[str, Any]], *, evaluation_required: bool
+) -> list[float]:
+    losses = [float(entry["eval_loss"]) for entry in history if "eval_loss" in entry]
+    if evaluation_required and not losses:
+        raise RuntimeError("Training requested evaluation but recorded no eval_loss")
+    invalid = [value for value in losses if not math.isfinite(value)]
+    if invalid:
+        raise RuntimeError(f"Training recorded non-finite eval_loss values: {invalid}")
+    return losses
+
 
 
 def format_runtime_hms(runtime_seconds: float) -> str:
@@ -82,14 +117,20 @@ def capture_training_artifact_provenance(
             mtn_T=int(cfg["mtn"]["T"]),
             group_size=int(cfg["calibration"]["group_size"]),
             num_samples=int(cfg["calibration"]["num_samples"]),
+            low_ratio=float(cfg["gif"]["low_ratio"]),
+            salient_ratio=float(cfg["gif"].get("salient_ratio", 1.0 - float(cfg["gif"]["low_ratio"]))),
         )
         manifest_metadata = validation["manifest"]
         expected_group = int(cfg["calibration"]["group_size"])
         expected_samples = int(cfg["calibration"]["num_samples"])
+        expected_low_ratio = float(cfg["gif"]["low_ratio"])
+        expected_salient_ratio = float(cfg["gif"].get("salient_ratio", 1.0 - expected_low_ratio))
         if (
             manifest_metadata.get("calibration_group_size") != expected_group
             or manifest_metadata.get("calibration_num_samples") != expected_samples
             or manifest_metadata.get("calibration_grouping_policy") != CALIBRATION_GROUPING_POLICY
+            or manifest_metadata.get("gif_low_ratio") != expected_low_ratio
+            or manifest_metadata.get("gif_salient_ratio") != expected_salient_ratio
             or manifest_metadata.get("statistics_format_version") != STATISTICS_FORMAT_VERSION
         ):
             raise ValueError("ANN-training Stage A provenance differs from config")
@@ -107,6 +148,8 @@ def capture_training_artifact_provenance(
             "ann_training_calibration_num_samples": expected_samples,
             "ann_training_phase_T": int(cfg["phase"]["T"]),
             "ann_training_mtn_T": int(cfg["mtn"]["T"]),
+            "ann_training_gif_low_ratio": expected_low_ratio,
+            "ann_training_gif_salient_ratio": expected_salient_ratio,
             "statistics_format_version": STATISTICS_FORMAT_VERSION,
         })
     return captured
@@ -163,6 +206,8 @@ def validate_recorded_training_artifact_provenance(
         "ann_training_phase_T",
         "ann_training_mtn_T",
         "statistics_format_version",
+        "ann_training_gif_low_ratio",
+        "ann_training_gif_salient_ratio",
     )
     recorded = {key: recorded_result[key] for key in keys if key in recorded_result}
     try:
@@ -224,6 +269,8 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             phase_T=int(cfg["phase"]["T"]), mtn_T=int(cfg["mtn"]["T"]),
             group_size=int(cfg["calibration"]["group_size"]),
             num_samples=int(cfg["calibration"]["num_samples"]),
+            low_ratio=float(cfg["gif"]["low_ratio"]),
+            salient_ratio=float(cfg["gif"].get("salient_ratio", 1.0 - float(cfg["gif"]["low_ratio"]))),
         )
     if cfg["rotation"]["enabled"] or mode != "none":
         install_model_integration(model, controller, rotation_state(cfg, layout))
@@ -297,6 +344,12 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             prefix_ids=None,
             desc=f"Tokenizing SNN2 validation dataset ({len(bundle.validation)} samples)",
         )
+    train_supervision = tokenized_supervision_summary(
+        train_dataset, split="train"
+    )
+    validation_supervision = tokenized_supervision_summary(
+        validation_dataset, split="validation"
+    )
     if int(os.environ.get("RANK", "0")) == 0:
         template = getattr(tokenizer, "chat_template", None) or ""
         write_json(
@@ -320,6 +373,8 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
                 "train_seed": int(training_cfg.get("train_seed", training_cfg.get("tldr_train_seed", 42))),
                 "actual_train_samples": len(train_dataset),
                 "train_sampling": bundle.manifests["train"].get("sampling"),
+                "train_supervision": train_supervision,
+                "validation_supervision": validation_supervision,
             },
         )
     trainer = Trainer(
@@ -331,6 +386,10 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         processing_class=tokenizer,
     )
     result = trainer.train(resume_from_checkpoint=training_cfg.get("resume_from_checkpoint"))
+    eval_losses = finite_eval_losses(
+        trainer.state.log_history,
+        evaluation_required=training_cfg.get("eval_strategy", "no") != "no",
+    )
     verify_training_artifact_provenance_unchanged(captured_provenance, cfg, layout)
     final_dir = layout.ann_checkpoint_dir
     trainer.save_model(str(final_dir))
@@ -358,6 +417,8 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             "replacement_diagnostics_max_calls_per_site": controller.diagnostics_max_calls_per_site,
             "train_samples": len(train_dataset),
             "validation_samples": len(validation_dataset),
+            "eval_loss": eval_losses[-1] if eval_losses else None,
+            "eval_loss_history": eval_losses,
             "world_size": int(os.environ.get("WORLD_SIZE", "1")),
             "effective_global_batch_size": (
                 int(training_cfg["per_device_train_batch_size"])

@@ -68,6 +68,24 @@ from .phase_statistics import (
 )
 from .rotation import get_model_parts
 
+def gif_ratio_provenance(cfg: dict[str, Any]) -> dict[str, float]:
+    low_ratio = float(cfg["gif"]["low_ratio"])
+    salient_ratio = float(
+        cfg["gif"].get("salient_ratio", 1.0 - low_ratio)
+    )
+    if (
+        not math.isfinite(low_ratio)
+        or not math.isfinite(salient_ratio)
+        or not 0.0 < low_ratio <= 1.0
+        or abs(low_ratio + salient_ratio - 1.0) > 1e-8
+    ):
+        raise ValueError("Invalid GIF low/salient ratio provenance")
+    return {
+        "gif_low_ratio": low_ratio,
+        "gif_salient_ratio": salient_ratio,
+    }
+
+
 
 def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: str) -> dict[str, Any]:
     """Build complete, stage-aware calibration provenance metadata."""
@@ -155,6 +173,7 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "seed": int(cfg["experiment"]["seed"]),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
+        **gif_ratio_provenance(cfg),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "calibration_architecture": "two_stage_A_common_B_clip_profiles",
@@ -621,6 +640,7 @@ def materialize_calibration_states(
         "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        **gif_ratio_provenance(cfg),
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
         "softmax_site5_clip_policy": SOFTMAX_SITE5_CLIP_POLICY,
@@ -746,6 +766,16 @@ def materialize_clip_profile(
         raise ValueError("Legacy pre-A/B calibration artifact detected. Re-run calibration Stage A.")
     if stage_a_manifest.get("calibration_phase") != "A":
         raise ValueError("Stage B requires a Stage A calibration manifest")
+    expected_ratios = gif_ratio_provenance(cfg)
+    mismatched_ratios = {
+        key: (value, stage_a_manifest.get(key))
+        for key, value in expected_ratios.items()
+        if stage_a_manifest.get(key) != value
+    }
+    if mismatched_ratios:
+        raise ValueError(
+            f"Stage B GIF ratio provenance mismatch: {mismatched_ratios}"
+        )
     phase_T, mtn_T = int(cfg["phase"]["T"]), int(cfg["mtn"]["T"])
     expected_name = f"phase_T_{phase_T}_mtn_T_{mtn_T}"
     if output_root.name != expected_name:
@@ -830,6 +860,7 @@ def materialize_clip_profile(
         "stage_a_calibration_manifest_sha256": sha256_file(stage_a_manifest_path),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
+        **gif_ratio_provenance(cfg),
         "expected_num_hidden_layers": stage_a_manifest["expected_num_hidden_layers"],
         "clip_policy_version": "mask_aware_role_specific_v1",
         "mask_aware_policy": "all_low_all_high_mixed_per_group",

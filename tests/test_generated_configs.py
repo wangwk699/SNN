@@ -371,6 +371,7 @@ def test_tldr_full_run_paths_record_scheduler_warmup_and_aware_accumulation(
         learning = (
             f"epochs_{training['num_train_epochs']}_"
             + (f"num_samples_{cfg['calibration']['num_samples']}_" if mode in {"phase_aware", "gif_aware"} else "")
+            + (f"gif_low_ratio_{float(cfg['gif']['low_ratio'])}_" if mode == "gif_aware" else "")
             + f"lr{training['learning_rate']}_train_samples_{training['tldr_train_samples']}"
             + (f"_calibration_group_size_{cfg['calibration']['group_size']}" if mode in {"phase_aware", "gif_aware"} else "")
         )
@@ -406,7 +407,7 @@ def test_tulu_full_run_paths_include_aware_training_identity(generated_configs):
         "vanilla": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/vanilla/lr1e-06_train_samples_10000/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.0/seed42",
         "unaware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/unaware/lr1e-06_train_samples_10000/prefix_enabled_ture/lr_scheduler_type_cosine_warmup_ratio_0.0/seed42",
         "phase_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/phase_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_T_4_mtn_T_4_surrogate_slope_1.0_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/seed42",
-        "gif_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/gif_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_T_4_mtn_T_4_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/seed42",
+        "gif_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/gif_aware/epochs_1_num_samples_128_gif_low_ratio_0.9_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_T_4_mtn_T_4_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/seed42",
     }
     for path in generated_configs:
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))

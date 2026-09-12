@@ -162,6 +162,8 @@ def build_evaluation_controller(
                 phase_T=int(cfg["phase"]["T"]), mtn_T=int(cfg["mtn"]["T"]),
                 group_size=int(cfg["calibration"]["group_size"]),
                 num_samples=int(cfg["calibration"]["num_samples"]),
+                low_ratio=float(cfg["gif"]["low_ratio"]),
+                salient_ratio=float(cfg["gif"].get("salient_ratio", 1.0 - float(cfg["gif"]["low_ratio"]))),
             )
             manifest = validation["manifest"]
             if (

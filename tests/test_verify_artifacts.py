@@ -785,6 +785,8 @@ def test_verify_aware_post_selector_still_validates_training_provenance(
     monkeypatch.setattr(
         "snn2.training.validate_site_state_bundle",
         lambda *_args, **_kwargs: {"manifest": {
+            "gif_low_ratio": 0.5,
+            "gif_salient_ratio": 0.5,
             "calibration_group_size": -1,
             "calibration_num_samples": 128,
             "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2",

@@ -51,7 +51,7 @@ def _cfg():
     return {
         "calibration": {"group_size": -1, "num_samples": 128, "expected_sites_per_layer": 10},
         "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
-        "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
+        "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5, "salient_ratio": 0.5},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
     }
 
@@ -245,6 +245,24 @@ def test_stage_a_validator_rejects_runtime_field_in_manifest(tmp_path):
         validate_site_state_bundle(tmp_path, clip_policy="forbid_all")
 
 
+def test_stage_b_rejects_gif_ratio_mismatch(tmp_path):
+    cfg = _cfg()
+    site_root = tmp_path / "sites"
+    _write_statistics(site_root)
+    materialize_calibration_states(
+        site_root, cfg, expected_num_hidden_layers=1
+    )
+    changed = _cfg()
+    changed["gif"].update({"low_ratio": 0.7, "salient_ratio": 0.3})
+
+    with pytest.raises(ValueError, match="GIF ratio provenance mismatch"):
+        materialize_clip_profile(
+            site_root,
+            tmp_path / "phase_T_4_mtn_T_4",
+            changed,
+        )
+
+
 def test_clip_profile_validator_rejects_tampered_site_summary(tmp_path):
     cfg = _cfg()
     site_root = tmp_path / "sites"
@@ -266,4 +284,6 @@ def test_clip_profile_validator_rejects_tampered_site_summary(tmp_path):
             mtn_T=4,
             group_size=-1,
             num_samples=128,
+            low_ratio=0.5,
+            salient_ratio=0.5,
         )

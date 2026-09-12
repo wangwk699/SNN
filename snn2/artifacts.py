@@ -91,6 +91,13 @@ def calibration_variant_dirname(group_size: Any, num_samples: Any) -> str:
         raise ValueError("calibration.num_samples must be a positive integer")
     return f"{calibration_group_dirname(group_size)}_num_samples_{samples}"
 
+def gif_low_ratio_dirname(value: Any) -> str:
+    ratio = float(value)
+    if not 0.0 < ratio <= 1.0:
+        raise ValueError("gif.low_ratio must be in (0, 1]")
+    return f"gif_low_ratio_{ratio}"
+
+
 
 def safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
@@ -126,6 +133,10 @@ class ArtifactLayout:
             train_samples = "full" if configured_train_samples is None else str(int(configured_train_samples))
             learning_rate = f"{learning_rate}_train_samples_{train_samples}"
         if is_aware_ann_mode(cfg):
+            if exp["ann_mode"] == "gif_aware":
+                learning_rate = (
+                    f"{gif_low_ratio_dirname(cfg['gif']['low_ratio'])}_{learning_rate}"
+                )
             learning_rate = (
                 f"num_samples_{int(cfg['calibration']['num_samples'])}_"
                 f"{learning_rate}_"
@@ -306,15 +317,18 @@ class ArtifactLayout:
                 "prefix_enabled", self._cfg.get("prefix", {}).get("enabled", False)
             )
         )
+        variant = calibration_variant_dirname(
+            self._cfg["calibration"]["group_size"],
+            self._cfg["calibration"]["num_samples"],
+        )
+        if self._cfg["experiment"]["ann_mode"] == "gif_aware":
+            variant += f"_{gif_low_ratio_dirname(self._cfg['gif']['low_ratio'])}"
         return (
             self.shared_model_root
             / "rotated_prefix"
             / "ann_training_calibration"
             / prefix_enabled_dirname(enabled)
-            / calibration_variant_dirname(
-                self._cfg["calibration"]["group_size"],
-                self._cfg["calibration"]["num_samples"],
-            )
+            / variant
         )
 
     @property

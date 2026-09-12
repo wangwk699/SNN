@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Literal
 
@@ -43,6 +44,22 @@ _FACTORIES = {
 ClipBundlePolicy = Literal["forbid_all"]
 CLIP_BUNDLE_POLICIES = frozenset({"forbid_all"})
 
+def _validated_gif_ratios(metadata: dict[str, Any]) -> tuple[float, float]:
+    try:
+        low_ratio = float(metadata["gif_low_ratio"])
+        salient_ratio = float(metadata["gif_salient_ratio"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Calibration manifest is missing GIF ratio provenance") from exc
+    if (
+        not math.isfinite(low_ratio)
+        or not math.isfinite(salient_ratio)
+        or not 0.0 < low_ratio <= 1.0
+        or abs(low_ratio + salient_ratio - 1.0) > 1e-8
+    ):
+        raise ValueError("Calibration manifest has invalid GIF ratio provenance")
+    return low_ratio, salient_ratio
+
+
 
 def _forbidden_manifest_paths(value: Any, forbidden: set[str], prefix: str = "") -> list[str]:
     paths: list[str] = []
@@ -79,6 +96,7 @@ def load_calibration_manifest(site_root: str | Path) -> dict[str, Any]:
             + ", ".join(forbidden_paths)
         )
     validate_temporal_policy(manifest, context=str(path))
+    _validated_gif_ratios(manifest)
     expected = {
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "calibration_architecture": "two_stage_A_common_B_clip_profiles",
@@ -213,6 +231,8 @@ def validate_clip_profile(
     mtn_T: int,
     group_size: int,
     num_samples: int,
+    low_ratio: float,
+    salient_ratio: float,
 ) -> dict[str, Any]:
     stage_a_root, root = Path(site_root), Path(clip_root)
     path = root / "clip_profile_manifest.json"
@@ -228,6 +248,8 @@ def validate_clip_profile(
         "phase_base": 2.0,
         "calibration_group_size": int(group_size),
         "calibration_num_samples": int(num_samples),
+        "gif_low_ratio": float(low_ratio),
+        "gif_salient_ratio": float(salient_ratio),
         "stage_a_root": str(stage_a_root.resolve()),
         "stage_a_calibration_manifest_path": str(stage_a_path.resolve()),
         "stage_a_calibration_manifest_sha256": sha256_file(stage_a_path),
@@ -248,6 +270,9 @@ def validate_clip_profile(
         raise ValueError(f"Stage B Clip profile provenance mismatch: {mismatched}")
     validate_temporal_policy(profile, context=str(path))
     stage_a = load_calibration_manifest(stage_a_root)
+    stage_a_ratios = _validated_gif_ratios(stage_a)
+    if stage_a_ratios != (float(low_ratio), float(salient_ratio)):
+        raise ValueError("Stage A/B GIF ratio provenance differs")
     stage_a_sites = stage_a.get("sites", {})
     profile_sites = profile.get("sites", {})
     if set(profile_sites) != set(stage_a_sites):
@@ -355,6 +380,12 @@ def validate_site_state_bundle(
                 raise ValueError(f"Invalid Stage A state at {directory}: {exc}") from exc
             gif_steps.add(int(gif.temporal_steps))
             gif_state = states["gif"]
+            if (
+                gif_state.get("gif_policy") == GIF_SALIENT_POLICY
+                and float(gif_state.get("low_ratio", float("nan")))
+                != float(manifest["gif_low_ratio"])
+            ):
+                raise ValueError(f"GIF low-ratio provenance mismatch at {directory}")
             expected_roles = GIF_MULTI_MASK_ROLES.get(site_index)
             if expected_roles is not None:
                 if (

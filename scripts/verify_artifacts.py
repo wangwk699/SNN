@@ -982,6 +982,8 @@ def main():
                 mtn_T=int(training_result["ann_training_mtn_T"]),
                 group_size=int(training_result["ann_training_calibration_group_size"]),
                 num_samples=int(training_result["ann_training_calibration_num_samples"]),
+                low_ratio=float(training_result["ann_training_gif_low_ratio"]),
+                salient_ratio=float(training_result["ann_training_gif_salient_ratio"]),
             )
         _require_manifest_flags(source_manifest, expected_flags, "Conversion source")
         _verify_hashes(source_manifest, "Conversion source calibration")

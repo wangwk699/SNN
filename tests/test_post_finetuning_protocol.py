@@ -35,6 +35,7 @@ def _cfg(mode, root="artifacts", common_clip_enabled=True, use_post=True):
         "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
         "ann_training": {"prefix_enabled": mode != "vanilla"},
+        "gif": {"low_ratio": 0.9, "salient_ratio": 0.1},
         "post_finetuning": {"prefix_enabled": True},
         "conversion": {"use_post_finetuning_artifacts": use_post},
         "replacement": {"common_clip_enabled": common_clip_enabled},
@@ -106,7 +107,12 @@ def test_aware_run_root_records_common_clip_variant(mode, enabled):
         else "phase_T_4_mtn_T_4_warmup_ratio_0.03"
     )
     assert layout.root.parent.name == expected_training
-    assert layout.root.parent.parent.parent.name == "num_samples_128_lr1e-06_calibration_group_size_-1"
+    expected_run = (
+        "num_samples_128_gif_low_ratio_0.9_lr1e-06_calibration_group_size_-1"
+        if mode == "gif_aware"
+        else "num_samples_128_lr1e-06_calibration_group_size_-1"
+    )
+    assert layout.root.parent.parent.parent.name == expected_run
 
 
 def test_phase_aware_run_root_records_slope_and_warmup_ratio():
@@ -125,12 +131,23 @@ def test_phase_aware_run_root_records_slope_and_warmup_ratio():
     assert first.ann_training_calibration_dir == second.ann_training_calibration_dir
 
 
-def test_aware_modes_and_surrogate_slopes_share_calibration():
+def test_gif_calibration_is_ratio_scoped_from_phase():
     phase = ArtifactLayout(_cfg("phase_aware"))
     gif_cfg = _cfg("gif_aware")
     gif_cfg["phase"]["surrogate_slope"] = 2.0
     gif = ArtifactLayout(gif_cfg)
-    assert phase.ann_training_calibration_dir == gif.ann_training_calibration_dir
+    assert phase.ann_training_calibration_dir != gif.ann_training_calibration_dir
+    assert gif.ann_training_calibration_dir.name.endswith("gif_low_ratio_0.9")
+
+
+def test_gif_ratio_changes_isolate_calibration_and_ann_run():
+    first_cfg = _cfg("gif_aware")
+    second_cfg = _cfg("gif_aware")
+    second_cfg["gif"] = {"low_ratio": 0.7, "salient_ratio": 0.3}
+    first = ArtifactLayout(first_cfg)
+    second = ArtifactLayout(second_cfg)
+    assert first.ann_training_calibration_dir != second.ann_training_calibration_dir
+    assert first.ann_checkpoint_dir != second.ann_checkpoint_dir
 
 
 def test_common_clip_variants_share_prefix_and_calibration_but_not_run_root():
@@ -164,7 +181,12 @@ def test_aware_snn_path_contains_group_size_exactly_once(mode):
         part.count("calibration_group_size_-1") for part in path.parts
     ) == 1
     assert path.parts[-3:] == ("use_post_finetuning_artifacts_true", "phase", "phase_T_4")
-    assert "num_samples_128_lr1e-06_calibration_group_size_-1" in path.parts
+    run_name = (
+        "num_samples_128_gif_low_ratio_0.9_lr1e-06_calibration_group_size_-1"
+        if mode == "gif_aware"
+        else "num_samples_128_lr1e-06_calibration_group_size_-1"
+    )
+    assert run_name in path.parts
 
 @pytest.mark.parametrize("mode", ["vanilla", "unaware"])
 def test_identity_ann_snn_path_groups_below_snn(mode):

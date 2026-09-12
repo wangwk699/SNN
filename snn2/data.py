@@ -546,6 +546,47 @@ def _encode_messages(row: dict[str, Any], tokenizer: Any) -> tuple[list[int], li
     return list(full_ids), labels
 
 
+def _causal_supervised_token_count(labels: list[int]) -> int:
+    """Count labels that participate after the causal one-token shift."""
+    return sum(int(token) != -100 for token in labels[1:])
+
+
+def _truncate_with_assistant_fallback(
+    input_ids: list[int],
+    labels: list[int],
+    *,
+    max_length: int,
+    truncation_side: str,
+    assistant_aware: bool,
+) -> tuple[list[int], list[int], bool]:
+    if len(input_ids) != len(labels):
+        raise ValueError("Token IDs and labels must have the same length")
+    if len(input_ids) <= max_length:
+        return input_ids, labels, False
+    if truncation_side == "left":
+        return input_ids[-max_length:], labels[-max_length:], False
+    if truncation_side != "right":
+        raise ValueError("data.truncation_side must be left or right")
+    truncated_ids = input_ids[:max_length]
+    truncated_labels = labels[:max_length]
+    if not assistant_aware or _causal_supervised_token_count(truncated_labels) > 0:
+        return truncated_ids, truncated_labels, False
+
+    supervised = [
+        index for index, token in enumerate(labels)
+        if index > 0 and int(token) != -100
+    ]
+    if not supervised:
+        raise ValueError("Tulu example has no causal assistant supervision")
+    end = min(len(labels), max(max_length, supervised[-1] + 1))
+    start = end - max_length
+    fallback_ids = input_ids[start:end]
+    fallback_labels = labels[start:end]
+    if _causal_supervised_token_count(fallback_labels) <= 0:
+        raise ValueError("Assistant-aware truncation failed to preserve supervision")
+    return fallback_ids, fallback_labels, True
+
+
 def tokenize_row(
     row: dict[str, Any],
     tokenizer: Any,
@@ -564,13 +605,26 @@ def tokenize_row(
         )
     max_length = int(cfg["data"]["max_seq_length"])
     truncation_side = cfg["data"].get("truncation_side", "right")
-    if len(input_ids) > max_length:
-        if truncation_side == "left":
-            input_ids, labels = input_ids[-max_length:], labels[-max_length:]
-        else:
-            input_ids, labels = input_ids[:max_length], labels[:max_length]
+    input_ids, labels, fallback_applied = _truncate_with_assistant_fallback(
+        input_ids,
+        labels,
+        max_length=max_length,
+        truncation_side=truncation_side,
+        assistant_aware=cfg["experiment"]["task"] == "tulu3",
+    )
+    supervised_tokens = _causal_supervised_token_count(labels)
+    if supervised_tokens <= 0:
+        raise ValueError(
+            "Tokenized example has no labels participating in causal LM loss"
+        )
     attention_mask = [1] * len(input_ids)
-    return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
+        "assistant_aware_truncation_applied": fallback_applied,
+        "causal_supervised_token_count": supervised_tokens,
+    }
 
 
 def tokenize_dataset(

@@ -164,6 +164,8 @@ def _validate_aware_training_provenance(
         "ann_training_calibration_manifest_sha256": sha256_file(calibration_manifest),
         "ann_training_calibration_group_size": int(cfg["calibration"]["group_size"]),
         "ann_training_calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
+        "ann_training_gif_low_ratio": float(cfg["gif"]["low_ratio"]),
+        "ann_training_gif_salient_ratio": float(cfg["gif"].get("salient_ratio", 1.0 - float(cfg["gif"]["low_ratio"]))),
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
     }
     profile_path = Path(result.get("ann_training_clip_profile_root", "")) / "clip_profile_manifest.json"
@@ -233,6 +235,8 @@ def _source_bundle(
     expected_grouping = {
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
+        "gif_low_ratio": float(cfg["gif"]["low_ratio"]),
+        "gif_salient_ratio": float(cfg["gif"].get("salient_ratio", 1.0 - float(cfg["gif"]["low_ratio"]))),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,

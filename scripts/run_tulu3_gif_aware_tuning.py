@@ -151,6 +151,7 @@ def ann_dir_for(cfg: dict[str, Any], *, include_tuning_id: bool = True) -> Path:
     identity = (
         f"epochs_{training['num_train_epochs']}_"
         f"num_samples_{int(cfg['calibration']['num_samples'])}_"
+        f"gif_low_ratio_{float(cfg['gif']['low_ratio'])}_"
         f"lr{training['learning_rate']}_"
         f"train_samples_{int(training['train_samples'])}_"
         f"calibration_group_size_{int(cfg['calibration']['group_size'])}"

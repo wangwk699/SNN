@@ -190,6 +190,7 @@ def test_official_phase_ann_controller_matches_graph_p(monkeypatch):
         "experiment": {"ann_mode": "phase_aware"},
         "phase": {"T": 4, "surrogate_slope": 2.0},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
+        "gif": {"low_ratio": 0.5, "salient_ratio": 0.5},
         "replacement": {"common_clip_enabled": False},
         "calibration": {"group_size": -1, "num_samples": 128},
     }

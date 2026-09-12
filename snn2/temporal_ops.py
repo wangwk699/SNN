@@ -34,7 +34,7 @@ SOFTMAX_PREFIX_NEURON_POLICY = "full_softmax_tensor_including_prefix"
 FINAL_NORM_NEURON_POLICY = "phase_ann_surrogate_phase_snn_temporal_mtn_snn_temporal_gif_identity_clip_forbidden_v1"
 SITE_STATE_FORMAT_VERSION = 10
 STATISTICS_FORMAT_VERSION = 4
-CALIBRATION_MANIFEST_FORMAT_VERSION = 12
+CALIBRATION_MANIFEST_FORMAT_VERSION = 13
 CONVERSION_METADATA_FORMAT_VERSION = 14
 
 CALIBRATION_GROUPING_POLICY = "site234_logical_per_head_site6_merged_last_dim_v2"

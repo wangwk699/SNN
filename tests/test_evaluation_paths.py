@@ -270,6 +270,7 @@ def _evaluation_cfg(ann_mode, clip=False):
         "phase": {"T": 4, "surrogate_slope": 2.0},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
         "replacement": {"common_clip_enabled": clip},
+        "gif": {"low_ratio": 0.5, "salient_ratio": 0.5},
         "calibration": {"group_size": -1, "num_samples": 128},
     }
 

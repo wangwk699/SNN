@@ -87,7 +87,7 @@ def _cfg(rotation_enabled=False, *, ann_mode="vanilla", use_post=True):
         "replacement": {"common_clip_enabled": False},
         "calibration": {"group_size": -1, "num_samples": 128, "expected_sites_per_layer": 10},
         "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
-        "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5},
+        "gif": {"base_bits": 4, "add_bits": 1, "low_ratio": 0.5, "salient_ratio": 0.5},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
     }
 
@@ -445,6 +445,8 @@ def _prepare_selector_fixture(tmp_path, *, ann_mode, use_post, include_training_
             "ann_training_mtn_T": 4,
             "ann_training_calibration_num_samples": 128,
             "ann_training_clip_profile_root": str(profile_root.resolve()),
+            "ann_training_gif_low_ratio": float(cfg["gif"]["low_ratio"]),
+            "ann_training_gif_salient_ratio": float(cfg["gif"]["salient_ratio"]),
             "ann_training_clip_profile_manifest_sha256": sha256_file(profile_manifest),
         }
         (layout.ann_dir / "training_result.json").write_text(json.dumps(result), encoding="utf-8")

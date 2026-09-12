@@ -39,6 +39,7 @@ def _cfg(mode="unaware", learning_rate=5e-6):
         "prefix": {"enabled": mode != "vanilla"},
         "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
+        "gif": {"low_ratio": 0.9, "salient_ratio": 0.1},
         "post_finetuning": {"prefix_enabled": True},
         "calibration": {"group_size": -1, "num_samples": 128},
     }

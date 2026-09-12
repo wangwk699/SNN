@@ -8,6 +8,8 @@ from snn2.temporal_ops import STATISTICS_FORMAT_VERSION
 from snn2.training import (
     capture_training_artifact_provenance,
     ann_training_common_clip_metadata,
+    finite_eval_losses,
+    tokenized_supervision_summary,
     format_runtime_hms,
     verify_training_artifact_provenance_unchanged,
 )
@@ -56,7 +58,8 @@ def _provenance_fixture(tmp_path):
     (clip_dir / "clip_profile_manifest.json").write_text(json.dumps({"format_version": 1}), encoding="utf-8")
     cfg = {"experiment": {"ann_mode": "phase_aware"}, "ann_training": {"prefix_enabled": True},
            "prefix": {"enabled": True}, "calibration": {"group_size": -1, "num_samples": 128},
-           "phase": {"T": 4}, "mtn": {"T": 4}}
+           "phase": {"T": 4}, "mtn": {"T": 4},
+           "gif": {"low_ratio": 0.9, "salient_ratio": 0.1}}
     layout = SimpleNamespace(ann_training_prefix_dir=prefix_dir, ann_training_site_dir=site_dir,
                              ann_training_clip_profile_dir=clip_dir,
                              calibration_data_manifest_path=manifest)
@@ -64,12 +67,14 @@ def _provenance_fixture(tmp_path):
 
 
 def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
-    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": STATISTICS_FORMAT_VERSION}})
+    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "gif_low_ratio": 0.9, "gif_salient_ratio": 0.1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": STATISTICS_FORMAT_VERSION}})
     monkeypatch.setattr("snn2.training.validate_clip_profile", lambda *args, **kwargs: {})
     cfg, layout = _provenance_fixture(tmp_path)
     captured = capture_training_artifact_provenance(
         cfg, layout, prefix_ids=[7, 8]
     )
+    assert captured["ann_training_gif_low_ratio"] == 0.9
+    assert captured["ann_training_gif_salient_ratio"] == 0.1
     verify_training_artifact_provenance_unchanged(captured, cfg, layout)
     assert captured["ann_training_prefix_token_ids"] == [7, 8]
     assert captured["ann_training_prefix_state_sha256"]
@@ -86,12 +91,41 @@ def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
 def test_training_artifact_provenance_rejects_mid_training_changes(
     monkeypatch, tmp_path, relative_path, replacement
 ):
-    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": STATISTICS_FORMAT_VERSION}})
+    monkeypatch.setattr("snn2.training.validate_site_state_bundle", lambda *args, **kwargs: {"manifest": {"calibration_group_size": -1, "calibration_num_samples": 128, "gif_low_ratio": 0.9, "gif_salient_ratio": 0.1, "calibration_grouping_policy": "site234_logical_per_head_site6_merged_last_dim_v2", "statistics_format_version": STATISTICS_FORMAT_VERSION}})
     monkeypatch.setattr("snn2.training.validate_clip_profile", lambda *args, **kwargs: {})
     cfg, layout = _provenance_fixture(tmp_path)
     captured = capture_training_artifact_provenance(
         cfg, layout, prefix_ids=[7, 8]
+
     )
     (tmp_path / relative_path).write_bytes(replacement)
     with pytest.raises(RuntimeError, match="changed during training"):
         verify_training_artifact_provenance_unchanged(captured, cfg, layout)
+
+def test_finite_eval_losses_requires_finite_evaluation() -> None:
+    assert finite_eval_losses(
+        [{"loss": 1.0}, {"eval_loss": 0.25}], evaluation_required=True
+    ) == [0.25]
+    with pytest.raises(RuntimeError, match="non-finite"):
+        finite_eval_losses(
+            [{"eval_loss": float("nan")}], evaluation_required=True
+        )
+    with pytest.raises(RuntimeError, match="recorded no eval_loss"):
+        finite_eval_losses([], evaluation_required=True)
+
+
+def test_tokenized_supervision_summary_rejects_empty_supervision() -> None:
+    dataset = {
+        "causal_supervised_token_count": [2, 4],
+        "assistant_aware_truncation_applied": [True, False],
+    }
+    assert tokenized_supervision_summary(dataset, split="validation") == {
+        "samples": 2,
+        "assistant_aware_truncation_fallbacks": 1,
+        "min_causal_supervised_tokens": 2,
+        "max_causal_supervised_tokens": 4,
+        "mean_causal_supervised_tokens": 3.0,
+    }
+    dataset["causal_supervised_token_count"] = [0, 4]
+    with pytest.raises(ValueError, match="without causal LM supervision"):
+        tokenized_supervision_summary(dataset, split="validation")
