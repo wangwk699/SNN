@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 
 from .calibration import materialize_target_state
 from .data import CausalLMCollator, tokenize_dataset
+from .model_integration import prepare_temporal_model_inputs
 from .prefix_cache import fresh_prefix_dynamic_cache, install_prefix_kv_forward
 from .rotation import get_model_parts
 from .stats import StatisticsStore
@@ -34,18 +35,34 @@ def _device(module: torch.nn.Module) -> torch.device:
         return torch.device("cpu")
 
 
+def _tree_map_tensors(value: Any, fn: Any) -> Any:
+    """Apply ``fn`` recursively to tensors in decoder-forward kwargs."""
+    if isinstance(value, torch.Tensor):
+        return fn(value)
+    if isinstance(value, tuple):
+        return tuple(_tree_map_tensors(item, fn) for item in value)
+    if isinstance(value, list):
+        return [_tree_map_tensors(item, fn) for item in value]
+    if isinstance(value, dict):
+        return {key: _tree_map_tensors(item, fn) for key, item in value.items()}
+    return value
+
+
 def _cpu(value: Any) -> Any:
-    return value.detach().cpu() if isinstance(value, torch.Tensor) else value
+    return _tree_map_tensors(value, lambda tensor: tensor.detach().cpu())
+
+
+def _to_device(value: Any, device: torch.device) -> Any:
+    return _tree_map_tensors(value, lambda tensor: tensor.to(device))
 
 
 def _run(layer: torch.nn.Module, item: _LayerInput, *, model: torch.nn.Module, prefix_key_values: Any, temporal_steps: int) -> torch.Tensor:
     device = _device(layer)
-    kwargs = {name: value.to(device) if isinstance(value, torch.Tensor) else value
-              for name, value in item.kwargs.items()}
+    kwargs = _to_device(item.kwargs, device)
     kwargs["use_cache"] = False
     cache = fresh_prefix_dynamic_cache(model, prefix_key_values, logical_batch_size=item.hidden_states.shape[0] // temporal_steps, temporal_steps=temporal_steps, device=device)
     if cache is not None:
-        kwargs["past_key_values"] = cache
+        kwargs["past_key_value"] = cache
     output = layer(item.hidden_states.to(device), **kwargs)
     output = output[0] if isinstance(output, tuple) else output
     if not isinstance(output, torch.Tensor):
@@ -54,7 +71,7 @@ def _run(layer: torch.nn.Module, item: _LayerInput, *, model: torch.nn.Module, p
 
 
 @torch.no_grad()
-def _bootstrap(model: torch.nn.Module, loader: DataLoader) -> list[_LayerInput]:
+def _bootstrap(model: torch.nn.Module, loader: DataLoader, controller: Any) -> list[_LayerInput]:
     parts, captured = get_model_parts(model), []
 
     def catcher(_module, args, kwargs):
@@ -73,8 +90,16 @@ def _bootstrap(model: torch.nn.Module, loader: DataLoader) -> list[_LayerInput]:
     try:
         for batch in loader:
             try:
-                model(input_ids=batch["input_ids"].to(device),
-                      attention_mask=batch["attention_mask"].to(device), use_cache=False)
+                repeated_ids, repeated_mask, model_kwargs = prepare_temporal_model_inputs(
+                    batch["input_ids"], batch["attention_mask"],
+                    steps=int(controller.temporal_steps),
+                )
+                model(
+                    input_ids=repeated_ids.to(device),
+                    attention_mask=repeated_mask.to(device),
+                    use_cache=False,
+                    **model_kwargs,
+                )
             except _CatchFirstLayer:
                 pass
     finally:
@@ -110,9 +135,9 @@ def collect_blockwise_snn_conditioned_statistics(
                         batch_size=1, shuffle=False, collate_fn=CausalLMCollator(tokenizer))
     install_prefix_kv_forward(model, prefix_key_values, controller=controller)
     model.eval()
-    controller._modules.clear()
+    controller.clear_runtime_module_cache()
     controller.begin_sequential_calibration(neuron, 0)
-    cached, parts = _bootstrap(model, loader), get_model_parts(model)
+    cached, parts = _bootstrap(model, loader, controller), get_model_parts(model)
     for index, layer in enumerate(parts.layers):
         controller.begin_sequential_calibration(neuron, index)
         controller.statistics = StatisticsStore()
@@ -120,9 +145,10 @@ def collect_blockwise_snn_conditioned_statistics(
             _run(layer, item, model=model, prefix_key_values=prefix_key_values, temporal_steps=int(controller.temporal_steps))
         _save_target_statistics(controller.statistics, root, neuron)
         materialize_target_state(root, cfg, neuron, layer_index=index)
+        controller.clear_layer_module_cache(index)
         controller.begin_sequential_deployment(index)
         cached = [_LayerInput(_run(layer, item, model=model, prefix_key_values=prefix_key_values, temporal_steps=int(controller.temporal_steps)).detach().cpu(), item.kwargs) for item in cached]
-        controller._modules.clear()
+        controller.clear_layer_module_cache(index)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     if neuron in {"phase", "mtn"}:

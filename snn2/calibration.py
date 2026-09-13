@@ -20,6 +20,8 @@ from .sites import (
     GIF_SALIENT_SITE_IDS,
     SOFTMAX_SITE_ID,
     SITE_COUNT,
+    SITE_IDS,
+    site_key,
     SITE_TOPOLOGY_VERSION,
     is_softmax_site,
     site_supports_clip,
@@ -69,6 +71,34 @@ from .phase_statistics import (
 from .rotation import get_model_parts
 
 
+def stage_a_trajectory_metadata(cfg: dict[str, Any], *, effective: bool = True) -> dict[str, Any]:
+    """The sole manifest representation of Stage-A trajectory dependencies."""
+    trajectory = calibration_trajectory_config(cfg, effective=effective)
+    flags = trajectory["effective_previous_layers_snn"]
+    details = {
+        neuron: {
+            "previous_layers_snn": flags[neuron],
+            "source": f"sequential_temporal_{neuron}" if flags[neuron] else "ann_common",
+        } for neuron in ("phase", "gif", "mtn")
+    }
+    if flags["phase"]:
+        details["phase"]["phase_T"] = trajectory["phase_T"]
+    if flags["gif"]:
+        details["gif"]["gif_temporal_steps"] = trajectory["gif_temporal_steps"]
+    if flags["mtn"]:
+        details["mtn"].update({key: trajectory[key] for key in ("mtn_T", "mtn_K", "mtn_threshold_factor")})
+    return {
+        "requested_previous_layers_snn": trajectory["requested_previous_layers_snn"],
+        "effective_previous_layers_snn": flags,
+        "calibration_trajectory": details,
+        "stage_a_parameter_independence": [
+            name for name, active in (("phase.T", flags["phase"]), ("mtn.T", flags["mtn"]),
+                                      ("mtn.K", flags["mtn"]), ("mtn.threshold_factor", flags["mtn"]))
+            if not active
+        ],
+    }
+
+
 def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage: str) -> dict[str, Any]:
     """Build complete, stage-aware calibration provenance metadata."""
     if stage not in {"ann_training", "vanilla_analysis", "post_finetuning"}:
@@ -111,20 +141,11 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "vanilla_analysis": "analysis_statistics_only",
         "post_finetuning": "stage_a_common_states",
     }[stage]
-    trajectory = calibration_trajectory_config(cfg, effective=stage != "vanilla_analysis")
-    effective_flags = trajectory["effective_previous_layers_snn"]
-    calibration_trajectory = {
-        neuron: {
-            "previous_layers_snn": effective_flags[neuron],
-            "source": f"sequential_temporal_{neuron}" if effective_flags[neuron] else "ann_common",
-        } for neuron in ("phase", "gif", "mtn")
-    }
-    if effective_flags["phase"]:
-        calibration_trajectory["phase"]["phase_T"] = int(cfg["phase"]["T"])
-    if effective_flags["gif"]:
-        calibration_trajectory["gif"]["gif_temporal_steps"] = GIF_LOCAL_STEPS
-    if effective_flags["mtn"]:
-        calibration_trajectory["mtn"].update({"mtn_T": int(cfg["mtn"]["T"]), "mtn_K": int(cfg["mtn"]["K"]), "mtn_threshold_factor": float(cfg["mtn"]["threshold_factor"])})
+    trajectory_metadata = stage_a_trajectory_metadata(
+        cfg, effective=stage != "vanilla_analysis"
+    )
+    effective_flags = trajectory_metadata["effective_previous_layers_snn"]
+    calibration_trajectory = trajectory_metadata["calibration_trajectory"]
     return {
         "purpose": purpose,
         "analysis_only": stage == "vanilla_analysis",
@@ -173,8 +194,8 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "calibration_architecture": "two_stage_A_common_B_clip_profiles",
         "calibration_phase": "A",
-        "stage_a_parameter_independence": [value for value, enabled in (("phase.T", effective_flags["phase"]), ("mtn.T", effective_flags["mtn"]), ("mtn.K", effective_flags["mtn"])) if not enabled],
-        "requested_previous_layers_snn": trajectory["requested_previous_layers_snn"],
+        "stage_a_parameter_independence": trajectory_metadata["stage_a_parameter_independence"],
+        "requested_previous_layers_snn": trajectory_metadata["requested_previous_layers_snn"],
         "effective_previous_layers_snn": effective_flags,
         "calibration_trajectory": calibration_trajectory,
         "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
@@ -468,10 +489,10 @@ def build_clip_state(
         raise ValueError("Invalid common clipping interval: every lower must be < upper")
     return result
 
-def build_site_states(
+def build_gif_state(
     statistics: dict[str, Any],
     cfg: dict[str, Any],
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, Any]:
     _validate_statistics(statistics)
     site_index = statistics.get("site_index")
     if not isinstance(site_index, int):
@@ -486,8 +507,6 @@ def build_site_states(
         minimum = group_reduce_last_dim(statistics["value_min"].double(), configured_group, "min")
         maximum = group_reduce_last_dim(statistics["value_max"].double(), configured_group, "max")
     absolute = torch.maximum(minimum.abs(), maximum.abs()).clamp_min(1e-8)
-
-    phase_state = build_phase_state(statistics, cfg)
 
     gif_cfg = cfg["gif"]
     base_bits = int(gif_cfg["base_bits"])
@@ -610,8 +629,17 @@ def build_site_states(
                     "saliency_score": scores["default"],
                 })
 
-    mtn_state = build_mtn_state(statistics, cfg)
-    return {"phase": phase_state, "gif": gif_state, "mtn": mtn_state}
+    return gif_state
+
+
+def build_site_states(
+    statistics: dict[str, Any], cfg: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    return {
+        "phase": build_phase_state(statistics, cfg),
+        "gif": build_gif_state(statistics, cfg),
+        "mtn": build_mtn_state(statistics, cfg),
+    }
 
 
 def materialize_calibration_states(
@@ -628,8 +656,9 @@ def materialize_calibration_states(
     ):
         raise ValueError("expected_num_hidden_layers must be a positive integer")
     root = Path(site_root)
+    trajectory_metadata = stage_a_trajectory_metadata(cfg)
     trajectory = calibration_trajectory_config(cfg)
-    effective_flags = trajectory["effective_previous_layers_snn"]
+    effective_flags = trajectory_metadata["effective_previous_layers_snn"]
 
     manifest: dict[str, Any] = {
         **(metadata or {}),
@@ -637,10 +666,10 @@ def materialize_calibration_states(
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "calibration_architecture": "two_stage_A_common_B_clip_profiles",
         "calibration_phase": "A",
-        "requested_previous_layers_snn": trajectory["requested_previous_layers_snn"],
+        "requested_previous_layers_snn": trajectory_metadata["requested_previous_layers_snn"],
         "effective_previous_layers_snn": effective_flags,
-        "calibration_trajectory": {neuron: {"previous_layers_snn": effective_flags[neuron], "source": f"sequential_temporal_{neuron}" if effective_flags[neuron] else "ann_common"} for neuron in ("phase", "gif", "mtn")},
-        "stage_a_parameter_independence": ["phase.T", "mtn.T", "mtn.K"],
+        "calibration_trajectory": trajectory_metadata["calibration_trajectory"],
+        "stage_a_parameter_independence": trajectory_metadata["stage_a_parameter_independence"],
         "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
@@ -1075,9 +1104,6 @@ def statistics_path_for_neuron(site_dir: str | Path, neuron: str, cfg: dict[str,
     return directory / (f"{neuron}_statistics.pt" if previous_layers_snn_enabled(cfg, neuron) else "statistics.pt")
 
 
-def build_gif_state(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
-    return build_site_states(statistics, cfg)["gif"]
-
 
 def build_site_states_from_sources(
     *, phase_statistics: dict[str, Any], gif_statistics: dict[str, Any],
@@ -1114,13 +1140,13 @@ def materialize_target_state(
     root = Path(site_root)
     directories = (
         [root / "_global" / "final_rmsnorm"] if global_only else
-        [root / f"layer_{int(layer_index):03d}" / f"site_{site:02d}"
-         for site in range(1, SITE_COUNT + 1)]
+        [root / site_key(int(layer_index), site_index)
+         for site_index in SITE_IDS]
     )
     for directory in directories:
         source = directory / f"{neuron}_statistics.pt"
         if not source.exists():
-            continue
+            raise FileNotFoundError(source)
         statistics = torch.load(source, map_location="cpu", weights_only=False)
         if global_only:
             if neuron == "gif":

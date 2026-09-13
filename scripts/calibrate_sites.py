@@ -100,7 +100,7 @@ def main():
         model = load_model(cfg, source, training=False, device_map=cfg["calibration"].get("device_map"))
         tokenizer = load_tokenizer(cfg, source)
         controller = SiteController(
-            mode="collect", phase_T=int(cfg["phase"]["T"]), mtn_T=int(cfg["mtn"]["T"]),
+            mode="collect", site_root=site_root, phase_T=int(cfg["phase"]["T"]), mtn_T=int(cfg["mtn"]["T"]),
             mtn_K=int(cfg["mtn"]["K"]), mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
         )
         targets = [] if args.stage == "vanilla_analysis" else [

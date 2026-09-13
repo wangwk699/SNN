@@ -26,7 +26,7 @@ def _record_saliency(
     controller: SiteController, layer_index: int, site_index: int,
     score: torch.Tensor, *, role: str = "default", source: str
 ) -> None:
-    if getattr(controller, "mode", None) != "collect":
+    if not getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
         return
     try:
         controller.record_saliency(
@@ -595,6 +595,37 @@ def _repeat_temporal_batch_tensor(
     )
 
 
+def prepare_temporal_model_inputs(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    *,
+    steps: int,
+    **kwargs: Any,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+    """Expand model inputs in time-major order for temporal execution."""
+    if steps <= 0:
+        raise ValueError("steps must be positive")
+    if input_ids.ndim != 2 or attention_mask.ndim != 2:
+        raise ValueError("input_ids and attention_mask must have shape [B, L]")
+    if input_ids.shape != attention_mask.shape:
+        raise ValueError("input_ids and attention_mask must have identical shape")
+    batch = int(input_ids.shape[0])
+    model_kwargs = dict(kwargs)
+    if model_kwargs.get("position_ids") is not None:
+        position_ids = model_kwargs["position_ids"]
+        if position_ids.ndim != 2 or position_ids.shape[-1] != input_ids.shape[-1]:
+            raise ValueError("position_ids must have shape [B, L] or [T*B, L]")
+        model_kwargs["position_ids"] = _repeat_temporal_batch_tensor(
+            position_ids, steps=steps, batch=batch, name="position_ids"
+        )
+    cache_position = model_kwargs.get("cache_position")
+    if cache_position is not None and (
+        cache_position.ndim != 1 or cache_position.shape[0] != input_ids.shape[-1]
+    ):
+        raise ValueError("cache_position must be one-dimensional with length L")
+    return input_ids.repeat(steps, 1), attention_mask.repeat(steps, 1), model_kwargs
+
+
 def temporal_forward(
     model: torch.nn.Module,
     controller: SiteController,
@@ -608,24 +639,9 @@ def temporal_forward(
         raise RuntimeError("Controller deployment timestep is unset")
     steps = int(controller.temporal_steps)
     batch = int(input_ids.shape[0])
-    repeated_ids = input_ids.repeat(steps, 1)
-    repeated_mask = attention_mask.repeat(steps, 1)
-    model_kwargs = dict(kwargs)
-    if model_kwargs.get("position_ids") is not None:
-        position_ids = model_kwargs["position_ids"]
-        if position_ids.ndim != 2 or position_ids.shape[-1] != input_ids.shape[-1]:
-            raise ValueError("position_ids must have shape [B, L] or [T*B, L]")
-        model_kwargs["position_ids"] = _repeat_temporal_batch_tensor(
-            position_ids,
-            steps=steps,
-            batch=batch,
-            name="position_ids",
-        )
-    cache_position = model_kwargs.get("cache_position")
-    if cache_position is not None and (
-        cache_position.ndim != 1 or cache_position.shape[0] != input_ids.shape[-1]
-    ):
-        raise ValueError("cache_position must be one-dimensional with length L")
+    repeated_ids, repeated_mask, model_kwargs = prepare_temporal_model_inputs(
+        input_ids, attention_mask, steps=steps, **kwargs
+    )
     outputs = model(
         input_ids=repeated_ids,
         attention_mask=repeated_mask,

@@ -105,6 +105,17 @@ class SiteController:
         self.calibration_collect_current_block = False
         self.temporal_steps = None
 
+    def clear_layer_module_cache(self, layer_index: int) -> None:
+        prefix = f"layer_{int(layer_index):03d}/"
+        for key in list(self._modules):
+            if key.startswith(prefix):
+                del self._modules[key]
+
+    def clear_runtime_module_cache(self) -> None:
+        self._modules.clear()
+        self._final_norm_phase = None
+        self._final_norm_mtn = None
+
     def set_regression_recorder(self, recorder) -> None:
         self.regression_recorder = recorder
 

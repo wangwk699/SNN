@@ -93,9 +93,9 @@ def calibration_variant_dirname(group_size: Any, num_samples: Any) -> str:
     return f"{calibration_group_dirname(group_size)}_num_samples_{samples}"
 
 
-def calibration_trajectory_dirname(cfg: dict[str, Any]) -> str:
+def calibration_trajectory_dirname(cfg: dict[str, Any], *, effective: bool = True) -> str:
     """Unique Stage-A trajectory signature; runtime fields appear only when active."""
-    trajectory = calibration_trajectory_config(cfg)
+    trajectory = calibration_trajectory_config(cfg, effective=effective)
     flags = trajectory["effective_previous_layers_snn"]
     pieces = [f"{name}_previous_layers_snn_{str(flags[name]).lower()}" for name in ("phase", "gif", "mtn")]
     if flags["phase"]:
@@ -365,7 +365,7 @@ class ArtifactLayout:
             / "vanilla_original"
             / "vanilla_analysis_calibration"
             / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
-        ) / calibration_trajectory_dirname(self._cfg)
+        ) / calibration_trajectory_dirname(self._cfg, effective=False)
 
     @property
     def vanilla_analysis_site_dir(self) -> Path:
