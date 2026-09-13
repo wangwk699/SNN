@@ -70,8 +70,10 @@ def load_calibration_manifest(site_root: str | Path) -> dict[str, Any]:
             "Re-materialize calibration states and conversion descriptors before "
             "SNN evaluation"
         )
+    runtime_free_manifest = dict(manifest)
+    runtime_free_manifest.pop("calibration_trajectory", None)
     forbidden_paths = _forbidden_manifest_paths(
-        manifest, {"phase_T", "mtn_T", "mtn_K", "max_spikes", "v0"}
+        runtime_free_manifest, {"phase_T", "mtn_T", "mtn_K", "max_spikes", "v0"}
     )
     if forbidden_paths:
         raise ValueError(
@@ -92,6 +94,9 @@ def load_calibration_manifest(site_root: str | Path) -> dict[str, Any]:
         for key, value in expected.items()
         if manifest.get(key) != value
     }
+    flags = manifest.get("effective_previous_layers_snn")
+    if not isinstance(flags, dict) or set(flags) != {"phase", "gif", "mtn"} or any(type(value) is not bool for value in flags.values()):
+        raise ValueError("Calibration manifest is missing effective trajectory flags")
     group_size = manifest.get("calibration_group_size")
     if mismatched or not isinstance(group_size, int) or group_size == 0 or group_size < -1:
         raise ValueError(f"Calibration manifest has invalid grouping provenance: {mismatched}")

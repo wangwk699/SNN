@@ -8,6 +8,7 @@ from typing import Any
 
 from .config import (
     conversion_prefix_enabled,
+    calibration_trajectory_config,
     is_aware_ann_mode,
     save_yaml,
     training_common_clip_enabled,
@@ -90,6 +91,21 @@ def calibration_variant_dirname(group_size: Any, num_samples: Any) -> str:
     if samples <= 0:
         raise ValueError("calibration.num_samples must be a positive integer")
     return f"{calibration_group_dirname(group_size)}_num_samples_{samples}"
+
+
+def calibration_trajectory_dirname(cfg: dict[str, Any]) -> str:
+    """Unique Stage-A trajectory signature; runtime fields appear only when active."""
+    trajectory = calibration_trajectory_config(cfg)
+    flags = trajectory["effective_previous_layers_snn"]
+    pieces = [f"{name}_previous_layers_snn_{str(flags[name]).lower()}" for name in ("phase", "gif", "mtn")]
+    if flags["phase"]:
+        pieces.append(f"phase_T_{trajectory['phase_T']}")
+    if flags["gif"]:
+        pieces.append(f"gif_temporal_steps_{trajectory['gif_temporal_steps']}")
+    if flags["mtn"]:
+        factor = format(float(trajectory['mtn_threshold_factor']), ".12g")
+        pieces.extend((f"mtn_T_{trajectory['mtn_T']}", f"mtn_K_{trajectory['mtn_K']}", f"mtn_threshold_factor_{factor}"))
+    return "_".join(pieces)
 
 
 def safe_name(value: str) -> str:
@@ -190,6 +206,8 @@ class ArtifactLayout:
                     else None
                 ),
             )
+        if is_aware_ann_mode(cfg):
+            run_root = run_root / calibration_trajectory_dirname(cfg)
         self.root = run_root / seed
         # 原始 Base 模型独立目录：
         # 不依赖 ann_mode，也不依赖 learning_rate
@@ -308,7 +326,7 @@ class ArtifactLayout:
                 self._cfg["calibration"]["group_size"],
                 self._cfg["calibration"]["num_samples"],
             )
-        )
+        ) / calibration_trajectory_dirname(self._cfg)
 
     @property
     def ann_training_site_dir(self) -> Path:
@@ -347,7 +365,7 @@ class ArtifactLayout:
             / "vanilla_original"
             / "vanilla_analysis_calibration"
             / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
-        )
+        ) / calibration_trajectory_dirname(self._cfg)
 
     @property
     def vanilla_analysis_site_dir(self) -> Path:
@@ -410,7 +428,7 @@ class ArtifactLayout:
             / "conversion_calibration"
             / prefix_enabled_dirname(enabled)
             / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
-        )
+        ) / calibration_trajectory_dirname(self._cfg)
 
     @property
     def post_finetuning_site_dir(self) -> Path:
@@ -474,7 +492,7 @@ class ArtifactLayout:
             result = base / calibration_variant_dirname(
                 self._cfg["calibration"]["group_size"],
                 self._cfg["calibration"]["num_samples"],
-            ) / neuron
+            ) / calibration_trajectory_dirname(self._cfg) / neuron
         if neuron == "phase":
             return result / phase_snn_dirname(self._cfg["phase"]["T"])
         if neuron == "mtn":

@@ -10,6 +10,7 @@ from .config import (
     is_aware_ann_mode,
     training_common_clip_enabled,
     training_prefix_enabled,
+    calibration_trajectory_config,
 )
 from .controller import SiteController
 from .data import CausalLMCollator, load_selected_raw, tokenize_dataset, validate_prefix_discovery_state
@@ -84,6 +85,10 @@ def capture_training_artifact_provenance(
             num_samples=int(cfg["calibration"]["num_samples"]),
         )
         manifest_metadata = validation["manifest"]
+        trajectory = calibration_trajectory_config(cfg)
+        recorded_flags = manifest_metadata.get("effective_previous_layers_snn")
+        if (recorded_flags is None and any(trajectory["effective_previous_layers_snn"].values())) or (recorded_flags is not None and recorded_flags != trajectory["effective_previous_layers_snn"]):
+            raise ValueError("ANN-training Stage A trajectory differs from config")
         expected_group = int(cfg["calibration"]["group_size"])
         expected_samples = int(cfg["calibration"]["num_samples"])
         if (
@@ -107,6 +112,10 @@ def capture_training_artifact_provenance(
             "ann_training_calibration_num_samples": expected_samples,
             "ann_training_phase_T": int(cfg["phase"]["T"]),
             "ann_training_mtn_T": int(cfg["mtn"]["T"]),
+            "ann_training_phase_previous_layers_snn": trajectory["effective_previous_layers_snn"]["phase"],
+            "ann_training_gif_previous_layers_snn": trajectory["effective_previous_layers_snn"]["gif"],
+            "ann_training_mtn_previous_layers_snn": trajectory["effective_previous_layers_snn"]["mtn"],
+            "ann_training_calibration_trajectory_signature": trajectory,
             "statistics_format_version": STATISTICS_FORMAT_VERSION,
         })
     return captured
@@ -162,6 +171,10 @@ def validate_recorded_training_artifact_provenance(
         "ann_training_calibration_num_samples",
         "ann_training_phase_T",
         "ann_training_mtn_T",
+        "ann_training_phase_previous_layers_snn",
+        "ann_training_gif_previous_layers_snn",
+        "ann_training_mtn_previous_layers_snn",
+        "ann_training_calibration_trajectory_signature",
         "statistics_format_version",
     )
     recorded = {key: recorded_result[key] for key in keys if key in recorded_result}

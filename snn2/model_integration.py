@@ -37,12 +37,18 @@ def _record_saliency(
         controller.record_saliency(layer_index, site_index, score)
 
 
+def _logical_for_calibration(controller: SiteController, value: torch.Tensor) -> torch.Tensor:
+    if getattr(controller, "sequential_calibration_active", False):
+        return controller.logical_activation_for_calibration(value)
+    return value
+
+
 def _record_regression(
     controller: SiteController, name: str, value: torch.Tensor
 ) -> None:
     recorder = getattr(controller, "regression_recorder", None)
     if recorder is not None:
-        recorder.record(name, value, temporal=controller.mode.startswith("deploy_"))
+        recorder.record(name, value, temporal=getattr(controller, "temporal_execution_enabled", getattr(controller, "mode", "").startswith("deploy_")))
 
 
 def _selective_checkpoint_allowed(
@@ -120,7 +126,7 @@ def snn2_eager_attention_forward(
         query = random_hadamard(query.contiguous(), r3)
         key = random_hadamard(key.contiguous(), r3)
 
-    if controller.mode.startswith("deploy_"):
+    if getattr(controller, "temporal_execution_enabled", getattr(controller, "mode", "").startswith("deploy_")):
         return deployment_attention_forward(
             module,
             query,
@@ -142,7 +148,7 @@ def snn2_eager_attention_forward(
     value = repeat_kv(value, groups)
     num_heads, head_dim = int(key.shape[1]), int(key.shape[-1])
 
-    if controller.mode == "collect":
+    if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
         statistics_key = key[..., past_length:, :] if past_length else key
         statistics_value = value[..., past_length:, :] if past_length else value
         controller.record_activation(layer_index, 3, statistics_key)
@@ -157,7 +163,7 @@ def snn2_eager_attention_forward(
             num_heads=num_heads, head_dim=head_dim,
         )
 
-    if controller.mode == "collect":
+    if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
         q64 = query.detach().to(torch.float64)
         k64 = key.detach().to(torch.float64)
         qk64 = torch.matmul(q64, k64.transpose(-2, -1))
@@ -193,7 +199,7 @@ def snn2_eager_attention_forward(
         _record_regression(
             controller, f"layer_{layer_index:03d}/attn/softmax_before_site5", weights
         )
-        if controller.mode == "collect":
+        if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
             statistics_weights = weights[..., past_length:] if past_length else weights
             controller.record_activation(layer_index, 5, statistics_weights)
         else:
@@ -208,7 +214,7 @@ def snn2_eager_attention_forward(
     else:
         output_heads, weights = attention_core(query, key, value, attention_mask)
 
-    if controller.mode == "collect":
+    if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
         p64 = weights.detach().to(torch.float64)
         v64 = value.detach().to(torch.float64)
         pv64 = torch.matmul(p64, v64)
@@ -269,7 +275,7 @@ def _make_mlp_forward(controller: SiteController, layer_index: int, r4: Hadamard
             _record_regression(
                 controller, f"layer_{layer_index:03d}/mlp/up_proj", up_projection
             )
-            if controller.mode.startswith("deploy_"):
+            if getattr(controller, "temporal_execution_enabled", getattr(controller, "mode", "").startswith("deploy_")):
                 steps = int(controller.temporal_steps or 0)
                 gate = from_temporal(temporal_silu(to_temporal(gate_projection, steps)))
                 gate = controller.apply(layer_index, 8, gate)
@@ -325,7 +331,7 @@ def record_down_proj_saliency(
 ) -> None:
     """Record the R4 product consumer sensitivity at Site 10."""
     _record_saliency(
-        controller, layer_index, 10, _linear_score(inputs[0], weight),
+        controller, layer_index, 10, _linear_score(_logical_for_calibration(controller, inputs[0]), weight),
         source="spikellm_linear_fp32",
     )
 
@@ -338,7 +344,7 @@ def _install_temporal_rmsnorm(
     original_forward = norm.forward
 
     def forward(module, x: torch.Tensor, *args: Any, **kwargs: Any):
-        if not controller.mode.startswith("deploy_"):
+        if not getattr(controller, "temporal_execution_enabled", getattr(controller, "mode", "").startswith("deploy_")):
             return original_forward(x, *args, **kwargs)
         steps = int(controller.temporal_steps or 0)
         return from_temporal(temporal_rmsnorm(to_temporal(x, steps), module))
@@ -381,7 +387,7 @@ def install_model_integration(
         wrapped_norms.append(norm)
 
     def temporal_linear_bias_hook(module, _inputs, output):
-        if not controller.mode.startswith("deploy_") or module.bias is None:
+        if not getattr(controller, "temporal_execution_enabled", getattr(controller, "mode", "").startswith("deploy_")) or module.bias is None:
             return output
         return temporal_bias_once(
             output, module.bias, int(controller.temporal_steps or 0)
@@ -398,7 +404,7 @@ def install_model_integration(
             handles.append(module.register_forward_hook(temporal_linear_bias_hook))
 
     def temporal_embedding_hook(_module, _inputs, output):
-        if not controller.mode.startswith("deploy_"):
+        if not getattr(controller, "temporal_execution_enabled", getattr(controller, "mode", "").startswith("deploy_")):
             _record_regression(controller, "embedding/output", output)
             return output
         steps = int(controller.temporal_steps or 0)
@@ -464,13 +470,13 @@ def install_model_integration(
         handles.append(layer.register_forward_hook(layer_output_hook))
 
         def norm1_hook(_module, _inputs, output, index=layer_index):
-            if controller.mode in {"gif", "deploy_gif"}:
+            if controller.mode in {"gif", "deploy_gif"} or (controller.mode == "calibration_deploy" and controller.calibration_neuron == "gif"):
                 controller.record_activation(index, 1, output)
                 return output
             return controller.apply(index, 1, output)
 
         def norm2_hook(_module, _inputs, output, index=layer_index):
-            if controller.mode in {"gif", "deploy_gif"}:
+            if controller.mode in {"gif", "deploy_gif"} or (controller.mode == "calibration_deploy" and controller.calibration_neuron == "gif"):
                 controller.record_activation(index, 7, output)
                 return output
             return controller.apply(index, 7, output)
@@ -480,7 +486,7 @@ def install_model_integration(
 
         def make_gif_branch_pre_hook(site_index, role, index=layer_index):
             def hook(_module, inputs):
-                if controller.mode in {"gif", "deploy_gif"}:
+                if controller.mode in {"gif", "deploy_gif"} or (controller.mode == "calibration_deploy" and controller.calibration_neuron == "gif"):
                     replaced = controller.apply(index, site_index, inputs[0], gif_role=role)
                     return (replaced, *inputs[1:])
                 if (
@@ -500,9 +506,9 @@ def install_model_integration(
                 _record_regression(
                     controller, f"layer_{index:03d}/attn/{label}_proj_output", output
                 )
-                if controller.mode == "collect":
+                if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
                     _record_saliency(
-                        controller, index, 1, _linear_score(inputs[0], _module.weight),
+                        controller, index, 1, _linear_score(_logical_for_calibration(controller, inputs[0]), _module.weight),
                         role=label, source="spikellm_linear_fp32",
                     )
             return branch_linear_hook
@@ -524,8 +530,8 @@ def install_model_integration(
                     f"layer_{index:03d}/post_attention_residual",
                     residual + output,
                 )
-            if controller.mode == "collect":
-                score = _linear_score(inputs[0], _module.weight)
+            if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
+                score = _linear_score(_logical_for_calibration(controller, inputs[0]), _module.weight)
                 _record_saliency(
                     controller, index, 6, score, source="spikellm_linear_fp32"
                 )
@@ -534,9 +540,9 @@ def install_model_integration(
 
         def make_mlp_input_hook(role, index=layer_index):
             def hook(_module, inputs, output):
-                if controller.mode == "collect":
+                if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
                     _record_saliency(
-                        controller, index, 7, _linear_score(inputs[0], _module.weight),
+                        controller, index, 7, _linear_score(_logical_for_calibration(controller, inputs[0]), _module.weight),
                         role=role, source="spikellm_linear_fp32",
                     )
             return hook
@@ -548,7 +554,7 @@ def install_model_integration(
             handles.append(projection.register_forward_hook(make_mlp_input_hook(role)))
 
         def down_input_hook(_module, inputs, output, index=layer_index):
-            if controller.mode == "collect":
+            if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
                 record_down_proj_saliency(controller, index, inputs, output, _module.weight)
 
         handles.append(layer.mlp.down_proj.register_forward_hook(down_input_hook))

@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
-from .config import post_finetuning_prefix_enabled, training_prefix_enabled
+from .config import post_finetuning_prefix_enabled, training_prefix_enabled, previous_layers_snn_enabled, calibration_trajectory_config
 from .data import CausalLMCollator, tokenize_dataset, validate_prefix_discovery_state
 from .neurons import gif_high_qmax
 from .sites import (
@@ -111,6 +111,20 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "vanilla_analysis": "analysis_statistics_only",
         "post_finetuning": "stage_a_common_states",
     }[stage]
+    trajectory = calibration_trajectory_config(cfg, effective=stage != "vanilla_analysis")
+    effective_flags = trajectory["effective_previous_layers_snn"]
+    calibration_trajectory = {
+        neuron: {
+            "previous_layers_snn": effective_flags[neuron],
+            "source": f"sequential_temporal_{neuron}" if effective_flags[neuron] else "ann_common",
+        } for neuron in ("phase", "gif", "mtn")
+    }
+    if effective_flags["phase"]:
+        calibration_trajectory["phase"]["phase_T"] = int(cfg["phase"]["T"])
+    if effective_flags["gif"]:
+        calibration_trajectory["gif"]["gif_temporal_steps"] = GIF_LOCAL_STEPS
+    if effective_flags["mtn"]:
+        calibration_trajectory["mtn"].update({"mtn_T": int(cfg["mtn"]["T"]), "mtn_K": int(cfg["mtn"]["K"]), "mtn_threshold_factor": float(cfg["mtn"]["threshold_factor"])})
     return {
         "purpose": purpose,
         "analysis_only": stage == "vanilla_analysis",
@@ -159,7 +173,10 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "calibration_architecture": "two_stage_A_common_B_clip_profiles",
         "calibration_phase": "A",
-        "stage_a_parameter_independence": ["phase.T", "mtn.T", "mtn.K"],
+        "stage_a_parameter_independence": [value for value, enabled in (("phase.T", effective_flags["phase"]), ("mtn.T", effective_flags["mtn"]), ("mtn.K", effective_flags["mtn"])) if not enabled],
+        "requested_previous_layers_snn": trajectory["requested_previous_layers_snn"],
+        "effective_previous_layers_snn": effective_flags,
+        "calibration_trajectory": calibration_trajectory,
         "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
@@ -611,12 +628,18 @@ def materialize_calibration_states(
     ):
         raise ValueError("expected_num_hidden_layers must be a positive integer")
     root = Path(site_root)
+    trajectory = calibration_trajectory_config(cfg)
+    effective_flags = trajectory["effective_previous_layers_snn"]
+
     manifest: dict[str, Any] = {
         **(metadata or {}),
         "format_version": CALIBRATION_MANIFEST_FORMAT_VERSION,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "calibration_architecture": "two_stage_A_common_B_clip_profiles",
         "calibration_phase": "A",
+        "requested_previous_layers_snn": trajectory["requested_previous_layers_snn"],
+        "effective_previous_layers_snn": effective_flags,
+        "calibration_trajectory": {neuron: {"previous_layers_snn": effective_flags[neuron], "source": f"sequential_temporal_{neuron}" if effective_flags[neuron] else "ann_common"} for neuron in ("phase", "gif", "mtn")},
         "stage_a_parameter_independence": ["phase.T", "mtn.T", "mtn.K"],
         "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
@@ -639,7 +662,17 @@ def materialize_calibration_states(
         key = directory.relative_to(root).as_posix()
         statistics = torch.load(statistics_path, map_location="cpu", weights_only=False)
         _validate_statistics(statistics)
-        states = build_site_states(statistics, cfg)
+        source_statistics = {
+            neuron: torch.load(statistics_path_for_neuron(directory, neuron, cfg), map_location="cpu", weights_only=False)
+            for neuron in ("phase", "gif", "mtn")
+        }
+        for value in source_statistics.values():
+            _validate_statistics(value)
+        states = build_site_states_from_sources(
+            phase_statistics=source_statistics["phase"], gif_statistics=source_statistics["gif"],
+            mtn_statistics=source_statistics["mtn"], cfg=cfg,
+        )
+        states = {name: _annotate_trajectory_state(state, cfg, name) for name, state in states.items()}
         for name, state in states.items():
             torch.save(state, directory / f"{name}_state.pt")
         (directory / "clip_state.pt").unlink(missing_ok=True)
@@ -670,6 +703,10 @@ def materialize_calibration_states(
                 name: sha256_file(directory / f"{name}_state.pt")
                 for name in ("phase", "gif", "mtn")
             },
+            "state_statistics_source": {
+                name: {"file": statistics_path_for_neuron(directory, name, cfg).name, "sha256": sha256_file(statistics_path_for_neuron(directory, name, cfg)), "previous_layers_snn": previous_layers_snn_enabled(cfg, name)}
+                for name in ("phase", "gif", "mtn")
+            },
         }
         manifest["sites"][key] = summary
     global_statistics = root / "_global" / "final_rmsnorm" / "statistics.pt"
@@ -679,8 +716,10 @@ def materialize_calibration_states(
         )
     global_directory = global_statistics.parent
     final_statistics = torch.load(global_statistics, map_location="cpu", weights_only=False)
-    final_phase_state = build_phase_state(final_statistics, cfg)
-    final_mtn_state = build_mtn_state(final_statistics, cfg)
+    final_phase_statistics = torch.load(statistics_path_for_neuron(global_directory, "phase", cfg), map_location="cpu", weights_only=False)
+    final_mtn_statistics = torch.load(statistics_path_for_neuron(global_directory, "mtn", cfg), map_location="cpu", weights_only=False)
+    final_phase_state = _annotate_trajectory_state(build_phase_state(final_phase_statistics, cfg), cfg, "phase")
+    final_mtn_state = _annotate_trajectory_state(build_mtn_state(final_mtn_statistics, cfg), cfg, "mtn")
     final_phase_path = global_directory / "phase_state.pt"
     final_mtn_path = global_directory / "mtn_state.pt"
     torch.save(final_phase_state, final_phase_path)
@@ -1027,3 +1066,66 @@ def collect_site_statistics(
     if not materialize_states:
         write_json(root / "calibration_state_manifest.json", state_manifest)
     return {"statistics": stats_manifest, "states": state_manifest}
+
+
+def statistics_path_for_neuron(site_dir: str | Path, neuron: str, cfg: dict[str, Any]) -> Path:
+    directory = Path(site_dir)
+    if neuron not in {"phase", "gif", "mtn"}:
+        raise ValueError(f"Unknown neuron: {neuron}")
+    return directory / (f"{neuron}_statistics.pt" if previous_layers_snn_enabled(cfg, neuron) else "statistics.pt")
+
+
+def build_gif_state(statistics: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    return build_site_states(statistics, cfg)["gif"]
+
+
+def build_site_states_from_sources(
+    *, phase_statistics: dict[str, Any], gif_statistics: dict[str, Any],
+    mtn_statistics: dict[str, Any], cfg: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    return {
+        "phase": build_phase_state(phase_statistics, cfg),
+        "gif": build_gif_state(gif_statistics, cfg),
+        "mtn": build_mtn_state(mtn_statistics, cfg),
+    }
+
+
+def _annotate_trajectory_state(state: dict[str, Any], cfg: dict[str, Any], neuron: str) -> dict[str, Any]:
+    enabled = previous_layers_snn_enabled(cfg, neuron)
+    state["previous_layers_snn"] = enabled
+    state["calibration_trajectory"] = f"sequential_temporal_{neuron}" if enabled else "ann_common"
+    if enabled and neuron == "phase":
+        state["calibration_phase_T"] = int(cfg["phase"]["T"])
+    elif enabled and neuron == "gif":
+        state["calibration_gif_temporal_steps"] = GIF_LOCAL_STEPS
+    elif enabled and neuron == "mtn":
+        state.update({
+            "calibration_mtn_T": int(cfg["mtn"]["T"]),
+            "calibration_mtn_K": int(cfg["mtn"]["K"]),
+            "calibration_mtn_threshold_factor": float(cfg["mtn"]["threshold_factor"]),
+        })
+    return state
+
+
+def materialize_target_state(
+    site_root: str | Path, cfg: dict[str, Any], neuron: str, *,
+    layer_index: int | None = None, global_only: bool = False,
+) -> None:
+    root = Path(site_root)
+    directories = (
+        [root / "_global" / "final_rmsnorm"] if global_only else
+        [root / f"layer_{int(layer_index):03d}" / f"site_{site:02d}"
+         for site in range(1, SITE_COUNT + 1)]
+    )
+    for directory in directories:
+        source = directory / f"{neuron}_statistics.pt"
+        if not source.exists():
+            continue
+        statistics = torch.load(source, map_location="cpu", weights_only=False)
+        if global_only:
+            if neuron == "gif":
+                continue
+            state = build_phase_state(statistics, cfg) if neuron == "phase" else build_mtn_state(statistics, cfg)
+        else:
+            state = {"phase": build_phase_state, "gif": build_gif_state, "mtn": build_mtn_state}[neuron](statistics, cfg)
+        torch.save(_annotate_trajectory_state(state, cfg, neuron), directory / f"{neuron}_state.pt")

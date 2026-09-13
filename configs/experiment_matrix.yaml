@@ -54,6 +54,9 @@ experiments:
       group_size: 128
       expected_sites_per_layer: 10
       device_map: auto
+      phase_previous_layers_snn: false
+      gif_previous_layers_snn: false
+      mtn_previous_layers_snn: false
     deployment:
       temporal_implementation: sparse_llm_temporal_v8_final_norm_phase_mtn_ema_clamp
       temporal_layout: time_major_flattened_TB
@@ -189,6 +192,9 @@ experiments:
       group_size: 128
       expected_sites_per_layer: 10
       device_map: auto
+      phase_previous_layers_snn: false
+      gif_previous_layers_snn: false
+      mtn_previous_layers_snn: false
     deployment:
       temporal_implementation: sparse_llm_temporal_v8_final_norm_phase_mtn_ema_clamp
       temporal_layout: time_major_flattened_TB
@@ -325,6 +331,9 @@ experiments:
       group_size: 128
       expected_sites_per_layer: 10
       device_map: auto
+      phase_previous_layers_snn: false
+      gif_previous_layers_snn: false
+      mtn_previous_layers_snn: false
     deployment:
       temporal_implementation: sparse_llm_temporal_v8_final_norm_phase_mtn_ema_clamp
       temporal_layout: time_major_flattened_TB

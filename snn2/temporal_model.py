@@ -45,6 +45,14 @@ def deployment_attention_forward(
     key = repeat_kv(key, groups)
     value = repeat_kv(value, groups)
     num_heads, head_dim = int(key.shape[1]), int(key.shape[-1])
+    if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
+        q64 = controller.logical_activation_for_calibration(query).detach().to(torch.float64)
+        k64 = controller.logical_activation_for_calibration(key).detach().to(torch.float64)
+        qk64 = torch.matmul(q64, k64.transpose(-2, -1))
+        controller.record_saliency(
+            layer_index, 3, k64 * torch.matmul(qk64.transpose(-2, -1), q64),
+            source="spikellm_qk_k_fp64",
+        )
     key = key.transpose(1, 2).contiguous().reshape(
         key.shape[0], key.shape[2], num_heads * head_dim
     )
@@ -77,6 +85,14 @@ def deployment_attention_forward(
         softcap=softcap,
     )
     flat_weights = from_temporal(weight_increment)
+    if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
+        p64 = controller.logical_activation_for_calibration(flat_weights).detach().to(torch.float64)
+        v64 = controller.logical_activation_for_calibration(value).detach().to(torch.float64)
+        pv64 = torch.matmul(p64, v64)
+        controller.record_saliency(
+            layer_index, 4, v64 * torch.matmul(p64.transpose(-2, -1), pv64),
+            source="spikellm_pv_v_fp64",
+        )
     _record_regression(
         controller,
         f"layer_{layer_index:03d}/attn/softmax_before_site5",

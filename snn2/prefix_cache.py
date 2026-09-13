@@ -181,7 +181,7 @@ def install_prefix_kv_forward(
     if not prefix_key_values:
         return
     if hasattr(model, "_snn2_prefix_original_forward"):
-        raise RuntimeError("Prefix KV forward injection is already installed")
+        return
 
     frozen = tuple(
         (key.detach().cpu(), value.detach().cpu())
@@ -218,7 +218,7 @@ def install_prefix_kv_forward(
 
         temporal_steps = None
         logical_batch_size = batch_size
-        if controller is not None and controller.mode.startswith("deploy_"):
+        if controller is not None and getattr(controller, "temporal_execution_enabled", getattr(controller, "mode", "").startswith("deploy_")):
             temporal_steps = int(controller.temporal_steps or 0)
             if temporal_steps <= 0 or batch_size % temporal_steps != 0:
                 raise ValueError(
@@ -261,3 +261,22 @@ def install_prefix_kv_forward(
     model._snn2_prefix_key_values = frozen
     model._snn2_prefix_length = cached_prefix_length
     model.forward = wrapped_forward
+
+
+def fresh_prefix_dynamic_cache(
+    model: torch.nn.Module,
+    prefix_key_values,
+    *,
+    logical_batch_size: int,
+    temporal_steps: int | None,
+    device: torch.device,
+):
+    """Return an unmodified Prefix cache for one direct decoder-layer call."""
+    if not prefix_key_values:
+        return None
+    frozen = tuple((key.detach().cpu(), value.detach().cpu()) for key, value in prefix_key_values)
+    return _fresh_dynamic_cache(
+        _align_prefix_key_values(model, frozen, device),
+        logical_batch_size=logical_batch_size,
+        temporal_steps=temporal_steps,
+    )

@@ -52,6 +52,58 @@ class SiteController:
         self._final_norm_mtn: MultiThresholdNeuron | None = None
         self.regression_recorder = None
         self.regression_bypass_final_norm_neuron = False
+        self.calibration_neuron: str | None = None
+        self.calibration_block_index: int | None = None
+        self.calibration_collect_current_block = False
+
+    @property
+    def temporal_execution_enabled(self) -> bool:
+        return self.mode.startswith("deploy_") or self.mode in {"calibration_collect", "calibration_deploy"}
+
+    @property
+    def sequential_calibration_active(self) -> bool:
+        return self.mode in {"calibration_collect", "calibration_deploy"}
+
+    @property
+    def sequential_calibration_neuron(self) -> str | None:
+        return self.calibration_neuron if self.sequential_calibration_active else None
+
+    @property
+    def collecting_statistics(self) -> bool:
+        return self.mode == "collect" or self.mode == "calibration_collect"
+
+    def logical_activation_for_calibration(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.sequential_calibration_active:
+            return x
+        if self.temporal_steps is None:
+            raise RuntimeError("Sequential calibration timestep is unset")
+        return to_temporal(x, self.temporal_steps).sum(dim=0)
+
+    def begin_sequential_calibration(self, neuron: str, block_index: int) -> int:
+        if neuron not in {"phase", "gif", "mtn"}:
+            raise ValueError(f"Unknown sequential calibration neuron: {neuron}")
+        if block_index < 0:
+            raise ValueError("block_index must be non-negative")
+        self.calibration_neuron, self.calibration_block_index = neuron, int(block_index)
+        self.calibration_collect_current_block = True
+        self.mode = "calibration_collect"
+        self.temporal_steps = (int(self.phase_T) if neuron == "phase" else int(self.mtn_T) if neuron == "mtn" else 2)
+        if self.temporal_steps <= 0:
+            raise ValueError("Sequential calibration requires temporal runtime parameters")
+        return self.temporal_steps
+
+    def begin_sequential_deployment(self, block_index: int) -> None:
+        if self.calibration_neuron is None or self.calibration_block_index != int(block_index):
+            raise RuntimeError("Sequential deployment must follow collection for the same block")
+        self.calibration_collect_current_block = False
+        self.mode = "calibration_deploy"
+
+    def end_sequential_calibration(self) -> None:
+        self.mode = "collect"
+        self.calibration_neuron = None
+        self.calibration_block_index = None
+        self.calibration_collect_current_block = False
+        self.temporal_steps = None
 
     def set_regression_recorder(self, recorder) -> None:
         self.regression_recorder = recorder
@@ -59,7 +111,7 @@ class SiteController:
     def record_regression(self, name: str, value: torch.Tensor) -> None:
         recorder = self.regression_recorder
         if recorder is not None:
-            recorder.record(name, value, temporal=self.mode.startswith("deploy_"))
+            recorder.record(name, value, temporal=self.temporal_execution_enabled)
 
     def _load(self, layer_index: int, site_index: int) -> dict[str, torch.nn.Module]:
         key = site_key(layer_index, site_index)
@@ -75,8 +127,8 @@ class SiteController:
             required = ("phase", "clip") if clip_enabled else ("phase",)
         elif self.mode == "gif":
             required = ("gif", "clip") if clip_enabled else ("gif",)
-        elif self.mode.startswith("deploy_"):
-            neuron = self.mode.removeprefix("deploy_")
+        elif self.temporal_execution_enabled:
+            neuron = self.calibration_neuron if self.mode == "calibration_deploy" else self.mode.removeprefix("deploy_")
             if neuron not in {"phase", "gif", "mtn"}:
                 raise ValueError(f"Unknown deployment neuron: {neuron}")
             required = (neuron,)
@@ -155,7 +207,7 @@ class SiteController:
         self, layer_index: int, site_index: int, score: torch.Tensor,
         *, role: str = "default", source: str = "unspecified"
     ) -> None:
-        if self.mode == "collect":
+        if self.collecting_statistics:
             self.statistics.update_saliency(
                 layer_index, site_index, score, role=role, source=source
             )
@@ -167,8 +219,8 @@ class SiteController:
         x: torch.Tensor,
     ) -> None:
         """Record calibration statistics without changing the runtime tensor."""
-        if self.mode == "collect":
-            self.statistics.update(layer_index, site_index, x)
+        if self.collecting_statistics:
+            self.statistics.update(layer_index, site_index, self.logical_activation_for_calibration(x))
 
     def apply(
         self,
@@ -188,8 +240,8 @@ class SiteController:
             if recorder is not None:
                 self.record_regression(f"{checkpoint}/post", x)
             return x
-        if self.mode == "collect":
-            self.statistics.update(layer_index, site_index, x)
+        if self.collecting_statistics:
+            self.statistics.update(layer_index, site_index, self.logical_activation_for_calibration(x))
             if recorder is not None:
                 self.record_regression(f"{checkpoint}/post", x)
             return x
@@ -213,11 +265,11 @@ class SiteController:
             if recorder is not None:
                 self.record_regression(f"{checkpoint}/post", output)
             return output
-        if self.mode.startswith("deploy_"):
+        if self.temporal_execution_enabled:
             if self.temporal_steps is None:
                 raise RuntimeError("Call set_deployment before a temporal forward")
             temporal = to_temporal(x, self.temporal_steps)
-            neuron = self.mode.removeprefix("deploy_")
+            neuron = self.calibration_neuron if self.mode == "calibration_deploy" else self.mode.removeprefix("deploy_")
             output = (
                 modules[neuron].temporal(temporal, role=gif_role)
                 if neuron == "gif" else modules[neuron].temporal(temporal)
@@ -237,6 +289,10 @@ class SiteController:
     def apply_final_norm_neuron(self, x: torch.Tensor) -> torch.Tensor:
         """Apply the clip-free global final-RMSNorm neuron for the active topology."""
         self.record_regression("final_norm/before_global_neuron", x)
+        if self.mode == "calibration_collect":
+            self.statistics.update_global("final_rmsnorm", self.logical_activation_for_calibration(x))
+            self.record_regression("final_norm/after_global_identity", x)
+            return x
         if self.regression_bypass_final_norm_neuron or self.mode in {"identity", "none", "collect", "gif", "deploy_gif"}:
             self.record_regression("final_norm/after_global_identity", x)
             return x

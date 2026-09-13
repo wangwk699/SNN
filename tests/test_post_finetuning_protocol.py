@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from snn2.artifacts import ArtifactLayout, sha256_file
+from snn2.artifacts import ArtifactLayout, calibration_trajectory_dirname, sha256_file
 from snn2.config import (
     conversion_calibration_stage,
     conversion_prefix_enabled,
@@ -98,15 +98,16 @@ def test_aware_run_root_records_common_clip_variant(mode, enabled):
         if enabled
         else "prefix_enabled_ture_common_clip_enabled_false"
     )
-    variant_dir = layout.root.parent.parent
+    assert layout.root.parent.name == calibration_trajectory_dirname(_cfg(mode, common_clip_enabled=enabled))
+    variant_dir = layout.root.parent.parent.parent
     assert variant_dir.name == expected
     expected_training = (
         "phase_T_4_mtn_T_4_surrogate_slope_1.0_warmup_ratio_0.03"
         if mode == "phase_aware"
         else "phase_T_4_mtn_T_4_warmup_ratio_0.03"
     )
-    assert layout.root.parent.name == expected_training
-    assert layout.root.parent.parent.parent.name == "num_samples_128_lr1e-06_calibration_group_size_-1"
+    assert layout.root.parent.parent.name == expected_training
+    assert layout.root.parent.parent.parent.parent.name == "num_samples_128_lr1e-06_calibration_group_size_-1"
 
 
 def test_phase_aware_run_root_records_slope_and_warmup_ratio():
@@ -117,9 +118,11 @@ def test_phase_aware_run_root_records_slope_and_warmup_ratio():
     first = ArtifactLayout(first_cfg)
     second = ArtifactLayout(second_cfg)
 
-    assert first.root.parent.name == "phase_T_4_mtn_T_4_surrogate_slope_1.0_warmup_ratio_0.03"
-    assert second.root.parent.name == "phase_T_4_mtn_T_4_surrogate_slope_0.5_warmup_ratio_0.1"
-    assert first.root.parent.parent.parent.name == "num_samples_128_lr1e-06_calibration_group_size_-1"
+    assert first.root.parent.name == calibration_trajectory_dirname(first_cfg)
+    assert second.root.parent.name == calibration_trajectory_dirname(second_cfg)
+    assert first.root.parent.parent.name == "phase_T_4_mtn_T_4_surrogate_slope_1.0_warmup_ratio_0.03"
+    assert second.root.parent.parent.name == "phase_T_4_mtn_T_4_surrogate_slope_0.5_warmup_ratio_0.1"
+    assert first.root.parent.parent.parent.parent.name == "num_samples_128_lr1e-06_calibration_group_size_-1"
     assert first.root != second.root
     assert first.ann_training_prefix_dir == second.ann_training_prefix_dir
     assert first.ann_training_calibration_dir == second.ann_training_calibration_dir
@@ -172,8 +175,8 @@ def test_identity_ann_snn_path_groups_below_snn(mode):
     path = layout.snn_dir("phase")
     assert path.parts.count("calibration_group_size_-1_num_samples_128") == 1
     assert path.parts.count("calibration_group_size_-1_num_samples_128") == 1
-    assert path.parts[-4:] == (
-        "use_post_finetuning_artifacts_true", "calibration_group_size_-1_num_samples_128", "phase", "phase_T_4"
+    assert path.parts[-5:] == (
+        "use_post_finetuning_artifacts_true", "calibration_group_size_-1_num_samples_128", calibration_trajectory_dirname(_cfg(mode)), "phase", "phase_T_4"
     )
 
 def test_calibration_config_logs_and_sites_are_group_isolated_but_shared_inputs_are_not():

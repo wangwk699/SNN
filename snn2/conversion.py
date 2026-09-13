@@ -12,6 +12,7 @@ from .config import (
     is_aware_ann_mode,
     training_common_clip_enabled,
     use_post_finetuning_artifacts,
+    calibration_trajectory_config,
 )
 from .controller import SiteController
 from .data import validate_prefix_discovery_state
@@ -207,6 +208,7 @@ def _source_bundle(
     )
     manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
     manifest = read_json(manifest_path)
+    validate_calibration_trajectory_provenance(cfg, layout.conversion_site_dir, manifest)
     _validate_source_manifest(manifest, reused=reused)
     expected_source = (
         {
@@ -383,6 +385,10 @@ def create_conversion(
         "source_ann_common_clip_enabled": training_common_clip_enabled(cfg),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
+        "phase_previous_layers_snn": calibration_trajectory_config(cfg)["effective_previous_layers_snn"]["phase"],
+        "gif_previous_layers_snn": calibration_trajectory_config(cfg)["effective_previous_layers_snn"]["gif"],
+        "mtn_previous_layers_snn": calibration_trajectory_config(cfg)["effective_previous_layers_snn"]["mtn"],
+        "calibration_trajectory_signature": calibration_trajectory_config(cfg),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
@@ -400,3 +406,31 @@ def create_conversion(
     }
     write_json(output / "conversion_metadata.json", metadata)
     return metadata
+
+
+def validate_calibration_trajectory_provenance(
+    cfg: dict[str, Any], site_root: str | Path, manifest: dict[str, Any],
+) -> None:
+    """Reject target statistics that do not belong to this trajectory config."""
+    from .config import calibration_trajectory_config
+    root = Path(site_root)
+    flags = calibration_trajectory_config(cfg)["effective_previous_layers_snn"]
+    if "effective_previous_layers_snn" not in manifest and not any(flags.values()):
+        return
+    if manifest.get("effective_previous_layers_snn") != flags:
+        raise ValueError("Conversion calibration trajectory flags disagree with config")
+    for key, entry in manifest.get("sites", {}).items():
+        sources = entry.get("state_statistics_source")
+        if not isinstance(sources, dict):
+            raise ValueError(f"Calibration state source provenance is missing: {key}")
+        for neuron, enabled in flags.items():
+            expected_file = f"{neuron}_statistics.pt" if enabled else "statistics.pt"
+            source = sources.get(neuron, {})
+            path = root / key / expected_file
+            if (source.get("file") != expected_file or not path.exists() or
+                    source.get("sha256") != sha256_file(path) or
+                    source.get("previous_layers_snn") is not enabled):
+                raise ValueError(f"Calibration source provenance mismatch: {key}/{neuron}")
+            stale = root / key / f"{neuron}_statistics.pt"
+            if not enabled and stale.exists():
+                raise ValueError(f"Stale target-specific statistics found: {stale}")

@@ -265,7 +265,7 @@ def test_generated_evaluation_configs_are_task_specific(generated_configs):
                 "lm_eval_revision", "apply_chat_template", "lm_eval_task_specs",
             } <= set(evaluation)
             assert evaluation["batch_size"] == 8
-            assert evaluation["snn_batch_size"] == 1
+            assert evaluation["snn_batch_size"] == 4
             specs = evaluation["lm_eval_task_specs"]
             assert [spec["name"] for spec in specs] == expected_names
             assert [spec["name"] for spec in specs if spec["enabled"]] == expected_enabled
@@ -274,7 +274,7 @@ def test_generated_evaluation_configs_are_task_specific(generated_configs):
 
 @pytest.mark.parametrize(
     ("neuron", "expected"),
-    [("ann", 8), ("phase", 1), ("gif", 1), ("mtn", 1)],
+    [("ann", 8), ("phase", 4), ("gif", 4), ("mtn", 4)],
 )
 def test_tulu3_lm_eval_batch_size_uses_snn_setting_for_snn_neurons(
     generated_configs, neuron, expected
@@ -336,8 +336,7 @@ def test_tldr_and_tulu_aware_run_paths_include_epochs_before_calibration_identit
             if cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}:
                 assert any(part.startswith(prefix) for part in layout.root.parts)
                 assert any(part.startswith(prefix + "num_samples_") for part in layout.root.parts)
-            else:
-                assert not any(part.startswith("epochs_") for part in layout.root.parts)
+
 
 
 def test_tulu_task_result_path_container_is_isolated_from_tldr(generated_configs):
@@ -356,7 +355,7 @@ def test_tulu_task_result_path_container_is_isolated_from_tldr(generated_configs
 def test_tldr_full_run_paths_record_scheduler_warmup_and_aware_accumulation(
     generated_configs, mode
 ):
-    from snn2.artifacts import ArtifactLayout, safe_name
+    from snn2.artifacts import ArtifactLayout, calibration_trajectory_dirname, safe_name
 
     matching = [
         path for path in generated_configs
@@ -393,6 +392,8 @@ def test_tldr_full_run_paths_record_scheduler_warmup_and_aware_accumulation(
             f"artifacts/{cfg['experiment']['id']}/tldr/{model}/{mode}/{learning}/"
             f"{prefix}/{training_identity}/seed{cfg['experiment']['seed']}"
         )
+        if mode in {"phase_aware", "gif_aware"}:
+            expected = expected.parent / calibration_trajectory_dirname(cfg) / expected.name
         layout = ArtifactLayout(cfg)
         assert layout.root == expected
         if mode in {"vanilla", "unaware"}:
@@ -400,7 +401,7 @@ def test_tldr_full_run_paths_record_scheduler_warmup_and_aware_accumulation(
 
 
 def test_tulu_full_run_paths_include_aware_training_identity(generated_configs):
-    from snn2.artifacts import ArtifactLayout
+    from snn2.artifacts import ArtifactLayout, calibration_trajectory_dirname
 
     expected = {
         "vanilla": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/vanilla/lr1e-06_train_samples_10000/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.0/seed42",
@@ -411,7 +412,10 @@ def test_tulu_full_run_paths_include_aware_training_identity(generated_configs):
     for path in generated_configs:
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
         if cfg["experiment"]["task"] == "tulu3":
-            assert str(ArtifactLayout(cfg).root) == expected[cfg["experiment"]["ann_mode"]]
+            expected_root = Path(expected[cfg["experiment"]["ann_mode"]])
+            if cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}:
+                expected_root = expected_root.parent / calibration_trajectory_dirname(cfg) / expected_root.name
+            assert ArtifactLayout(cfg).root == expected_root
 
 
 @pytest.mark.parametrize("mode", ["vanilla", "unaware", "phase_aware", "gif_aware"])

@@ -3,10 +3,12 @@ from _common import parser, setup
 from snn2.calibration import (
     calibration_provenance,
     collect_site_statistics,
+    materialize_calibration_states,
     materialize_clip_profile,
 )
-from snn2.config import requires_ann_training_calibration
+from snn2.config import requires_ann_training_calibration, previous_layers_snn_enabled
 from snn2.controller import SiteController
+from snn2.blockwise_calibration import collect_blockwise_snn_conditioned_statistics
 from snn2.data import load_selected_raw
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
@@ -97,7 +99,14 @@ def main():
         source = model_source_for_stage(cfg, layout, stage=args.stage)
         model = load_model(cfg, source, training=False, device_map=cfg["calibration"].get("device_map"))
         tokenizer = load_tokenizer(cfg, source)
-        controller = SiteController(mode="collect")
+        controller = SiteController(
+            mode="collect", phase_T=int(cfg["phase"]["T"]), mtn_T=int(cfg["mtn"]["T"]),
+            mtn_K=int(cfg["mtn"]["K"]), mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
+        )
+        targets = [] if args.stage == "vanilla_analysis" else [
+            neuron for neuron in ("phase", "gif", "mtn")
+            if previous_layers_snn_enabled(cfg, neuron)
+        ]
         install_model_integration(
             model, controller,
             None if args.stage == "vanilla_analysis" else rotation_state(cfg, layout),
@@ -109,9 +118,21 @@ def main():
                 cfg, layout, stage="ann_training" if args.stage == "ann_training" else "post_finetuning"
             ),
             site_root, purpose=purpose,
-            materialize_states=args.stage != "vanilla_analysis",
+            materialize_states=args.stage != "vanilla_analysis" and not targets,
             extra_metadata=calibration_provenance(cfg, layout, stage=args.stage),
         )
+        for neuron in targets:
+            sequential = collect_blockwise_snn_conditioned_statistics(
+                model, controller, tokenizer, load_selected_raw(cfg, layout).calibration, cfg,
+                None if args.stage == "vanilla_analysis" else prefix_key_values_for_stage(
+                    cfg, layout, stage="ann_training" if args.stage == "ann_training" else "post_finetuning"
+                ), site_root, neuron=neuron,
+            )
+            run.event("blockwise_trajectory_saved", **sequential)
+        if targets:
+            result["states"] = materialize_calibration_states(
+                site_root, cfg, result["states"], expected_num_hidden_layers=int(model.config.num_hidden_layers)
+            )
         run.event("stage_a_saved", stage=args.stage, sites=len(result["statistics"].get("sites", {})), site_root=str(site_root))
 
 

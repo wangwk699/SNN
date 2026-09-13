@@ -215,6 +215,10 @@ class PhaseSurrogate(nn.Module):
         self.T = int(T)
         if self.T <= 0:
             raise ValueError("Phase T must be positive")
+        if state.get("previous_layers_snn") is True:
+            recorded = state.get("calibration_phase_T")
+            if not isinstance(recorded, int) or (self.T != 1 and recorded != self.T):
+                raise ValueError("Phase sequential-calibration T provenance mismatch")
         self.layout = _state_layout(state)
         self.slope = None if surrogate_slope is None else float(surrogate_slope)
         if self.slope is not None and (not math.isfinite(self.slope) or self.slope <= 0.0):
@@ -480,6 +484,11 @@ class MultiThresholdNeuron(nn.Module):
             raise ValueError("MTN T and K must be positive")
         if not math.isfinite(self.threshold_factor) or self.threshold_factor <= 0.0:
             raise ValueError("MTN threshold_factor must be positive and finite")
+        if state.get("previous_layers_snn") is True:
+            expected = (state.get("calibration_mtn_T"), state.get("calibration_mtn_K"), state.get("calibration_mtn_threshold_factor"))
+            actual = (self.T, self.K, self.threshold_factor)
+            if not all(value is not None for value in expected) or (self.T != 1 and expected != actual):
+                raise ValueError("MTN sequential-calibration runtime provenance mismatch")
         self.layout = _state_layout(state)
         self.register_buffer("base_scale", state["base_scale"].float())
         if not torch.isfinite(self.base_scale).all() or torch.any(self.base_scale < NEURON_PARAMETER_CLAMP_MIN) or torch.any(self.base_scale > NEURON_PARAMETER_CLAMP_MAX):

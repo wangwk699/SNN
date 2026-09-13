@@ -35,6 +35,30 @@ AWARE_ANN_MODES = {"phase_aware", "gif_aware"}
 SNN_NEURONS = {"phase", "gif", "mtn"}
 
 
+def previous_layers_snn_enabled(cfg: dict[str, Any], neuron: str) -> bool:
+    if neuron not in SNN_NEURONS:
+        raise ValueError(f"Unknown neuron: {neuron}")
+    return bool(cfg.get("calibration", {}).get(f"{neuron}_previous_layers_snn", False))
+
+
+def calibration_trajectory_config(cfg: dict[str, Any], *, effective: bool = True) -> dict[str, Any]:
+    flags = {neuron: previous_layers_snn_enabled(cfg, neuron) for neuron in sorted(SNN_NEURONS)}
+    result: dict[str, Any] = {"requested_previous_layers_snn": flags.copy(), "effective_previous_layers_snn": flags if effective else {name: False for name in flags}}
+    active = result["effective_previous_layers_snn"]
+    if active["phase"]:
+        result["phase_T"] = int(cfg["phase"]["T"])
+    if active["gif"]:
+        from .temporal_ops import GIF_LOCAL_STEPS
+        result["gif_temporal_steps"] = GIF_LOCAL_STEPS
+    if active["mtn"]:
+        result.update({"mtn_T": int(cfg["mtn"]["T"]), "mtn_K": int(cfg["mtn"]["K"]), "mtn_threshold_factor": float(cfg["mtn"]["threshold_factor"])})
+    return result
+
+
+def any_previous_layers_snn_enabled(cfg: dict[str, Any]) -> bool:
+    return any(previous_layers_snn_enabled(cfg, neuron) for neuron in SNN_NEURONS)
+
+
 def load_config(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     with path.open("r", encoding="utf-8") as handle:
@@ -55,6 +79,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     cfg = copy.deepcopy(raw)
+    cal = cfg.setdefault("calibration", {})
+    for neuron in ("phase", "gif", "mtn"):
+        cal.setdefault(f"{neuron}_previous_layers_snn", False)
     cfg["replacement"].setdefault("common_clip_enabled", True)
     cfg.setdefault("ann_training_memory", {})
     cfg["ann_training_memory"].setdefault("attention_core_checkpoint", False)
@@ -162,6 +189,10 @@ def validate_config(cfg: dict[str, Any]) -> None:
         or (group_size != -1 and group_size <= 0)
     ):
         raise ValueError("calibration.group_size must be -1 or a positive integer")
+    for neuron in ("phase", "gif", "mtn"):
+        key = f"{neuron}_previous_layers_snn"
+        if type(cfg["calibration"].get(key)) is not bool:
+            raise ValueError(f"calibration.{key} must be true or false")
     if int(cfg["data"]["max_seq_length"]) != 2048:
         raise ValueError("Main experiments require max_seq_length=2048")
     if "max_spikes" in cfg["phase"]:
