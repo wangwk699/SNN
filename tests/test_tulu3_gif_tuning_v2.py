@@ -1,5 +1,7 @@
 from decimal import Decimal
 from pathlib import Path
+import subprocess
+import sys
 
 import yaml
 
@@ -14,11 +16,24 @@ from snn2.artifacts import ArtifactLayout
 
 
 SOURCE = Path("configs/generated/exp2_llama3_8b_tulu3__gif_aware.yaml")
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/run_tulu3_gif_aware_tuning_v2.py"
 
 
 def _base():
     source = yaml.safe_load(SOURCE.read_text(encoding="utf-8"))
     return fixed_base_config(source)
+
+def test_v2_script_imports_project_package_outside_repo(tmp_path) -> None:
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT), "--help"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 
 
 def test_v2_grid_has_twelve_unique_candidates_and_paths() -> None:

@@ -23,12 +23,13 @@ from typing import Any
 
 import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 from snn2.artifacts import ArtifactLayout, safe_name
 from snn2.data import validate_prefix_discovery_state
 from snn2.state_validation import validate_clip_profile, validate_site_state_bundle
 from snn2.training import validate_recorded_training_artifact_provenance
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TASK_NAMES = (
     "truthfulqa_mc1",
     "agieval",
