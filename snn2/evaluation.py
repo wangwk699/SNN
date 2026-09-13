@@ -154,7 +154,7 @@ def build_evaluation_controller(
         aware = is_aware_ann_mode(cfg)
         if aware:
             validation = validate_site_state_bundle(
-                layout.ann_training_site_dir, clip_policy="forbid_all"
+                layout.ann_training_site_dir, cfg=cfg, clip_policy="forbid_all"
             )
             validate_clip_profile(
                 layout.ann_training_site_dir,

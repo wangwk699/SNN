@@ -4,7 +4,9 @@ import copy
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
+from torch import nn
 import yaml
 
 from snn2.calibration import materialize_target_state
@@ -93,3 +95,115 @@ def test_temporal_input_preparation_is_shared_and_time_major():
     assert torch.equal(repeated_ids, ids.repeat(3, 1))
     assert torch.equal(repeated_mask, mask.repeat(3, 1))
     assert torch.equal(kwargs["position_ids"], position_ids.repeat(3, 1))
+
+class _ToyBlock(nn.Module):
+    def __init__(self, controller: SiteController, index: int):
+        super().__init__()
+        self.controller, self.index = controller, index
+        self.anchor = nn.Parameter(torch.ones(()))
+        self.collect_inputs: list[torch.Tensor] = []
+
+    def forward(self, hidden_states, **_kwargs):
+        if self.controller.collecting_statistics:
+            self.collect_inputs.append(hidden_states.detach().clone())
+        batch, length, width = hidden_states.shape
+        for site in SITE_IDS:
+            if site in {2, 3, 4}:
+                activation = hidden_states.reshape(batch, 1, length, width)
+            elif site == 5:
+                activation = torch.ones(batch, 1, length, length, device=hidden_states.device)
+            else:
+                activation = hidden_states
+            transformed = self.controller.apply(self.index, site, activation)
+            if site == 1:
+                hidden_states = transformed
+        return (hidden_states,)
+
+
+class _ToyFinalNorm(nn.Module):
+    def __init__(self, controller: SiteController):
+        super().__init__()
+        self.controller = controller
+        self.anchor = nn.Parameter(torch.ones(()))
+
+    def forward(self, hidden_states):
+        return self.controller.apply_final_norm_neuron(hidden_states)
+
+
+class _ToyModel(nn.Module):
+    def __init__(self, controller: SiteController):
+        super().__init__()
+        self.model = nn.Module()
+        self.model.embed_tokens = nn.Embedding(16, 4)
+        with torch.no_grad():
+            self.model.embed_tokens.weight.fill_(2.0)
+        self.model.layers = nn.ModuleList([_ToyBlock(controller, 0), _ToyBlock(controller, 1)])
+        self.model.norm = _ToyFinalNorm(controller)
+        self.lm_head = nn.Linear(4, 16, bias=False)
+        self.config = SimpleNamespace(num_hidden_layers=2)
+
+    def forward(self, input_ids, attention_mask=None, **kwargs):
+        hidden = self.model.embed_tokens(input_ids)
+        for layer in self.model.layers:
+            hidden = layer(hidden, attention_mask=attention_mask, **kwargs)[0]
+        hidden = self.model.norm(hidden)
+        return SimpleNamespace(logits=self.lm_head(hidden))
+
+
+def test_blockwise_runner_e2e_uses_fresh_phase_state_and_clears_stale(monkeypatch, tmp_path):
+    """Exercises bootstrap, block collect/materialize/deploy, and next-block input."""
+    from snn2 import blockwise_calibration as blockwise
+
+    cfg = _cfg()
+    cfg["calibration"].update({"phase_previous_layers_snn": True, "group_size": -1})
+    cfg["phase"]["T"] = 2
+    controller = SiteController(
+        mode="collect", site_root=tmp_path, phase_T=2, mtn_T=2,
+        mtn_K=2, mtn_threshold_factor=0.75,
+    )
+    model = _ToyModel(controller)
+    stale = tmp_path / site_key(1, 6)
+    stale.mkdir(parents=True)
+    torch.save({"stale": 999}, stale / "phase_statistics.pt")
+    torch.save({"stale": 999}, stale / "phase_state.pt")
+
+    monkeypatch.setattr(blockwise, "tokenize_dataset", lambda *_args, **_kwargs: [
+        {"input_ids": torch.tensor([1, 2, 3]), "attention_mask": torch.ones(3, dtype=torch.long)}
+    ])
+    monkeypatch.setattr(blockwise, "CausalLMCollator", lambda _tokenizer: lambda rows: {
+        "input_ids": rows[0]["input_ids"].unsqueeze(0),
+        "attention_mask": rows[0]["attention_mask"].unsqueeze(0),
+    })
+    monkeypatch.setattr(blockwise, "install_prefix_kv_forward", lambda *_args, **_kwargs: None)
+
+    result = blockwise.collect_blockwise_snn_conditioned_statistics(
+        model, controller, object(), object(), cfg, None, tmp_path, neuron="phase"
+    )
+    assert result == {"neuron": "phase", "blocks": 2, "samples": 1}
+    assert (tmp_path / site_key(0, 1) / "phase_statistics.pt").exists()
+    assert (tmp_path / site_key(1, 6) / "phase_state.pt").exists()
+    assert not torch.equal(model.model.layers[0].collect_inputs[0], model.model.layers[1].collect_inputs[0])
+
+@pytest.mark.parametrize("neuron", ("phase", "gif", "mtn"))
+def test_clear_target_trajectory_artifacts_preserves_common_and_other_neurons(tmp_path, neuron):
+    from snn2.blockwise_calibration import clear_target_trajectory_artifacts
+
+    directory = tmp_path / site_key(0, 1)
+    directory.mkdir(parents=True)
+    for name in ("statistics.pt", "phase_statistics.pt", "phase_state.pt", "gif_statistics.pt", "gif_state.pt", "mtn_statistics.pt", "mtn_state.pt"):
+        (directory / name).write_bytes(b"state")
+    global_directory = tmp_path / "_global" / "final_rmsnorm"
+    global_directory.mkdir(parents=True)
+    for name in ("phase_statistics.pt", "phase_state.pt", "mtn_statistics.pt", "mtn_state.pt"):
+        (global_directory / name).write_bytes(b"state")
+
+    clear_target_trajectory_artifacts(tmp_path, neuron)
+    assert (directory / "statistics.pt").exists()
+    for other in {"phase", "gif", "mtn"} - {neuron}:
+        assert (directory / f"{other}_statistics.pt").exists()
+        assert (directory / f"{other}_state.pt").exists()
+    assert not (directory / f"{neuron}_statistics.pt").exists()
+    assert not (directory / f"{neuron}_state.pt").exists()
+    if neuron in {"phase", "mtn"}:
+        assert not (global_directory / f"{neuron}_statistics.pt").exists()
+        assert not (global_directory / f"{neuron}_state.pt").exists()

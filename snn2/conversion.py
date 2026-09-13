@@ -43,6 +43,7 @@ def _ann_num_hidden_layers(ann_config: Path) -> int:
 def validate_calibration(
     site_root: str | Path,
     *,
+    cfg: dict[str, Any] | None = None,
     expected_num_hidden_layers: int | None = None,
     clip_policy: str,
 ) -> dict[str, Any]:
@@ -55,6 +56,7 @@ def validate_calibration(
         )
     validation = validate_site_state_bundle(
         root,
+        cfg=cfg,
         clip_policy=clip_policy,
         expected_num_hidden_layers=expected_num_hidden_layers,
     )
@@ -203,6 +205,7 @@ def _source_bundle(
     layers = _ann_num_hidden_layers(ann_config)
     validation = validate_calibration(
         layout.conversion_site_dir,
+        cfg=cfg,
         expected_num_hidden_layers=layers,
         clip_policy="forbid_all",
     )

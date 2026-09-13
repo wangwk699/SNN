@@ -7,7 +7,10 @@ from typing import Any, Literal
 import torch
 
 from .artifacts import sha256_file
-from .neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, gif_module_from_state
+from .neurons import (
+    Clipper, MultiThresholdNeuron, PhaseSurrogate, gif_module_from_state,
+    validate_mtn_state_schema, validate_phase_state_schema,
+)
 from .sites import (
     GIF_ALL_LOW_SITE_IDS, GIF_IDENTITY_SITE_IDS, GIF_MULTI_MASK_ROLES,
     GIF_SALIENT_SITE_IDS, SITE_IDS, is_softmax_site, site_supports_clip,
@@ -32,13 +35,6 @@ from .temporal_ops import (
     validate_temporal_policy,
 )
 
-
-_FACTORIES = {
-    "phase": lambda state: PhaseSurrogate(state, T=1),
-    "gif": gif_module_from_state,
-    "mtn": lambda state: MultiThresholdNeuron(state, T=1, K=1, threshold_factor=0.75),
-    "clip": Clipper,
-}
 
 ClipBundlePolicy = Literal["forbid_all"]
 CLIP_BUNDLE_POLICIES = frozenset({"forbid_all"})
@@ -304,10 +300,34 @@ def validate_clip_profile(
         )
     return profile
 
+def _validate_state_runtime_provenance(
+    state: dict[str, Any], kind: str, flags: dict[str, bool],
+    cfg: dict[str, Any] | None, *, context: Path,
+) -> None:
+    recorded = state.get("previous_layers_snn")
+    if type(recorded) is not bool or recorded != flags[kind]:
+        raise ValueError(f"Manifest/state previous_layers_snn mismatch: {context}")
+    if kind == "gif":
+        if recorded and state.get("calibration_gif_temporal_steps") != GIF_LOCAL_STEPS:
+            raise ValueError(f"GIF sequential-calibration temporal provenance mismatch: {context}")
+        return
+    if not recorded or cfg is None:
+        return
+    if kind == "phase":
+        if state.get("calibration_phase_T") != int(cfg["phase"]["T"]):
+            raise ValueError(f"Phase sequential-calibration runtime provenance mismatch: {context}")
+    else:
+        expected = (int(cfg["mtn"]["T"]), int(cfg["mtn"]["K"]), float(cfg["mtn"]["threshold_factor"]))
+        actual = (state.get("calibration_mtn_T"), state.get("calibration_mtn_K"), state.get("calibration_mtn_threshold_factor"))
+        if actual != expected:
+            raise ValueError(f"MTN sequential-calibration runtime provenance mismatch: {context}")
+
+
 def validate_site_state_bundle(
     site_root: str | Path,
     manifest: dict[str, Any] | None = None,
     *,
+    cfg: dict[str, Any] | None = None,
     clip_policy: ClipBundlePolicy,
     expected_num_hidden_layers: int | None = None,
 ) -> dict[str, Any]:
@@ -326,6 +346,9 @@ def validate_site_state_bundle(
             "ANN config num_hidden_layers does not match calibration manifest "
             f"expected_num_hidden_layers: {expected_num_hidden_layers} != {manifest_layers}"
         )
+    flags = manifest.get("effective_previous_layers_snn")
+    if not isinstance(flags, dict) or set(flags) != {"phase", "gif", "mtn"} or any(type(value) is not bool for value in flags.values()):
+        raise ValueError("Calibration manifest is missing effective trajectory flags")
     site_sets = validate_site_topology(root, expected_num_hidden_layers=manifest_layers)
     gif_steps: set[int] = set()
     site_count = 0
@@ -353,9 +376,11 @@ def validate_site_state_bundle(
                     raise ValueError(f"Calibration state hash mismatch: {state_path}")
                 states[kind] = torch.load(state_path, map_location="cpu", weights_only=False)
             try:
-                PhaseSurrogate(states["phase"], T=1)
-                MultiThresholdNeuron(states["mtn"], T=1, K=1, threshold_factor=0.75)
+                validate_phase_state_schema(states["phase"])
+                validate_mtn_state_schema(states["mtn"])
                 gif = gif_module_from_state(states["gif"])
+                for kind, state in states.items():
+                    _validate_state_runtime_provenance(state, kind, flags, cfg, context=directory / f"{kind}_state.pt")
             except Exception as exc:
                 raise ValueError(f"Invalid Stage A state at {directory}: {exc}") from exc
             gif_steps.add(int(gif.temporal_steps))
@@ -395,7 +420,9 @@ def validate_site_state_bundle(
     if not global_path.exists() or sha256_file(global_path) != global_hash:
         raise ValueError(f"Final RMSNorm Phase state hash mismatch: {global_path}")
     try:
-        PhaseSurrogate(torch.load(global_path, map_location="cpu", weights_only=False), T=1)
+        final_phase_state = torch.load(global_path, map_location="cpu", weights_only=False)
+        validate_phase_state_schema(final_phase_state)
+        _validate_state_runtime_provenance(final_phase_state, "phase", flags, cfg, context=global_path)
     except Exception as exc:
         raise ValueError(f"Invalid final RMSNorm Phase state at {global_path}: {exc}") from exc
     mtn_relative_path, mtn_hash = global_entry.get("mtn_state_path"), global_entry.get("mtn_state_sha256")
@@ -405,7 +432,9 @@ def validate_site_state_bundle(
     if not final_mtn_path.exists() or sha256_file(final_mtn_path) != mtn_hash:
         raise ValueError(f"Final RMSNorm MTN state hash mismatch: {final_mtn_path}")
     try:
-        MultiThresholdNeuron(torch.load(final_mtn_path, map_location="cpu", weights_only=False), T=1, K=1, threshold_factor=0.75)
+        final_mtn_state = torch.load(final_mtn_path, map_location="cpu", weights_only=False)
+        validate_mtn_state_schema(final_mtn_state)
+        _validate_state_runtime_provenance(final_mtn_state, "mtn", flags, cfg, context=final_mtn_path)
     except Exception as exc:
         raise ValueError(f"Invalid final RMSNorm MTN state at {final_mtn_path}: {exc}") from exc
     global_directory = root / "_global" / "final_rmsnorm"

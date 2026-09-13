@@ -187,6 +187,73 @@ def hard_clip(x: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor) -> torc
     return torch.maximum(torch.minimum(x, upper), lower)
 
 
+def validate_phase_state_schema(state: dict[str, Any]) -> None:
+    """Validate materialized Phase state without inventing a runtime ``T``."""
+    _validate_state_header(state, "phase")
+    forbidden = {"T", "base", "max_spikes", "v0", "surrogate_slope"} & state.keys()
+    if forbidden:
+        raise ValueError(f"Legacy pre-A/B Phase state contains runtime fields {sorted(forbidden)}; re-run Stage A")
+    expected = {
+        "tau_calibration": PHASE_TAU_CALIBRATION,
+        "tau_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "tau_accumulator_dtype": PHASE_TAU_ACCUMULATOR_DTYPE,
+        "tau_channel_policy": PHASE_TAU_CHANNEL_POLICY,
+        "tau_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+        "tau_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "tau_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+        "tau_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
+    }
+    if any(state.get(key) != value for key, value in expected.items()):
+        raise ValueError("Incompatible grouped Phase tau calibration; re-run Stage A")
+    if state.get("previous_layers_snn") is True:
+        recorded = state.get("calibration_phase_T")
+        if not isinstance(recorded, int) or recorded <= 0:
+            raise ValueError("Phase sequential-calibration T provenance is invalid")
+    elif "previous_layers_snn" in state and state.get("previous_layers_snn") is not False:
+        raise ValueError("Phase state is missing previous_layers_snn provenance")
+    layout = _state_layout(state)
+    tau = state.get("tau")
+    if not isinstance(tau, torch.Tensor):
+        raise ValueError("Phase state is missing tau tensor")
+    _require_parameter_shape("Phase tau", tau, layout)
+    if not torch.isfinite(tau).all() or torch.any(tau < NEURON_PARAMETER_CLAMP_MIN) or torch.any(tau > NEURON_PARAMETER_CLAMP_MAX):
+        raise ValueError("Phase tau must be finite and materialized within the clamp range")
+
+
+def validate_mtn_state_schema(state: dict[str, Any]) -> None:
+    """Validate materialized MTN state without inventing runtime parameters."""
+    _validate_state_header(state, "mtn")
+    forbidden = {"T", "K", "threshold_factor"} & state.keys()
+    if forbidden:
+        raise ValueError(f"Legacy pre-A/B MTN state contains runtime fields {sorted(forbidden)}; re-run Stage A")
+    expected = {
+        "base_scale_calibration": MTN_BASE_SCALE_CALIBRATION,
+        "base_scale_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "base_scale_accumulator_dtype": PARAMETER_ACCUMULATOR_DTYPE,
+        "base_scale_channel_policy": PARAMETER_CHANNEL_POLICY,
+        "base_scale_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+        "base_scale_multiplier": MTN_BASE_SCALE_MULTIPLIER,
+        "base_scale_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "base_scale_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+        "base_scale_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
+    }
+    if any(state.get(key) != value for key, value in expected.items()):
+        raise ValueError("Incompatible MTN EMA/clamp calibration; re-run Stage A")
+    if state.get("previous_layers_snn") is True:
+        recorded = (state.get("calibration_mtn_T"), state.get("calibration_mtn_K"), state.get("calibration_mtn_threshold_factor"))
+        if not isinstance(recorded[0], int) or recorded[0] <= 0 or not isinstance(recorded[1], int) or recorded[1] <= 0 or not isinstance(recorded[2], (int, float)) or not math.isfinite(float(recorded[2])) or float(recorded[2]) <= 0.0:
+            raise ValueError("MTN sequential-calibration runtime provenance is invalid")
+    elif "previous_layers_snn" in state and state.get("previous_layers_snn") is not False:
+        raise ValueError("MTN state is missing previous_layers_snn provenance")
+    layout = _state_layout(state)
+    base_scale = state.get("base_scale")
+    if not isinstance(base_scale, torch.Tensor):
+        raise ValueError("MTN state is missing base_scale tensor")
+    _require_parameter_shape("MTN base_scale", base_scale, layout)
+    if not torch.isfinite(base_scale).all() or torch.any(base_scale < NEURON_PARAMETER_CLAMP_MIN) or torch.any(base_scale > NEURON_PARAMETER_CLAMP_MAX):
+        raise ValueError("MTN base_scale must be finite and materialized within the clamp range")
+
+
 class PhaseSurrogate(nn.Module):
     def __init__(
         self,
@@ -196,7 +263,7 @@ class PhaseSurrogate(nn.Module):
         surrogate_slope: float | None = None,
     ):
         super().__init__()
-        _validate_state_header(state, "phase")
+        validate_phase_state_schema(state)
         forbidden = {"T", "base", "max_spikes", "v0", "surrogate_slope"} & state.keys()
         if forbidden:
             raise ValueError(
@@ -217,7 +284,7 @@ class PhaseSurrogate(nn.Module):
             raise ValueError("Phase T must be positive")
         if state.get("previous_layers_snn") is True:
             recorded = state.get("calibration_phase_T")
-            if not isinstance(recorded, int) or (self.T != 1 and recorded != self.T):
+            if not isinstance(recorded, int) or recorded != self.T:
                 raise ValueError("Phase sequential-calibration T provenance mismatch")
         self.layout = _state_layout(state)
         self.slope = None if surrogate_slope is None else float(surrogate_slope)
@@ -460,7 +527,7 @@ class MultiThresholdNeuron(nn.Module):
         threshold_factor: float,
     ):
         super().__init__()
-        _validate_state_header(state, "mtn")
+        validate_mtn_state_schema(state)
         forbidden = {"T", "K", "threshold_factor"} & state.keys()
         if forbidden:
             raise ValueError(
@@ -487,7 +554,7 @@ class MultiThresholdNeuron(nn.Module):
         if state.get("previous_layers_snn") is True:
             expected = (state.get("calibration_mtn_T"), state.get("calibration_mtn_K"), state.get("calibration_mtn_threshold_factor"))
             actual = (self.T, self.K, self.threshold_factor)
-            if not all(value is not None for value in expected) or (self.T != 1 and expected != actual):
+            if not all(value is not None for value in expected) or expected != actual:
                 raise ValueError("MTN sequential-calibration runtime provenance mismatch")
         self.layout = _state_layout(state)
         self.register_buffer("base_scale", state["base_scale"].float())

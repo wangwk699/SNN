@@ -472,3 +472,32 @@ def test_static_gif_ann_mixed_quant_matches_legacy_clamp_boundary_gradients():
     reference.backward(grad)
     optimized.backward(grad)
     torch.testing.assert_close(x_optimized.grad, x_reference.grad, rtol=0, atol=0)
+
+
+def test_sequential_phase_runtime_t_mismatch_is_rejected_even_at_one():
+    state = _phase_state()
+    state.update({"previous_layers_snn": True, "calibration_phase_T": 4})
+    with pytest.raises(ValueError, match="provenance mismatch"):
+        PhaseSurrogate(state, T=1)
+
+
+def test_sequential_mtn_runtime_signature_mismatch_is_rejected():
+    state = {
+        **_header("mtn"), **_layout("attention_head_grouped"),
+        "base_scale": torch.ones(2, 2),
+        "base_scale_calibration": MTN_BASE_SCALE_CALIBRATION,
+        "base_scale_ema_factor": PHASE_TAU_EMA_FACTOR,
+        "base_scale_accumulator_dtype": PARAMETER_ACCUMULATOR_DTYPE,
+        "base_scale_channel_policy": PARAMETER_CHANNEL_POLICY,
+        "base_scale_reduction_policy": PHASE_TAU_REDUCTION_POLICY,
+        "base_scale_multiplier": MTN_BASE_SCALE_MULTIPLIER,
+        "base_scale_clamp_min": NEURON_PARAMETER_CLAMP_MIN,
+        "base_scale_clamp_max": NEURON_PARAMETER_CLAMP_MAX,
+        "base_scale_clamp_policy": NEURON_PARAMETER_CLAMP_POLICY,
+        "previous_layers_snn": True,
+        "calibration_mtn_T": 4,
+        "calibration_mtn_K": 6,
+        "calibration_mtn_threshold_factor": 0.75,
+    }
+    with pytest.raises(ValueError, match="provenance mismatch"):
+        MultiThresholdNeuron(state, T=1, K=1, threshold_factor=0.75)

@@ -74,7 +74,7 @@ def capture_training_artifact_provenance(
         )
     if is_aware_ann_mode(cfg):
         validation = validate_site_state_bundle(
-            layout.ann_training_site_dir, clip_policy="forbid_all"
+            layout.ann_training_site_dir, cfg=cfg, clip_policy="forbid_all"
         )
         validate_clip_profile(
             layout.ann_training_site_dir,
@@ -225,7 +225,7 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         checkpoint_mlp=bool(memory_cfg.get("mlp_checkpoint", False)),
     )
     if is_aware_ann_mode(cfg):
-        validate_site_state_bundle(layout.ann_training_site_dir, clip_policy="forbid_all")
+        validate_site_state_bundle(layout.ann_training_site_dir, cfg=cfg, clip_policy="forbid_all")
         validate_clip_profile(
             layout.ann_training_site_dir,
             layout.ann_training_clip_profile_dir,
