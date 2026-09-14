@@ -90,6 +90,8 @@ experiments:
       scale_initialization: direct_min_max
       mse_scale_refinement: false
       runtime_quantization: static
+      round_gradient_estimator: STE
+      htge_t: 16.0
       saliency_rule: operator_aware_spikellm_extension
     replacement:
       train_mode: phase
@@ -228,6 +230,8 @@ experiments:
       scale_initialization: direct_min_max
       mse_scale_refinement: false
       runtime_quantization: static
+      round_gradient_estimator: STE
+      htge_t: 16.0
       saliency_rule: operator_aware_spikellm_extension
     replacement:
       train_mode: phase
@@ -367,6 +371,8 @@ experiments:
       scale_initialization: direct_min_max
       mse_scale_refinement: false
       runtime_quantization: static
+      round_gradient_estimator: STE
+      htge_t: 16.0
       saliency_rule: operator_aware_spikellm_extension
     replacement:
       train_mode: phase

@@ -33,6 +33,8 @@ from .temporal_ops import (
 ANN_MODES = {"vanilla", "unaware", "phase_aware", "gif_aware"}
 AWARE_ANN_MODES = {"phase_aware", "gif_aware"}
 SNN_NEURONS = {"phase", "gif", "mtn"}
+GIF_ROUND_GRADIENT_ESTIMATORS = {"STE", "HTGE"}
+GIF_DEFAULT_HTGE_T = 16.0
 
 
 def previous_layers_snn_enabled(cfg: dict[str, Any], neuron: str) -> bool:
@@ -80,6 +82,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
 def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     cfg = copy.deepcopy(raw)
     cal = cfg.setdefault("calibration", {})
+    gif_cfg = cfg.setdefault("gif", {})
+    gif_cfg.setdefault("round_gradient_estimator", "STE")
+    gif_cfg.setdefault("htge_t", GIF_DEFAULT_HTGE_T)
     for neuron in ("phase", "gif", "mtn"):
         cal.setdefault(f"{neuron}_previous_layers_snn", False)
     cfg["replacement"].setdefault("common_clip_enabled", True)
@@ -313,6 +318,15 @@ def validate_config(cfg: dict[str, Any]) -> None:
     salient = float(cfg["gif"].get("salient_ratio", 1.0 - float(cfg["gif"]["low_ratio"])))
     if abs(float(cfg["gif"]["low_ratio"]) + salient - 1.0) > 1e-8:
         raise ValueError("GIF low_ratio + salient_ratio must equal 1")
+    estimator = cfg["gif"].get("round_gradient_estimator")
+    if estimator not in GIF_ROUND_GRADIENT_ESTIMATORS:
+        raise ValueError("gif.round_gradient_estimator must be STE or HTGE")
+    try:
+        htge_t = float(cfg["gif"].get("htge_t"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("gif.htge_t must be a positive finite number") from exc
+    if not math.isfinite(htge_t) or htge_t <= 0.0:
+        raise ValueError("gif.htge_t must be a positive finite number")
     if cfg["gif"].get("runtime_quantization") != "static":
         raise ValueError("Main experiments require static GIF runtime quantization")
     if cfg["gif"].get("scale_initialization") != "direct_min_max":

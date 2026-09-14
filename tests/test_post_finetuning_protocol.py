@@ -104,7 +104,7 @@ def test_aware_run_root_records_common_clip_variant(mode, enabled):
     expected_training = (
         "phase_T_4_mtn_T_4_surrogate_slope_1.0_warmup_ratio_0.03"
         if mode == "phase_aware"
-        else "phase_T_4_mtn_T_4_warmup_ratio_0.03"
+        else "phase_T_4_mtn_T_4_round_gradient_estimator_STE_warmup_ratio_0.03"
     )
     assert layout.root.parent.parent.name == expected_training
     assert layout.root.parent.parent.parent.parent.name == "num_samples_128_lr1e-06_calibration_group_size_-1"

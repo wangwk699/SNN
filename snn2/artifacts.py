@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -51,10 +52,25 @@ def gif_training_dirname(
     phase_T: Any,
     mtn_T: Any,
     warmup_ratio: Any,
+    round_gradient_estimator: Any = "STE",
+    htge_t: Any = 16.0,
     lr_scheduler_type: Any | None = None,
     gradient_accumulation_steps: Any | None = None,
 ) -> str:
-    result = f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}"
+    estimator = str(round_gradient_estimator)
+    if estimator == "STE":
+        estimator_suffix = "round_gradient_estimator_STE"
+    elif estimator == "HTGE":
+        value = float(htge_t)
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError("htge_t must be a positive finite number")
+        estimator_suffix = (
+            "round_gradient_estimator_HTGE_htge_t_"
+            f"{format(value, '.12g')}"
+        )
+    else:
+        raise ValueError("round_gradient_estimator must be STE or HTGE")
+    result = f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}_{estimator_suffix}"
     if lr_scheduler_type is not None:
         result += f"_lr_scheduler_type_{lr_scheduler_type}"
     result += f"_warmup_ratio_{float(warmup_ratio)}"
@@ -192,9 +208,14 @@ class ArtifactLayout:
                     f"gradient_accumulation_steps_{int(cfg['training']['gradient_accumulation_steps'])}",
                 ))
         elif exp["ann_mode"] == "gif_aware":
+            gif = cfg.get("gif", {})
+            if not isinstance(gif, dict):
+                raise ValueError("gif configuration must be a mapping")
             run_root = run_root / gif_training_dirname(
                 phase_T=cfg["phase"]["T"], mtn_T=cfg["mtn"]["T"],
                 warmup_ratio=cfg["training"]["warmup_ratio"],
+                round_gradient_estimator=gif.get("round_gradient_estimator", "STE"),
+                htge_t=gif.get("htge_t", 16.0),
                 lr_scheduler_type=(
                     cfg["training"]["lr_scheduler_type"]
                     if exp["task"] in {"tldr", "tulu3"}

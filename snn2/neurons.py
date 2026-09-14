@@ -345,9 +345,43 @@ class PhaseSurrogate(nn.Module):
         return self.encode(incoming.sum(dim=0), return_temporal=True)
 
 
+class HTGERound(torch.autograd.Function):
+    """True round forward with the corrected HTGE round surrogate backward."""
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, t: float) -> torch.Tensor:
+        ctx.save_for_backward(x)
+        ctx.t = float(t)
+        return torch.round(x)
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None]:
+        (x,) = ctx.saved_tensors
+        midpoint = 0.5 * (torch.floor(x) + torch.ceil(x))
+        tanh_value = torch.tanh(ctx.t * (x - midpoint))
+        surrogate = 0.5 * ctx.t * (1.0 - tanh_value.square())
+        return grad_output * surrogate, None
+
+
+def _configure_round_gradient(module: nn.Module, estimator: str, htge_t: float) -> None:
+    if estimator not in {"STE", "HTGE"}:
+        raise ValueError("round_gradient_estimator must be STE or HTGE")
+    value = float(htge_t)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("htge_t must be a positive finite number")
+    module.round_gradient_estimator = estimator
+    module.htge_t = value
+
+
 class StaticGIF(nn.Module):
-    def __init__(self, state: dict[str, Any]):
+    def __init__(
+        self,
+        state: dict[str, Any],
+        *,
+        round_gradient_estimator: str = "STE",
+        htge_t: float = 16.0,
+    ):
         super().__init__()
+        _configure_round_gradient(self, round_gradient_estimator, htge_t)
         _validate_state_header(state, "gif")
         self.base_bits = int(state["base_bits"])
         self.add_bits = int(state["add_bits"])
@@ -410,6 +444,13 @@ class StaticGIF(nn.Module):
     def round_ste(x: torch.Tensor) -> torch.Tensor:
         return (x.round() - x).detach() + x
 
+    def _round_with_surrogate(self, x: torch.Tensor) -> torch.Tensor:
+        if self.round_gradient_estimator == "STE":
+            return self.round_ste(x)
+        if self.round_gradient_estimator == "HTGE":
+            return HTGERound.apply(x, self.htge_t)
+        raise RuntimeError("Invalid configured round gradient estimator")
+
     def _quantize(
         self,
         x: torch.Tensor,
@@ -424,9 +465,9 @@ class StaticGIF(nn.Module):
         qmin, qmax = int(qmin), int(qmax)
         if qmin != 0 or qmax <= qmin:
             raise ValueError(f"Invalid unsigned GIF range [{qmin}, {qmax}]")
-        q = (self.round_ste(x.float() / scale.float()) + zero.float()).clamp(
-            qmin, qmax
-        )
+        q = (
+            self._round_with_surrogate(x.float() / scale.float()) + zero.float()
+        ).clamp(qmin, qmax)
         dequantized = (q - zero.float()) * scale.float()
         return dequantized.to(x.dtype), q, zero.float()
 
@@ -449,7 +490,7 @@ class StaticGIF(nn.Module):
         high_zero = _parameter_values(x, self.high_zero, self.layout)
         scale = torch.where(mask, low_scale, high_scale)
         zero = torch.where(mask, low_zero, high_zero)
-        q = self.round_ste(x.float() / scale.float()) + zero.float()
+        q = self._round_with_surrogate(x.float() / scale.float()) + zero.float()
         qmax = torch.where(
             mask,
             torch.as_tensor(GIF_LOW_QMAX, dtype=q.dtype, device=q.device),
@@ -702,8 +743,15 @@ class SoftmaxIdentityGIF(nn.Module):
 
 
 class AllLowStaticGIF(StaticGIF):
-    def __init__(self, state: dict[str, Any]):
+    def __init__(
+        self,
+        state: dict[str, Any],
+        *,
+        round_gradient_estimator: str = "STE",
+        htge_t: float = 16.0,
+    ):
         nn.Module.__init__(self)
+        _configure_round_gradient(self, round_gradient_estimator, htge_t)
         _validate_state_header(state, "gif")
         expected = {
             "gif_policy": GIF_ALL_LOW_POLICY,
@@ -785,12 +833,25 @@ class IdentityGIF(nn.Module):
         return incoming
 
 
-def gif_module_from_state(state: dict[str, Any]) -> nn.Module:
+def gif_module_from_state(
+    state: dict[str, Any],
+    *,
+    round_gradient_estimator: str = "STE",
+    htge_t: float = 16.0,
+) -> nn.Module:
     policy = state.get("gif_policy")
     if policy == SOFTMAX_SITE5_GIF_POLICY:
         return SoftmaxIdentityGIF(state)
     if policy == GIF_ALL_LOW_POLICY:
-        return AllLowStaticGIF(state)
+        return AllLowStaticGIF(
+            state,
+            round_gradient_estimator=round_gradient_estimator,
+            htge_t=htge_t,
+        )
     if policy == GIF_IDENTITY_POLICY:
         return IdentityGIF(state)
-    return StaticGIF(state)
+    return StaticGIF(
+        state,
+        round_gradient_estimator=round_gradient_estimator,
+        htge_t=htge_t,
+    )

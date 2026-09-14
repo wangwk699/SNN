@@ -7,6 +7,7 @@ from snn2.neurons import (
     PhaseSurrogate,
     SoftmaxIdentityGIF,
     StaticGIF,
+    HTGERound,
     _mask_values,
     gif_module_from_state,
 )
@@ -136,7 +137,9 @@ def test_gif_mask_shape_is_strict_without_padding_or_truncation():
 
 
 def test_softmax_gif_is_exact_identity_and_factory_selects_it():
-    module = gif_module_from_state(_softmax_gif_state())
+    module = gif_module_from_state(
+        _softmax_gif_state(), round_gradient_estimator="HTGE", htge_t=4.0
+    )
     assert isinstance(module, SoftmaxIdentityGIF)
     x = torch.tensor([[[[-0.1, 0.1, 0.5, 1.1]], [[0.2, 0.3, 0.4, 0.1]]]])
     output = module(x)
@@ -234,6 +237,28 @@ def test_multi_role_gif_selects_role_and_fails_fast():
         module(x, role="invalid")
 
 
+def test_multi_role_gif_htge_preserves_forward_and_changes_backward():
+    state = _gif_state()
+    state.pop("mask_low")
+    state.update({
+        "mask_policy": "multi_role",
+        "mask_roles": ["q", "k", "v"],
+        "mask_low_by_role": {
+            "q": torch.ones(4, dtype=torch.bool),
+            "k": torch.zeros(4, dtype=torch.bool),
+            "v": torch.tensor([True, False, True, False]),
+        },
+    })
+    ste = StaticGIF(state, round_gradient_estimator="STE")
+    htge = StaticGIF(state, round_gradient_estimator="HTGE", htge_t=4.0)
+    x_ste = torch.tensor([[[0.13, 0.23, 0.37, 0.41]]], requires_grad=True)
+    x_htge = x_ste.detach().clone().requires_grad_(True)
+    assert torch.equal(ste(x_ste, role="v"), htge(x_htge, role="v"))
+    ste(x_ste, role="v").sum().backward()
+    htge(x_htge, role="v").sum().backward()
+    assert not torch.equal(x_ste.grad, x_htge.grad)
+
+
 def test_all_low_and_identity_gif_temporal_policies():
     all_low = {
         **_header("gif"), **_layout(),
@@ -256,7 +281,9 @@ def test_all_low_and_identity_gif_temporal_policies():
         **_header("gif"), "gif_policy": "identity",
         "quantization_applied": False, "temporal_steps": 2,
     }
-    module = gif_module_from_state(identity)
+    module = gif_module_from_state(
+        identity, round_gradient_estimator="HTGE", htge_t=4.0
+    )
     x = torch.randn(2, 1, 3, 4)
     assert module.temporal(x) is x
     frame = x[0]
@@ -501,3 +528,60 @@ def test_sequential_mtn_runtime_signature_mismatch_is_rejected():
     }
     with pytest.raises(ValueError, match="provenance mismatch"):
         MultiThresholdNeuron(state, T=1, K=1, threshold_factor=0.75)
+
+
+def test_htge_round_forward_is_exact_round_and_backward_uses_corrected_midpoint():
+    x = torch.tensor([-2.3, -2.0, -1.5, -1.1, 0.0, 0.2, 0.5, 0.9, 1.0, 1.5, 2.7], requires_grad=True)
+    t = 8.0
+    y = HTGERound.apply(x, t)
+    assert torch.equal(y, torch.round(x))
+    y.sum().backward()
+    midpoint = 0.5 * (torch.floor(x.detach()) + torch.ceil(x.detach()))
+    expected = 0.5 * t * (1.0 - torch.tanh(t * (x.detach() - midpoint)).square())
+    torch.testing.assert_close(x.grad, expected)
+
+
+def test_round_surrogates_keep_forward_exact_and_have_finite_distinct_gradients():
+    values = torch.tensor([-1.49, -0.99, -0.51, -0.01, 0.01, 0.49, 0.99, 1.49])
+    ste_input = values.clone().requires_grad_(True)
+    StaticGIF.round_ste(ste_input).sum().backward()
+    torch.testing.assert_close(ste_input.grad, torch.ones_like(values))
+
+    gradients = []
+    for t in (4.0, 8.0, 16.0):
+        x = values.clone().requires_grad_(True)
+        y = HTGERound.apply(x, t)
+        assert torch.equal(y, torch.round(values))
+        y.sum().backward()
+        assert torch.isfinite(x.grad).all()
+        gradients.append(x.grad)
+    assert not torch.equal(gradients[0], gradients[1])
+    assert not torch.equal(gradients[1], gradients[2])
+
+
+def test_static_and_all_low_gif_htge_preserve_forward_and_change_backward():
+    x_ste = torch.tensor([[[0.13, 0.23, 0.37, 0.41]]], requires_grad=True)
+    x_htge = x_ste.detach().clone().requires_grad_(True)
+    ordinary_ste = StaticGIF(_gif_state(), round_gradient_estimator="STE", htge_t=4.0)
+    ordinary_htge = StaticGIF(_gif_state(), round_gradient_estimator="HTGE", htge_t=4.0)
+    assert torch.equal(ordinary_ste(x_ste), ordinary_htge(x_htge))
+    ordinary_ste(x_ste).sum().backward()
+    ordinary_htge(x_htge).sum().backward()
+    assert not torch.equal(x_ste.grad, x_htge.grad)
+
+    low_ste = gif_module_from_state(_all_low_state(), round_gradient_estimator="STE")
+    low_htge = gif_module_from_state(_all_low_state(), round_gradient_estimator="HTGE", htge_t=4.0)
+    x_ste = torch.tensor([[[[0.13, 0.23, 0.37, 0.41]], [[0.13, 0.23, 0.37, 0.41]]]], requires_grad=True)
+    x_htge = x_ste.detach().clone().requires_grad_(True)
+    assert torch.equal(low_ste(x_ste), low_htge(x_htge))
+    low_ste(x_ste).sum().backward()
+    low_htge(x_htge).sum().backward()
+    assert not torch.equal(x_ste.grad, x_htge.grad)
+
+
+def test_gif_temporal_forward_is_gradient_estimator_independent():
+    state = _gif_state()
+    ste = StaticGIF(state, round_gradient_estimator="STE")
+    htge = StaticGIF(state, round_gradient_estimator="HTGE", htge_t=4.0)
+    incoming = torch.tensor([[[[0.13, 0.23, 0.37, 0.41]]], [[[0.11, 0.22, 0.33, 0.44]]]])
+    assert torch.equal(ste.temporal(incoming), htge.temporal(incoming))

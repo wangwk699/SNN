@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 from typing import Any
 
 import torch
@@ -27,6 +28,8 @@ class SiteController:
         phase_surrogate_slope: float | None = None,
         checkpoint_attention_core: bool = False,
         checkpoint_mlp: bool = False,
+        gif_round_gradient_estimator: str = "STE",
+        gif_htge_t: float = 16.0,
     ):
         self.mode = mode
         self.common_clip_enabled = bool(common_clip_enabled)
@@ -37,6 +40,14 @@ class SiteController:
         self.mtn_threshold_factor = None if mtn_threshold_factor is None else float(mtn_threshold_factor)
         self.checkpoint_attention_core = bool(checkpoint_attention_core)
         self.checkpoint_mlp = bool(checkpoint_mlp)
+        estimator = str(gif_round_gradient_estimator)
+        value = float(gif_htge_t)
+        if estimator not in {"STE", "HTGE"}:
+            raise ValueError("gif_round_gradient_estimator must be STE or HTGE")
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError("gif_htge_t must be a positive finite number")
+        self.gif_round_gradient_estimator = estimator
+        self.gif_htge_t = value
         if self.mode == "phase" and (self.phase_surrogate_slope is None or self.phase_T is None):
             raise ValueError("Phase ANN replacement requires explicit phase_T and phase_surrogate_slope")
         if self.mode not in {"phase", "gif"} and self.common_clip_enabled:
@@ -163,7 +174,14 @@ class SiteController:
                     threshold_factor=float(self.mtn_threshold_factor),
                 )
             elif name == "gif":
-                modules[name] = gif_module_from_state(state)
+                modules[name] = (
+                    gif_module_from_state(
+                        state,
+                        round_gradient_estimator=self.gif_round_gradient_estimator,
+                        htge_t=self.gif_htge_t,
+                    )
+                    if self.mode == "gif" else gif_module_from_state(state)
+                )
             else:
                 modules[name] = Clipper(state)
         return modules

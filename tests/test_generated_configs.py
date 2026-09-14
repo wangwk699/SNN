@@ -8,7 +8,7 @@ import copy
 import json
 
 from scripts.materialize_configs import materialize_configs
-from snn2.config import validate_config
+from snn2.config import resolve_config, validate_config
 from snn2.evaluation import final_ann_replacement_mode, lm_eval_batch_size
 from snn2.temporal_ops import (
     GIF_HIGH_QMAX,
@@ -378,6 +378,10 @@ def test_tldr_full_run_paths_record_scheduler_warmup_and_aware_accumulation(
             phase_part = f"phase_T_{cfg['phase']['T']}_mtn_T_{cfg['mtn']['T']}"
             if mode == "phase_aware":
                 phase_part += f"_surrogate_slope_{float(cfg['phase']['surrogate_slope'])}"
+            elif mode == "gif_aware":
+                phase_part += f"_round_gradient_estimator_{cfg['gif']['round_gradient_estimator']}"
+                if cfg['gif']['round_gradient_estimator'] == "HTGE":
+                    phase_part += f"_htge_t_{format(float(cfg['gif']['htge_t']), '.12g')}"
             training_identity = (
                 f"{phase_part}_lr_scheduler_type_{training['lr_scheduler_type']}_"
                 f"warmup_ratio_{float(training['warmup_ratio'])}_"
@@ -407,7 +411,7 @@ def test_tulu_full_run_paths_include_aware_training_identity(generated_configs):
         "vanilla": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/vanilla/lr1e-06_train_samples_10000/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.0/seed42",
         "unaware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/unaware/lr1e-06_train_samples_10000/prefix_enabled_ture/lr_scheduler_type_cosine_warmup_ratio_0.0/seed42",
         "phase_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/phase_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_T_4_mtn_T_4_surrogate_slope_1.0_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/seed42",
-        "gif_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/gif_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_T_4_mtn_T_4_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/seed42",
+        "gif_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/gif_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_T_4_mtn_T_4_round_gradient_estimator_STE_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/seed42",
     }
     for path in generated_configs:
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -470,3 +474,50 @@ def test_tulu_gradient_accumulation_changes_only_aware_run_paths(generated_confi
             assert ArtifactLayout(changed).root != ArtifactLayout(cfg).root
         else:
             assert ArtifactLayout(changed).root == ArtifactLayout(cfg).root
+
+
+def test_gif_round_gradient_schema_and_paths(generated_configs):
+    from snn2.artifacts import ArtifactLayout
+
+    cfg = yaml.safe_load(next(path for path in generated_configs if path.stem.endswith("__gif_aware")).read_text())
+    assert cfg["gif"]["round_gradient_estimator"] == "STE"
+    assert cfg["gif"]["htge_t"] == 16.0
+    ste16 = copy.deepcopy(cfg)
+    ste8 = copy.deepcopy(cfg)
+    ste8["gif"]["htge_t"] = 8.0
+    htge16 = copy.deepcopy(cfg)
+    htge16["gif"].update({"round_gradient_estimator": "HTGE", "htge_t": 16.0})
+    htge8 = copy.deepcopy(htge16)
+    htge8["gif"]["htge_t"] = 8.0
+    assert ArtifactLayout(ste16).root == ArtifactLayout(ste8).root
+    assert ArtifactLayout(ste16).root != ArtifactLayout(htge16).root
+    assert ArtifactLayout(htge16).root != ArtifactLayout(htge8).root
+    assert "round_gradient_estimator_HTGE_htge_t_16" in str(ArtifactLayout(htge16).root)
+    assert ArtifactLayout(ste16).ann_training_prefix_dir == ArtifactLayout(htge16).ann_training_prefix_dir
+    assert ArtifactLayout(ste16).ann_training_calibration_dir == ArtifactLayout(htge16).ann_training_calibration_dir
+
+
+def test_legacy_config_defaults_to_ste_round_gradient(generated_configs):
+    cfg = yaml.safe_load(generated_configs[0].read_text())
+    cfg["gif"].pop("round_gradient_estimator")
+    cfg["gif"].pop("htge_t")
+    resolved = resolve_config(cfg)
+    assert resolved["gif"]["round_gradient_estimator"] == "STE"
+    assert resolved["gif"]["htge_t"] == 16.0
+
+
+@pytest.mark.parametrize("estimator", ["ste", "htge", "", None])
+@pytest.mark.parametrize("htge_t", [16.0])
+def test_gif_round_gradient_estimator_rejects_invalid_values(generated_configs, estimator, htge_t):
+    cfg = yaml.safe_load(generated_configs[0].read_text())
+    cfg["gif"].update({"round_gradient_estimator": estimator, "htge_t": htge_t})
+    with pytest.raises(ValueError, match="round_gradient_estimator"):
+        validate_config(cfg)
+
+
+@pytest.mark.parametrize("htge_t", [0.0, -1.0, float("nan"), float("inf"), "bad"])
+def test_gif_htge_t_rejects_non_positive_or_non_finite_values(generated_configs, htge_t):
+    cfg = yaml.safe_load(generated_configs[0].read_text())
+    cfg["gif"].update({"round_gradient_estimator": "HTGE", "htge_t": htge_t})
+    with pytest.raises(ValueError, match="htge_t"):
+        validate_config(cfg)

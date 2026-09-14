@@ -223,6 +223,8 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             memory_cfg.get("attention_core_checkpoint", False)
         ),
         checkpoint_mlp=bool(memory_cfg.get("mlp_checkpoint", False)),
+        gif_round_gradient_estimator=str(cfg["gif"]["round_gradient_estimator"]),
+        gif_htge_t=float(cfg["gif"]["htge_t"]),
     )
     if is_aware_ann_mode(cfg):
         validate_site_state_bundle(layout.ann_training_site_dir, cfg=cfg, clip_policy="forbid_all")
@@ -237,6 +239,12 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         install_model_integration(model, controller, rotation_state(cfg, layout))
     model.config.snn2_ann_mode = cfg["experiment"]["ann_mode"]
     model.config.snn2_ann_common_clip_enabled = common_clip_enabled
+    if mode == "gif":
+        model.config.snn2_gif_round_gradient_estimator = cfg["gif"]["round_gradient_estimator"]
+        model.config.snn2_gif_htge_t = (
+            float(cfg["gif"]["htge_t"])
+            if cfg["gif"]["round_gradient_estimator"] == "HTGE" else None
+        )
     model.config.snn2_fused_weights_are_trainable = bool(cfg["rotation"]["enabled"])
     for parameter in model.parameters():
         parameter.requires_grad_(True)
@@ -318,6 +326,16 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
                 "loss_tokens": "assistant/completion plus EOS only",
                 "prefix_mode": "fixed_past_key_values",
                 "prefix_enabled": training_prefix_enabled(cfg),
+                "gif_round_gradient_estimator": (
+                    cfg["gif"]["round_gradient_estimator"]
+                    if mode == "gif" else None
+                ),
+                "gif_htge_t": (
+                    float(cfg["gif"]["htge_t"])
+                    if mode == "gif"
+                    and cfg["gif"]["round_gradient_estimator"] == "HTGE"
+                    else None
+                ),
                 "prefix_token_ids": prefixes,
                 "prefix_loss_masked": "not_applicable_prefix_not_in_labels",
                 "chat_template": template,
@@ -360,6 +378,15 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
                 training_cfg.get("gradient_checkpointing", False)
             ),
             "prefix_enabled": training_prefix_enabled(cfg),
+            "gif_round_gradient_estimator": (
+                cfg["gif"]["round_gradient_estimator"] if mode == "gif" else None
+            ),
+            "gif_htge_t": (
+                float(cfg["gif"]["htge_t"])
+                if mode == "gif"
+                and cfg["gif"]["round_gradient_estimator"] == "HTGE"
+                else None
+            ),
             **ann_training_common_clip_metadata(cfg),
             "train_samples": len(train_dataset),
             "validation_samples": len(validation_dataset),

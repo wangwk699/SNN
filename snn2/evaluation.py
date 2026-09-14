@@ -35,6 +35,16 @@ from .temporal_ops import (
 )
 
 
+def _gif_gradient_settings(cfg: dict[str, object]) -> tuple[str, float]:
+    """Read GIF gradient settings while supporting legacy in-memory configs."""
+    gif = cfg.get("gif", {})
+    if not isinstance(gif, dict):
+        raise ValueError("gif configuration must be a mapping")
+    return str(gif.get("round_gradient_estimator", "STE")), float(
+        gif.get("htge_t", 16.0)
+    )
+
+
 def position_ids_from_attention_mask(
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
@@ -151,6 +161,7 @@ def build_evaluation_controller(
 
     if neuron == "ann":
         mode = final_ann_replacement_mode(cfg)
+        gif_round_gradient_estimator, gif_htge_t = _gif_gradient_settings(cfg)
         aware = is_aware_ann_mode(cfg)
         if aware:
             validation = validate_site_state_bundle(
@@ -185,6 +196,8 @@ def build_evaluation_controller(
                 if mode == "phase"
                 else None
             ),
+            gif_round_gradient_estimator=gif_round_gradient_estimator,
+            gif_htge_t=gif_htge_t,
         )
         return controller, 1
 
@@ -216,6 +229,7 @@ def evaluation_forward_metadata(
 ) -> dict[str, object]:
     """Describe the actual evaluation graph with stable, shared enums."""
     ann_mode = cfg["experiment"]["ann_mode"]
+    gif_round_gradient_estimator, gif_htge_t = _gif_gradient_settings(cfg)
     diagnostic_identity = base or rotated_pre_finetuning
     if neuron == "ann":
         if diagnostic_identity or controller.mode == "identity":
@@ -260,6 +274,15 @@ def evaluation_forward_metadata(
         "gif_saliency_tie_policy": GIF_SALIENCY_TIE_POLICY,
         "gif_linear_saliency_dtype": GIF_LINEAR_SALIENCY_DTYPE,
         "gif_matmul_saliency_dtype": GIF_MATMUL_SALIENCY_DTYPE,
+        "gif_round_gradient_estimator": (
+            gif_round_gradient_estimator
+            if neuron == "ann" and controller.mode == "gif" else None
+        ),
+        "gif_htge_t": (
+            gif_htge_t
+            if neuron == "ann" and controller.mode == "gif"
+            and gif_round_gradient_estimator == "HTGE" else None
+        ),
     }
 
 
