@@ -222,6 +222,7 @@ def collect_blockwise_snn_conditioned_statistics(
                 histogram_provenance(
                     cfg, manifest, trajectory_source="sequential_temporal_gif"
                 ),
+                statistics_name="gif_statistics.pt",
             )
         materialize_target_state(root, cfg, neuron, layer_index=index)
         controller.clear_layer_module_cache(index)

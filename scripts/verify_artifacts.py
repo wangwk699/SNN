@@ -41,7 +41,7 @@ from snn2.sites import (
 )
 from snn2.evaluation import append_evaluation_num_samples_if_needed, final_ann_replacement_mode, resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
-from snn2.gif_mse_validation import validate_gif_mse_state
+from snn2.gif_mse_validation import validate_gif_mse_state, validate_gif_qparam_manifest_compatibility
 from snn2.state_validation import validate_clip_profile, validate_site_state_bundle
 from snn2.training import validate_recorded_training_artifact_provenance
 from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, build_test_selection,
@@ -358,7 +358,14 @@ def _verify_grouped_calibration(cfg, layout, manifest, calibration):
             for site, roles in sorted(GIF_MULTI_MASK_ROLES.items())
         },
     }
-    _require_manifest_flags(manifest, expected, "Grouped calibration")
+    validate_gif_qparam_manifest_compatibility(
+        manifest, cfg, context=layout.conversion_site_dir / "calibration_state_manifest.json"
+    )
+    _require_manifest_flags(
+        manifest,
+        {key: value for key, value in expected.items() if key not in {"gif_scale_initialization", "gif_mse_scale_refinement", "gif_qparam_calibration_method", "gif_mse_refinement_signature"}},
+        "Grouped calibration",
+    )
     ann_config = read_json(layout.ann_checkpoint_dir / "config.json")
     query_heads = int(ann_config["num_attention_heads"])
     hidden_size = int(ann_config["hidden_size"])
@@ -418,7 +425,7 @@ def _verify_grouped_calibration(cfg, layout, manifest, calibration):
         gif_state_path = directory / "gif_state.pt"
         validate_gif_mse_state(
             torch.load(gif_state_path, map_location="cpu", weights_only=False),
-            cfg, path=gif_state_path,
+            cfg, path=gif_state_path, manifest=manifest,
         )
         clip_present = (directory / "clip_state.pt").exists()
         clip_count += int(clip_present)

@@ -7,6 +7,7 @@ from typing import Any
 import torch
 
 from .config import gif_mse_refinement_signature
+from .artifacts import sha256_file
 from .gif_mse_calibration import GIFMSEHistogramStore
 from .gif_mse_state import build_histogram_spec
 
@@ -56,9 +57,18 @@ def histogram_provenance(
 
 def save_histogram_store(
     store: GIFMSEHistogramStore, site_root: str | Path, metadata: dict[str, Any],
+    *, statistics_name: str,
 ) -> None:
     root = Path(site_root)
     for key in sorted(store.specs):
         path = root / key / "gif_mse_histogram.pt"
         path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(store.state_for(key, metadata), path)
+        source_path = root / key / statistics_name
+        if not source_path.exists():
+            raise FileNotFoundError(source_path)
+        site_metadata = {
+            **metadata,
+            "source_statistics_file": statistics_name,
+            "source_statistics_sha256": sha256_file(source_path),
+        }
+        torch.save(store.state_for(key, site_metadata), path)

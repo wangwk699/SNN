@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 import torch
 
 from snn2.calibration import build_gif_state
-from snn2.config import load_config
-from snn2.gif_mse_calibration import GIFMSEHistogramStore
-from snn2.gif_mse_integration import histogram_provenance
+from snn2.config import load_config, validate_config
+from snn2.gif_mse_calibration import GIFMSEHistogramStore, runtime_fake_quant
+from snn2.gif_mse_integration import histogram_provenance, save_histogram_store
+from snn2.gif_mse_provenance import validate_histogram_provenance
 from snn2.gif_mse_state import build_histogram_spec
 from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE,
@@ -180,3 +183,114 @@ def test_common_calibration_runs_one_or_two_passes_with_identical_sample_order(
             materialize_states=False,
         )
         assert model.seen == expected
+
+
+
+def test_runtime_fake_quant_matches_staticgif_fp32_forward():
+    from snn2.neurons import gif_module_from_state
+
+    cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__gif_aware.yaml")
+    cfg["calibration"]["group_size"] = -1
+    direct_cfg = deepcopy(cfg)
+    direct_cfg["gif"]["mse_scale_refinement"] = False
+    statistics = _statistics()
+    statistics["site_index"] = 10
+    statistics.update({
+        "saliency_sum_by_role": {"default": torch.ones(4)},
+        "saliency_row_count_by_role": {"default": torch.ones(4, dtype=torch.long)},
+        "saliency_rule_by_role": {"default": "test"},
+        "saliency_accumulator_dtype_by_role": {"default": "float64"},
+    })
+    state = build_gif_state(statistics, direct_cfg)
+    state["mask_low"] = torch.ones_like(state["mask_low"], dtype=torch.bool)
+    module = gif_module_from_state(state)
+    scale = float(state["low_scale"].reshape(-1)[0])
+    zero = int(state["low_zero"].reshape(-1)[0])
+    values = torch.tensor([-1.0, -0.5 * scale, 0.5 * scale, 1.5 * scale,
+                           -1.5 * scale, -0.49 * scale, 1.49 * scale, 3.0]).reshape(2, 4)
+    expected = runtime_fake_quant(values, scale, zero, qmin=0, qmax=15).float()
+    assert torch.equal(module(values), expected)
+
+
+def test_mse_fixed_boolean_options_reject_false():
+    cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__gif_aware.yaml")
+    for key in ("preserve_zero", "fallback_to_direct_min_max"):
+        bad = deepcopy(cfg)
+        bad["gif"]["mse_refinement"][key] = False
+        with pytest.raises(ValueError, match="fixed and must be true"):
+            validate_config(bad)
+
+
+
+def test_histogram_binds_current_source_statistics_hash(tmp_path):
+    class Store:
+        specs = {"layer_000/site_02": {}}
+
+        @staticmethod
+        def state_for(_key, metadata):
+            return {"format_version": 2, "configured_group_size": 128, **metadata}
+
+    cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__gif_aware.yaml")
+    directory = tmp_path / "layer_000" / "site_02"
+    directory.mkdir(parents=True)
+    source = directory / "statistics.pt"
+    torch.save({"value": 1}, source)
+    manifest = {
+        "calibration_data_manifest_sha256": None,
+        "prefix_state_sha256": None,
+        "prefix_kv_sha256": None,
+        "rotation_state_sha256": None,
+    }
+    save_histogram_store(
+        Store(), tmp_path, histogram_provenance(cfg, manifest, trajectory_source="ann_common"),
+        statistics_name="statistics.pt",
+    )
+    histogram_path = directory / "gif_mse_histogram.pt"
+    histogram = torch.load(histogram_path, weights_only=False)
+    validate_histogram_provenance(histogram, manifest, cfg, site_directory=directory)
+    torch.save({"value": 2}, source)
+    with pytest.raises(ValueError, match="source statistics hash"):
+        validate_histogram_provenance(histogram, manifest, cfg, site_directory=directory)
+
+
+
+def test_sequential_histogram_binds_gif_statistics_hash(tmp_path):
+    class Store:
+        specs = {"layer_000/site_02": {}}
+
+        @staticmethod
+        def state_for(_key, metadata):
+            return {"format_version": 2, "configured_group_size": 128, **metadata}
+
+    cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__gif_aware.yaml")
+    cfg["calibration"]["gif_previous_layers_snn"] = True
+    directory = tmp_path / "layer_000" / "site_02"
+    directory.mkdir(parents=True)
+    source = directory / "gif_statistics.pt"
+    torch.save({"value": 1}, source)
+    manifest = {
+        "calibration_data_manifest_sha256": None,
+        "prefix_state_sha256": None,
+        "prefix_kv_sha256": None,
+        "rotation_state_sha256": None,
+    }
+    save_histogram_store(
+        Store(), tmp_path,
+        histogram_provenance(cfg, manifest, trajectory_source="sequential_temporal_gif"),
+        statistics_name="gif_statistics.pt",
+    )
+    histogram = torch.load(directory / "gif_mse_histogram.pt", weights_only=False)
+    validate_histogram_provenance(histogram, manifest, cfg, site_directory=directory)
+    torch.save({"value": 2}, source)
+    with pytest.raises(ValueError, match="source statistics hash"):
+        validate_histogram_provenance(histogram, manifest, cfg, site_directory=directory)
+
+
+def test_common_calibration_cleanup_removes_stale_histogram(tmp_path):
+    from snn2.calibration import clear_common_gif_mse_histograms
+
+    stale = tmp_path / "layer_000" / "site_02" / "gif_mse_histogram.pt"
+    stale.parent.mkdir(parents=True)
+    torch.save({"sentinel": True}, stale)
+    clear_common_gif_mse_histograms(tmp_path)
+    assert not stale.exists()

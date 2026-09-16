@@ -6,10 +6,40 @@ from typing import Any
 import torch
 
 from .config import gif_mse_refinement_enabled, gif_mse_refinement_signature
+from .gif_mse_calibration import normalize_mse_refinement_config
+from .gif_mse_provenance import validate_histogram_provenance
+
+
+def validate_gif_qparam_manifest_compatibility(
+    manifest: dict[str, Any], cfg: dict[str, Any], *, context: str | Path,
+) -> None:
+    """Validate MSE manifest fields while retaining legacy direct artifacts."""
+    context = Path(context)
+    enabled = gif_mse_refinement_enabled(cfg)
+    expected = {
+        "gif_scale_initialization": "direct_min_max",
+        "gif_mse_scale_refinement": enabled,
+        "gif_qparam_calibration_method": "offline_static_mse" if enabled else "direct_min_max",
+        "gif_mse_refinement_signature": gif_mse_refinement_signature(cfg) if enabled else None,
+        "gif_mse_refinement_config": normalize_mse_refinement_config(cfg["gif"].get("mse_refinement")) if enabled else None,
+    }
+    for key, value in expected.items():
+        actual = manifest.get(key)
+        if enabled:
+            if key not in manifest or actual != value:
+                raise ValueError(f"MSE calibration manifest has invalid {key}: {context}")
+        elif key in manifest:
+            # Older direct artifacts retained the normalized MSE config even
+            # though refinement was disabled. It is informational only.
+            if key == "gif_mse_refinement_config" and actual == normalize_mse_refinement_config(cfg["gif"].get("mse_refinement")):
+                continue
+            if actual != value:
+                raise ValueError(f"Direct GIF calibration manifest conflicts at {key}: {context}")
 
 
 def validate_gif_mse_state(
     state: dict[str, Any], cfg: dict[str, Any], *, path: str | Path,
+    manifest: dict[str, Any] | None = None,
 ) -> None:
     path = Path(path)
     enabled = gif_mse_refinement_enabled(cfg)
@@ -37,6 +67,9 @@ def validate_gif_mse_state(
             raise ValueError(f"MSE GIF state has invalid {key}: {path}")
     if not histogram_path.exists():
         raise FileNotFoundError(histogram_path)
+    if manifest is not None:
+        histogram = torch.load(histogram_path, map_location="cpu", weights_only=False)
+        validate_histogram_provenance(histogram, manifest, cfg, site_directory=path.parent)
     for branch, qmax in (("low", 15), ("high", 30)):
         if f"{branch}_scale" not in state:
             continue

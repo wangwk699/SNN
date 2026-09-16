@@ -197,7 +197,7 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "gif_scale_initialization": cfg["gif"].get("scale_initialization", "direct_min_max"),
         "gif_mse_scale_refinement": gif_mse_refinement_enabled(cfg),
         "gif_qparam_calibration_method": ("offline_static_mse" if gif_mse_refinement_enabled(cfg) else "direct_min_max"),
-        "gif_mse_refinement_config": normalize_mse_refinement_config(cfg["gif"].get("mse_refinement")),
+        "gif_mse_refinement_config": (normalize_mse_refinement_config(cfg["gif"].get("mse_refinement")) if gif_mse_refinement_enabled(cfg) else None),
         "gif_mse_refinement_signature": (gif_mse_refinement_signature(cfg) if gif_mse_refinement_enabled(cfg) else None),
         "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
@@ -723,7 +723,7 @@ def materialize_calibration_states(
             if histogram_path.exists() else None
         )
         if gif_histogram is not None:
-            validate_histogram_provenance(gif_histogram, manifest, cfg)
+            validate_histogram_provenance(gif_histogram, manifest, cfg, site_directory=directory)
         states = build_site_states_from_sources(
             phase_statistics=source_statistics["phase"], gif_statistics=source_statistics["gif"],
             mtn_statistics=source_statistics["mtn"], cfg=cfg,
@@ -941,6 +941,12 @@ def materialize_clip_profile(
     return manifest
 
 @torch.no_grad()
+def clear_common_gif_mse_histograms(site_root: str | Path) -> None:
+    """Remove stale common-trajectory MSE histograms before Pass 2."""
+    for path in Path(site_root).glob("layer_*/site_*/gif_mse_histogram.pt"):
+        path.unlink(missing_ok=True)
+
+
 def collect_site_statistics(
     model: torch.nn.Module,
     controller: Any,
@@ -997,6 +1003,8 @@ def collect_site_statistics(
                     "Existing calibration artifact uses a stale calibration manifest "
                     "schema; remove or move the old sites/ directory before recalibrating."
                 )
+    if gif_mse_refinement_enabled(cfg) and not previous_layers_snn_enabled(cfg, "gif"):
+        clear_common_gif_mse_histograms(root)
     dataset = tokenize_dataset(calibration_raw, tokenizer, cfg, prefix_ids=None)
     loader = DataLoader(
         dataset,
@@ -1122,6 +1130,7 @@ def collect_site_statistics(
         save_histogram_store(
             histogram_store, root,
             histogram_provenance(cfg, metadata, trajectory_source="ann_common"),
+            statistics_name="statistics.pt",
         )
     state_manifest = (
         materialize_calibration_states(
@@ -1210,7 +1219,8 @@ def materialize_target_state(
                 histogram = torch.load(histogram_path, map_location="cpu", weights_only=False) if histogram_path.exists() else None
                 if histogram is not None:
                     validate_histogram_provenance(
-                        histogram, read_json(root / "statistics_manifest.json"), cfg
+                        histogram, read_json(root / "statistics_manifest.json"), cfg,
+                        site_directory=directory,
                     )
                 state = build_gif_state(statistics, cfg, histogram)
             else:

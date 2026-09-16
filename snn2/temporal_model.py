@@ -49,6 +49,9 @@ def deployment_attention_forward(
     collecting = getattr(
         controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"
     )
+    collecting_saliency = getattr(
+        controller, "collecting_saliency", getattr(controller, "mode", None) in {"collect", "calibration_collect"}
+    )
 
     if collecting:
         # Sites 3/4 are attention-head grouped: record native [T*B,H,L,D],
@@ -57,13 +60,14 @@ def deployment_attention_forward(
         statistics_value = value[..., past_length:, :] if past_length else value
         controller.record_activation(layer_index, 3, statistics_key)
         controller.record_activation(layer_index, 4, statistics_value)
-        q64 = controller.logical_activation_for_calibration(query).detach().to(torch.float64)
-        k64 = controller.logical_activation_for_calibration(key).detach().to(torch.float64)
-        qk64 = torch.matmul(q64, k64.transpose(-2, -1))
-        key_score = k64 * torch.matmul(qk64.transpose(-2, -1), q64)
-        if past_length:
-            key_score = key_score[..., past_length:, :]
-        controller.record_saliency(layer_index, 3, key_score, source="spikellm_qk_k_fp64")
+        if collecting_saliency:
+            q64 = controller.logical_activation_for_calibration(query).detach().to(torch.float64)
+            k64 = controller.logical_activation_for_calibration(key).detach().to(torch.float64)
+            qk64 = torch.matmul(q64, k64.transpose(-2, -1))
+            key_score = k64 * torch.matmul(qk64.transpose(-2, -1), q64)
+            if past_length:
+                key_score = key_score[..., past_length:, :]
+            controller.record_saliency(layer_index, 3, key_score, source="spikellm_qk_k_fp64")
     else:
         key_flat = key.transpose(1, 2).contiguous().reshape(
             key.shape[0], key.shape[2], num_heads * head_dim
@@ -87,7 +91,7 @@ def deployment_attention_forward(
     weight_increment = temporal_softmax(score_increment, attention_mask, softcap=softcap)
     flat_weights = from_temporal(weight_increment)
 
-    if collecting:
+    if collecting_saliency:
         p64 = controller.logical_activation_for_calibration(flat_weights).detach().to(torch.float64)
         v64 = controller.logical_activation_for_calibration(value).detach().to(torch.float64)
         pv64 = torch.matmul(p64, v64)

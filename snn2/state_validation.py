@@ -16,6 +16,7 @@ from .sites import (
     GIF_SALIENT_SITE_IDS, SITE_IDS, is_softmax_site, site_supports_clip,
     validate_site_topology,
 )
+from .gif_mse_validation import validate_gif_mse_state, validate_gif_qparam_manifest_compatibility
 from .temporal_ops import (
     CALIBRATION_MANIFEST_FORMAT_VERSION,
     GIF_BASE_BITS,
@@ -335,6 +336,10 @@ def validate_site_state_bundle(
         raise ValueError(f"Unknown Clip bundle policy {clip_policy!r}")
     root = Path(site_root)
     manifest = load_calibration_manifest(root) if manifest is None else manifest
+    if cfg is not None:
+        validate_gif_qparam_manifest_compatibility(
+            manifest, cfg, context=root / "calibration_state_manifest.json"
+        )
     manifest_layers = manifest.get("expected_num_hidden_layers")
     if not isinstance(manifest_layers, int) or isinstance(manifest_layers, bool) or manifest_layers <= 0:
         raise ValueError("Calibration manifest expected_num_hidden_layers must be a positive integer")
@@ -379,6 +384,10 @@ def validate_site_state_bundle(
                 validate_phase_state_schema(states["phase"])
                 validate_mtn_state_schema(states["mtn"])
                 gif = gif_module_from_state(states["gif"])
+                if cfg is not None:
+                    validate_gif_mse_state(
+                        states["gif"], cfg, path=directory / "gif_state.pt", manifest=manifest
+                    )
                 for kind, state in states.items():
                     _validate_state_runtime_provenance(state, kind, flags, cfg, context=directory / f"{kind}_state.pt")
             except Exception as exc:

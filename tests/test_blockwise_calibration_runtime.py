@@ -247,7 +247,7 @@ def test_gif_mse_blockwise_order_is_statistics_histogram_state_deploy(
     )
     monkeypatch.setattr(
         blockwise, "save_histogram_store",
-        lambda _store, _root, _metadata: events.append("histogram_saved"),
+        lambda _store, _root, _metadata, **_kwargs: events.append("histogram_saved"),
     )
     monkeypatch.setattr(
         blockwise, "materialize_target_state",

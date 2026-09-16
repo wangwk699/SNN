@@ -84,6 +84,11 @@ class SiteController:
     def collecting_statistics(self) -> bool:
         return self.mode in {"collect", "calibration_collect", "gif_mse_collect"}
 
+
+    @property
+    def collecting_saliency(self) -> bool:
+        return self.mode in {"collect", "calibration_collect"}
+
     def logical_activation_for_calibration(self, x: torch.Tensor) -> torch.Tensor:
         if not self.sequential_calibration_active:
             return x

@@ -26,7 +26,7 @@ def _record_saliency(
     controller: SiteController, layer_index: int, site_index: int,
     score: torch.Tensor, *, role: str = "default", source: str
 ) -> None:
-    if not getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
+    if not getattr(controller, "collecting_saliency", getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect")):
         return
     try:
         controller.record_saliency(
@@ -163,7 +163,7 @@ def snn2_eager_attention_forward(
             num_heads=num_heads, head_dim=head_dim,
         )
 
-    if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
+    if getattr(controller, "collecting_saliency", getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect")):
         q64 = query.detach().to(torch.float64)
         k64 = key.detach().to(torch.float64)
         qk64 = torch.matmul(q64, k64.transpose(-2, -1))
@@ -214,7 +214,7 @@ def snn2_eager_attention_forward(
     else:
         output_heads, weights = attention_core(query, key, value, attention_mask)
 
-    if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
+    if getattr(controller, "collecting_saliency", getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect")):
         p64 = weights.detach().to(torch.float64)
         v64 = value.detach().to(torch.float64)
         pv64 = torch.matmul(p64, v64)
@@ -330,10 +330,11 @@ def record_down_proj_saliency(
     weight: torch.Tensor,
 ) -> None:
     """Record the R4 product consumer sensitivity at Site 10."""
-    _record_saliency(
-        controller, layer_index, 10, _linear_score(_logical_for_calibration(controller, inputs[0]), weight),
-        source="spikellm_linear_fp32",
-    )
+    if getattr(controller, "collecting_saliency", getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect")):
+        _record_saliency(
+            controller, layer_index, 10, _linear_score(_logical_for_calibration(controller, inputs[0]), weight),
+            source="spikellm_linear_fp32",
+        )
 
 
 def _install_temporal_rmsnorm(
@@ -506,7 +507,7 @@ def install_model_integration(
                 _record_regression(
                     controller, f"layer_{index:03d}/attn/{label}_proj_output", output
                 )
-                if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
+                if getattr(controller, "collecting_saliency", getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect")):
                     _record_saliency(
                         controller, index, 1, _linear_score(_logical_for_calibration(controller, inputs[0]), _module.weight),
                         role=label, source="spikellm_linear_fp32",
@@ -530,7 +531,7 @@ def install_model_integration(
                     f"layer_{index:03d}/post_attention_residual",
                     residual + output,
                 )
-            if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
+            if getattr(controller, "collecting_saliency", getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect")):
                 score = _linear_score(_logical_for_calibration(controller, inputs[0]), _module.weight)
                 _record_saliency(
                     controller, index, 6, score, source="spikellm_linear_fp32"
@@ -540,7 +541,7 @@ def install_model_integration(
 
         def make_mlp_input_hook(role, index=layer_index):
             def hook(_module, inputs, output):
-                if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
+                if getattr(controller, "collecting_saliency", getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect")):
                     _record_saliency(
                         controller, index, 7, _linear_score(_logical_for_calibration(controller, inputs[0]), _module.weight),
                         role=role, source="spikellm_linear_fp32",
@@ -554,7 +555,7 @@ def install_model_integration(
             handles.append(projection.register_forward_hook(make_mlp_input_hook(role)))
 
         def down_input_hook(_module, inputs, output, index=layer_index):
-            if getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect"):
+            if getattr(controller, "collecting_saliency", getattr(controller, "collecting_statistics", getattr(controller, "mode", None) == "collect")):
                 record_down_proj_saliency(controller, index, inputs, output, _module.weight)
 
         handles.append(layer.mlp.down_proj.register_forward_hook(down_input_hook))
