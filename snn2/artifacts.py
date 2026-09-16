@@ -10,6 +10,8 @@ from typing import Any
 from .config import (
     conversion_prefix_enabled,
     calibration_trajectory_config,
+    gif_mse_refinement_enabled,
+    gif_mse_refinement_signature,
     is_aware_ann_mode,
     save_yaml,
     training_common_clip_enabled,
@@ -109,6 +111,17 @@ def calibration_variant_dirname(group_size: Any, num_samples: Any) -> str:
     return f"{calibration_group_dirname(group_size)}_num_samples_{samples}"
 
 
+def gif_qparam_calibration_suffix(cfg: dict[str, Any]) -> str | None:
+    if not gif_mse_refinement_enabled(cfg):
+        return None
+    return f"gif_qparams_mse_refined_v1_{gif_mse_refinement_signature(cfg)[:8]}"
+
+
+def _with_gif_qparam_suffix(path: Path, cfg: dict[str, Any]) -> Path:
+    suffix = gif_qparam_calibration_suffix(cfg)
+    return path if suffix is None else path / suffix
+
+
 def calibration_trajectory_dirname(cfg: dict[str, Any], *, effective: bool = True) -> str:
     """Unique Stage-A trajectory signature; runtime fields appear only when active."""
     trajectory = calibration_trajectory_config(cfg, effective=effective)
@@ -165,6 +178,9 @@ class ArtifactLayout:
             )
             if exp["task"] in {"tldr", "tulu3"} and epochs is not None:
                 learning_rate = f"epochs_{epochs}_{learning_rate}"
+            qparam_suffix = gif_qparam_calibration_suffix(cfg)
+            if qparam_suffix is not None:
+                learning_rate = f"{learning_rate}_{qparam_suffix}"
 
         self.model_root = model_root
         self.seed_name = seed
@@ -338,7 +354,7 @@ class ArtifactLayout:
                 "prefix_enabled", self._cfg.get("prefix", {}).get("enabled", False)
             )
         )
-        return (
+        return _with_gif_qparam_suffix((
             self.shared_model_root
             / "rotated_prefix"
             / "ann_training_calibration"
@@ -347,7 +363,7 @@ class ArtifactLayout:
                 self._cfg["calibration"]["group_size"],
                 self._cfg["calibration"]["num_samples"],
             )
-        ) / calibration_trajectory_dirname(self._cfg)
+        ), self._cfg) / calibration_trajectory_dirname(self._cfg)
 
     @property
     def ann_training_site_dir(self) -> Path:
@@ -381,12 +397,12 @@ class ArtifactLayout:
 
     @property
     def vanilla_analysis_calibration_dir(self) -> Path:
-        return (
+        return _with_gif_qparam_suffix((
             self.shared_model_root
             / "vanilla_original"
             / "vanilla_analysis_calibration"
             / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
-        ) / calibration_trajectory_dirname(self._cfg, effective=False)
+        ), self._cfg) / calibration_trajectory_dirname(self._cfg, effective=False)
 
     @property
     def vanilla_analysis_site_dir(self) -> Path:
@@ -444,12 +460,12 @@ class ArtifactLayout:
         enabled = bool(
             self._cfg.get("post_finetuning", {}).get("prefix_enabled", True)
         )
-        return (
+        return _with_gif_qparam_suffix((
             self.post_finetuning_dir
             / "conversion_calibration"
             / prefix_enabled_dirname(enabled)
             / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
-        ) / calibration_trajectory_dirname(self._cfg)
+        ), self._cfg) / calibration_trajectory_dirname(self._cfg)
 
     @property
     def post_finetuning_site_dir(self) -> Path:
@@ -510,10 +526,10 @@ class ArtifactLayout:
         if is_aware_ann_mode(self._cfg):
             result = base / neuron
         else:
-            result = base / calibration_variant_dirname(
+            result = _with_gif_qparam_suffix(base / calibration_variant_dirname(
                 self._cfg["calibration"]["group_size"],
                 self._cfg["calibration"]["num_samples"],
-            ) / calibration_trajectory_dirname(self._cfg) / neuron
+            ), self._cfg) / calibration_trajectory_dirname(self._cfg) / neuron
         if neuron == "phase":
             return result / phase_snn_dirname(self._cfg["phase"]["T"])
         if neuron == "mtn":

@@ -9,6 +9,12 @@ from typing import Any
 
 import yaml
 
+from .gif_mse_calibration import (
+    mse_refinement_signature,
+    normalize_mse_refinement_config,
+    validate_mse_refinement_config,
+)
+
 from .sites import SITE_COUNT
 from .temporal_ops import (
     EMBEDDING_TEMPORAL_POLICY,
@@ -85,6 +91,12 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     gif_cfg = cfg.setdefault("gif", {})
     gif_cfg.setdefault("round_gradient_estimator", "STE")
     gif_cfg.setdefault("htge_t", GIF_DEFAULT_HTGE_T)
+    gif_cfg.setdefault("scale_initialization", "direct_min_max")
+    gif_cfg.setdefault("mse_scale_refinement", False)
+    gif_cfg.setdefault("runtime_quantization", "static")
+    gif_cfg["mse_refinement"] = normalize_mse_refinement_config(
+        gif_cfg.get("mse_refinement")
+    )
     for neuron in ("phase", "gif", "mtn"):
         cal.setdefault(f"{neuron}_previous_layers_snn", False)
     cfg["replacement"].setdefault("common_clip_enabled", True)
@@ -331,8 +343,9 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("Main experiments require static GIF runtime quantization")
     if cfg["gif"].get("scale_initialization") != "direct_min_max":
         raise ValueError("Main experiments require direct min-max GIF initialization")
-    if bool(cfg["gif"].get("mse_scale_refinement", True)):
-        raise ValueError("Main experiments disable GIF MSE scale refinement")
+    if type(cfg["gif"].get("mse_scale_refinement")) is not bool:
+        raise ValueError("gif.mse_scale_refinement must be true or false")
+    validate_mse_refinement_config(cfg["gif"].get("mse_refinement", {}))
     if mode != "vanilla" and not bool(cfg["rotation"].get("fused_weights_are_finetuned", False)):
         raise ValueError("Rotated modes must fine-tune the fused rotation weights")
     if float(cfg["rotation"].get("regression_relative_l2_threshold", 0.05)) <= 0.0:
@@ -378,6 +391,14 @@ def training_prefix_enabled(cfg: dict[str, Any]) -> bool:
 
 def is_aware_ann_mode(cfg: dict[str, Any]) -> bool:
     return cfg["experiment"]["ann_mode"] in AWARE_ANN_MODES
+
+
+def gif_mse_refinement_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(cfg.get("gif", {}).get("mse_scale_refinement", False))
+
+
+def gif_mse_refinement_signature(cfg: dict[str, Any]) -> str:
+    return mse_refinement_signature(cfg.get("gif", {}).get("mse_refinement", {}))
 
 
 def training_common_clip_enabled(cfg: dict[str, Any]) -> bool:

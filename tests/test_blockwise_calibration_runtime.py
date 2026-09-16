@@ -207,3 +207,66 @@ def test_clear_target_trajectory_artifacts_preserves_common_and_other_neurons(tm
     if neuron in {"phase", "mtn"}:
         assert not (global_directory / f"{neuron}_statistics.pt").exists()
         assert not (global_directory / f"{neuron}_state.pt").exists()
+
+
+
+def test_gif_mse_blockwise_order_is_statistics_histogram_state_deploy(
+    monkeypatch, tmp_path,
+):
+    from snn2 import blockwise_calibration as blockwise
+
+    cfg = _cfg()
+    cfg["calibration"].update({"gif_previous_layers_snn": True, "group_size": -1})
+    cfg["gif"]["mse_scale_refinement"] = True
+    cfg["gif"]["mse_refinement"]["histogram_bins"] = 16
+    controller = SiteController(
+        mode="collect", site_root=tmp_path, phase_T=2, mtn_T=2,
+        mtn_K=2, mtn_threshold_factor=0.75,
+    )
+    model = _ToyModel(controller)
+    cached = [blockwise._LayerInput(torch.ones(1, 2, 4), {})]
+    events = []
+
+    monkeypatch.setattr(blockwise, "tokenize_dataset", lambda *_args, **_kwargs: [{}])
+    monkeypatch.setattr(blockwise, "CausalLMCollator", lambda _tokenizer: lambda rows: rows[0])
+    monkeypatch.setattr(blockwise, "install_prefix_kv_forward", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(blockwise, "_bootstrap", lambda *_args, **_kwargs: cached)
+    monkeypatch.setattr(
+        blockwise, "_run",
+        lambda _layer, item, **_kwargs: item.hidden_states + 1,
+    )
+    monkeypatch.setattr(
+        blockwise, "_save_target_statistics",
+        lambda _store, _root, _neuron, *, layer_index=None, **_kwargs:
+            events.append(f"statistics_{layer_index}"),
+    )
+    monkeypatch.setattr(
+        blockwise, "create_histogram_store",
+        lambda _root, _cfg, *, statistics_name, layer_index:
+            events.append(f"histogram_{layer_index}") or SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        blockwise, "save_histogram_store",
+        lambda _store, _root, _metadata: events.append("histogram_saved"),
+    )
+    monkeypatch.setattr(
+        blockwise, "materialize_target_state",
+        lambda _root, _cfg, _neuron, *, layer_index=None, **_kwargs:
+            events.append(f"state_{layer_index}"),
+    )
+    monkeypatch.setattr(blockwise, "read_json", lambda _path: {})
+    original_deploy = controller.begin_sequential_deployment
+
+    def tracked_deploy(layer_index):
+        events.append(f"deploy_{layer_index}")
+        original_deploy(layer_index)
+
+    monkeypatch.setattr(controller, "begin_sequential_deployment", tracked_deploy)
+    result = blockwise.collect_blockwise_snn_conditioned_statistics(
+        model, controller, object(), object(), cfg, None, tmp_path, neuron="gif"
+    )
+    assert result == {"neuron": "gif", "blocks": 2, "samples": 1}
+    assert events == [
+        "statistics_0", "histogram_0", "histogram_saved", "state_0", "deploy_0",
+        "statistics_1", "histogram_1", "histogram_saved", "state_1", "deploy_1",
+    ]

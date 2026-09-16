@@ -10,6 +10,8 @@ from snn2.artifacts import lm_eval_spec_dirname, prefix_enabled_dirname, safe_na
 from snn2.data import validate_prefix_discovery_state
 from snn2.config import (
     conversion_prefix_enabled,
+    gif_mse_refinement_enabled,
+    gif_mse_refinement_signature,
     conversion_reuses_ann_training_artifacts,
     conversion_calibration_stage,
     conversion_prefix_artifact_stage,
@@ -39,6 +41,7 @@ from snn2.sites import (
 )
 from snn2.evaluation import append_evaluation_num_samples_if_needed, final_ann_replacement_mode, resolve_tldr_evaluation_layout
 from snn2.logging_utils import StageRun
+from snn2.gif_mse_validation import validate_gif_mse_state
 from snn2.state_validation import validate_clip_profile, validate_site_state_bundle
 from snn2.training import validate_recorded_training_artifact_provenance
 from snn2.lm_eval_protocol import (LM_EVAL_PINNED_REVISION, build_test_selection,
@@ -337,6 +340,10 @@ def _require_manifest_flags(manifest, expected, label):
 def _verify_grouped_calibration(cfg, layout, manifest, calibration):
     expected = {
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "gif_scale_initialization": "direct_min_max",
+        "gif_mse_scale_refinement": gif_mse_refinement_enabled(cfg),
+        "gif_qparam_calibration_method": ("offline_static_mse" if gif_mse_refinement_enabled(cfg) else "direct_min_max"),
+        "gif_mse_refinement_signature": (gif_mse_refinement_signature(cfg) if gif_mse_refinement_enabled(cfg) else None),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
@@ -408,6 +415,11 @@ def _verify_grouped_calibration(cfg, layout, manifest, calibration):
                     f"{statistics_path}"
                 )
         directory = statistics_path.parent
+        gif_state_path = directory / "gif_state.pt"
+        validate_gif_mse_state(
+            torch.load(gif_state_path, map_location="cpu", weights_only=False),
+            cfg, path=gif_state_path,
+        )
         clip_present = (directory / "clip_state.pt").exists()
         clip_count += int(clip_present)
         if site in {2, 3, 4, 6}:

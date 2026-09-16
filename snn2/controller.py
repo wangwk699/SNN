@@ -57,6 +57,7 @@ class SiteController:
         if self.common_clip_enabled and self.clip_root is None:
             raise ValueError("common Clip requires an explicit Stage B clip_root")
         self.statistics = StatisticsStore()
+        self.gif_mse_collector = None
         self._modules: dict[str, dict[str, torch.nn.Module]] = {}
         self.temporal_steps: int | None = None
         self._final_norm_phase: PhaseSurrogate | None = None
@@ -69,11 +70,11 @@ class SiteController:
 
     @property
     def temporal_execution_enabled(self) -> bool:
-        return self.mode.startswith("deploy_") or self.mode in {"calibration_collect", "calibration_deploy"}
+        return self.mode.startswith("deploy_") or self.mode in {"calibration_collect", "calibration_deploy"} or (self.mode == "gif_mse_collect" and self.temporal_steps is not None)
 
     @property
     def sequential_calibration_active(self) -> bool:
-        return self.mode in {"calibration_collect", "calibration_deploy"}
+        return self.mode in {"calibration_collect", "calibration_deploy"} or (self.mode == "gif_mse_collect" and self.temporal_steps is not None)
 
     @property
     def sequential_calibration_neuron(self) -> str | None:
@@ -81,7 +82,7 @@ class SiteController:
 
     @property
     def collecting_statistics(self) -> bool:
-        return self.mode == "collect" or self.mode == "calibration_collect"
+        return self.mode in {"collect", "calibration_collect", "gif_mse_collect"}
 
     def logical_activation_for_calibration(self, x: torch.Tensor) -> torch.Tensor:
         if not self.sequential_calibration_active:
@@ -102,6 +103,18 @@ class SiteController:
         if self.temporal_steps <= 0:
             raise ValueError("Sequential calibration requires temporal runtime parameters")
         return self.temporal_steps
+
+    def begin_gif_mse_collection(self, *, block_index: int | None = None) -> None:
+        if block_index is None:
+            self.calibration_neuron = None
+            self.calibration_block_index = None
+            self.temporal_steps = None
+        else:
+            self.calibration_neuron = "gif"
+            self.calibration_block_index = int(block_index)
+            self.temporal_steps = 2
+        self.calibration_collect_current_block = True
+        self.mode = "gif_mse_collect"
 
     def begin_sequential_deployment(self, block_index: int) -> None:
         if self.calibration_neuron is None or self.calibration_block_index != int(block_index):
@@ -236,6 +249,8 @@ class SiteController:
         self, layer_index: int, site_index: int, score: torch.Tensor,
         *, role: str = "default", source: str = "unspecified"
     ) -> None:
+        if self.mode == "gif_mse_collect":
+            return
         if self.collecting_statistics:
             self.statistics.update_saliency(
                 layer_index, site_index, score, role=role, source=source
@@ -248,6 +263,13 @@ class SiteController:
         x: torch.Tensor,
     ) -> None:
         """Record calibration statistics without changing the runtime tensor."""
+        if self.mode == "gif_mse_collect":
+            if self.gif_mse_collector is None:
+                raise RuntimeError("GIF MSE collector is not installed")
+            self.gif_mse_collector.update(
+                layer_index, site_index, self.logical_activation_for_calibration(x)
+            )
+            return
         if self.collecting_statistics:
             self.statistics.update(layer_index, site_index, self.logical_activation_for_calibration(x))
 
@@ -270,7 +292,14 @@ class SiteController:
                 self.record_regression(f"{checkpoint}/post", x)
             return x
         if self.collecting_statistics:
-            self.statistics.update(layer_index, site_index, self.logical_activation_for_calibration(x))
+            if self.mode == "gif_mse_collect":
+                if self.gif_mse_collector is None:
+                    raise RuntimeError("GIF MSE collector is not installed")
+                self.gif_mse_collector.update(
+                    layer_index, site_index, self.logical_activation_for_calibration(x), role=gif_role
+                )
+            else:
+                self.statistics.update(layer_index, site_index, self.logical_activation_for_calibration(x))
             if recorder is not None:
                 self.record_regression(f"{checkpoint}/post", x)
             return x
@@ -318,6 +347,8 @@ class SiteController:
     def apply_final_norm_neuron(self, x: torch.Tensor) -> torch.Tensor:
         """Apply the clip-free global final-RMSNorm neuron for the active topology."""
         self.record_regression("final_norm/before_global_neuron", x)
+        if self.mode == "gif_mse_collect":
+            return x
         if self.mode == "calibration_collect":
             self.statistics.update_global("final_rmsnorm", self.logical_activation_for_calibration(x))
             self.record_regression("final_norm/after_global_identity", x)

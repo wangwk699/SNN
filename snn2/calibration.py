@@ -9,9 +9,14 @@ import torch
 from torch.utils.data import DataLoader
 
 from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
-from .config import post_finetuning_prefix_enabled, training_prefix_enabled, previous_layers_snn_enabled, calibration_trajectory_config
+from .config import post_finetuning_prefix_enabled, training_prefix_enabled, previous_layers_snn_enabled, calibration_trajectory_config, gif_mse_refinement_enabled, gif_mse_refinement_signature
 from .data import CausalLMCollator, tokenize_dataset, validate_prefix_discovery_state
 from .neurons import gif_high_qmax
+from .gif_mse_calibration import normalize_mse_refinement_config
+from .gif_mse_state import refine_gif_state
+from .gif_mse_summary import summarize_gif_mse_state
+from .gif_mse_provenance import validate_histogram_provenance
+from .gif_mse_integration import create_histogram_store, histogram_provenance, save_histogram_store
 from .sites import (
     CLIP_ELIGIBLE_SITE_IDS,
     GIF_ALL_LOW_SITE_IDS,
@@ -189,6 +194,11 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "learning_rate": cfg["training"]["learning_rate"] if post else None,
         "seed": int(cfg["experiment"]["seed"]),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "gif_scale_initialization": cfg["gif"].get("scale_initialization", "direct_min_max"),
+        "gif_mse_scale_refinement": gif_mse_refinement_enabled(cfg),
+        "gif_qparam_calibration_method": ("offline_static_mse" if gif_mse_refinement_enabled(cfg) else "direct_min_max"),
+        "gif_mse_refinement_config": normalize_mse_refinement_config(cfg["gif"].get("mse_refinement")),
+        "gif_mse_refinement_signature": (gif_mse_refinement_signature(cfg) if gif_mse_refinement_enabled(cfg) else None),
         "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "statistics_format_version": STATISTICS_FORMAT_VERSION,
@@ -492,6 +502,7 @@ def build_clip_state(
 def build_gif_state(
     statistics: dict[str, Any],
     cfg: dict[str, Any],
+    mse_histogram: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     _validate_statistics(statistics)
     site_index = statistics.get("site_index")
@@ -629,6 +640,10 @@ def build_gif_state(
                     "saliency_score": scores["default"],
                 })
 
+    if gif_mse_refinement_enabled(cfg) and gif_state.get("quantization_applied", False):
+        if mse_histogram is None:
+            raise FileNotFoundError("MSE refinement requires gif_mse_histogram.pt")
+        gif_state = refine_gif_state(gif_state, mse_histogram, cfg)
     return gif_state
 
 
@@ -672,6 +687,11 @@ def materialize_calibration_states(
         "stage_a_parameter_independence": trajectory_metadata["stage_a_parameter_independence"],
         "calibration_num_samples": int(cfg["calibration"].get("num_samples", 128)),
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
+        "gif_scale_initialization": cfg["gif"].get("scale_initialization", "direct_min_max"),
+        "gif_mse_scale_refinement": gif_mse_refinement_enabled(cfg),
+        "gif_qparam_calibration_method": ("offline_static_mse" if gif_mse_refinement_enabled(cfg) else "direct_min_max"),
+        "gif_mse_refinement_config": normalize_mse_refinement_config(cfg["gif"].get("mse_refinement")),
+        "gif_mse_refinement_signature": (gif_mse_refinement_signature(cfg) if gif_mse_refinement_enabled(cfg) else None),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "softmax_site5_grouping_policy": SOFTMAX_SITE5_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,
@@ -697,9 +717,17 @@ def materialize_calibration_states(
         }
         for value in source_statistics.values():
             _validate_statistics(value)
+        histogram_path = directory / "gif_mse_histogram.pt"
+        gif_histogram = (
+            torch.load(histogram_path, map_location="cpu", weights_only=False)
+            if histogram_path.exists() else None
+        )
+        if gif_histogram is not None:
+            validate_histogram_provenance(gif_histogram, manifest, cfg)
         states = build_site_states_from_sources(
             phase_statistics=source_statistics["phase"], gif_statistics=source_statistics["gif"],
             mtn_statistics=source_statistics["mtn"], cfg=cfg,
+            gif_histogram=gif_histogram,
         )
         states = {name: _annotate_trajectory_state(state, cfg, name) for name, state in states.items()}
         for name, state in states.items():
@@ -725,6 +753,9 @@ def materialize_calibration_states(
             "saliency_accumulator_dtype_by_role": dict(gif_state.get("saliency_accumulator_dtype_by_role", {})),
             "gif_mask_policy": gif_state.get("mask_policy"),
             "gif_mask_roles": list(gif_state.get("mask_roles", [])),
+            **summarize_gif_mse_state(
+                gif_state, histogram_bins=int(normalize_mse_refinement_config(cfg["gif"].get("mse_refinement"))["histogram_bins"])
+            ),
             "phase_tau_calibration": states["phase"]["tau_calibration"],
             "phase_tau_ema_factor": states["phase"]["tau_ema_factor"],
             "phase_tau_accumulator_dtype": states["phase"]["tau_accumulator_dtype"],
@@ -1072,6 +1103,26 @@ def collect_site_statistics(
     }
     stats_manifest.update(metadata)
     write_json(root / "statistics_manifest.json", stats_manifest)
+    if gif_mse_refinement_enabled(cfg) and not previous_layers_snn_enabled(cfg, "gif"):
+        histogram_store = create_histogram_store(
+            root, cfg, statistics_name="statistics.pt"
+        )
+        controller.gif_mse_collector = histogram_store
+        controller.begin_gif_mse_collection()
+        try:
+            for batch in loader:
+                model(
+                    input_ids=batch["input_ids"].to(device),
+                    attention_mask=batch["attention_mask"].to(device),
+                    use_cache=False,
+                )
+        finally:
+            controller.end_sequential_calibration()
+            controller.gif_mse_collector = None
+        save_histogram_store(
+            histogram_store, root,
+            histogram_provenance(cfg, metadata, trajectory_source="ann_common"),
+        )
     state_manifest = (
         materialize_calibration_states(
             site_root,
@@ -1108,10 +1159,11 @@ def statistics_path_for_neuron(site_dir: str | Path, neuron: str, cfg: dict[str,
 def build_site_states_from_sources(
     *, phase_statistics: dict[str, Any], gif_statistics: dict[str, Any],
     mtn_statistics: dict[str, Any], cfg: dict[str, Any],
+    gif_histogram: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     return {
         "phase": build_phase_state(phase_statistics, cfg),
-        "gif": build_gif_state(gif_statistics, cfg),
+        "gif": build_gif_state(gif_statistics, cfg, gif_histogram),
         "mtn": build_mtn_state(mtn_statistics, cfg),
     }
 
@@ -1153,5 +1205,14 @@ def materialize_target_state(
                 continue
             state = build_phase_state(statistics, cfg) if neuron == "phase" else build_mtn_state(statistics, cfg)
         else:
-            state = {"phase": build_phase_state, "gif": build_gif_state, "mtn": build_mtn_state}[neuron](statistics, cfg)
+            if neuron == "gif":
+                histogram_path = directory / "gif_mse_histogram.pt"
+                histogram = torch.load(histogram_path, map_location="cpu", weights_only=False) if histogram_path.exists() else None
+                if histogram is not None:
+                    validate_histogram_provenance(
+                        histogram, read_json(root / "statistics_manifest.json"), cfg
+                    )
+                state = build_gif_state(statistics, cfg, histogram)
+            else:
+                state = {"phase": build_phase_state, "mtn": build_mtn_state}[neuron](statistics, cfg)
         torch.save(_annotate_trajectory_state(state, cfg, neuron), directory / f"{neuron}_state.pt")

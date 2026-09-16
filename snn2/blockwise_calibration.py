@@ -6,9 +6,13 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 import torch
+
+from .artifacts import read_json
 from torch.utils.data import DataLoader
 
 from .calibration import materialize_target_state
+from .config import gif_mse_refinement_enabled
+from .gif_mse_integration import create_histogram_store, histogram_provenance, save_histogram_store
 from .data import CausalLMCollator, tokenize_dataset
 from .model_integration import prepare_temporal_model_inputs
 from .prefix_cache import fresh_prefix_dynamic_cache, install_prefix_kv_forward
@@ -66,6 +70,8 @@ def clear_target_trajectory_artifacts(site_root: str | Path, neuron: Neuron) -> 
         if directory.is_dir():
             for suffix in ("statistics", "state"):
                 (directory / f"{neuron}_{suffix}.pt").unlink(missing_ok=True)
+            if neuron == "gif":
+                (directory / "gif_mse_histogram.pt").unlink(missing_ok=True)
     if neuron in {"phase", "mtn"}:
         global_directory = root / "_global" / "final_rmsnorm"
         for suffix in ("statistics", "state"):
@@ -196,6 +202,27 @@ def collect_blockwise_snn_conditioned_statistics(
             _run(layer, item, model=model, prefix_key_values=prefix_key_values,
                  temporal_steps=int(controller.temporal_steps))
         _save_target_statistics(controller.statistics, root, neuron, layer_index=index)
+        if neuron == "gif" and gif_mse_refinement_enabled(cfg):
+            histogram_store = create_histogram_store(
+                root, cfg, statistics_name="gif_statistics.pt", layer_index=index
+            )
+            controller.gif_mse_collector = histogram_store
+            controller.begin_gif_mse_collection(block_index=index)
+            try:
+                for item in cached:
+                    _run(
+                        layer, item, model=model, prefix_key_values=prefix_key_values,
+                        temporal_steps=int(controller.temporal_steps),
+                    )
+            finally:
+                controller.gif_mse_collector = None
+            manifest = read_json(root / "statistics_manifest.json")
+            save_histogram_store(
+                histogram_store, root,
+                histogram_provenance(
+                    cfg, manifest, trajectory_source="sequential_temporal_gif"
+                ),
+            )
         materialize_target_state(root, cfg, neuron, layer_index=index)
         controller.clear_layer_module_cache(index)
         controller.begin_sequential_deployment(index)
