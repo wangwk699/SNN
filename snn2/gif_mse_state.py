@@ -5,6 +5,7 @@ from typing import Any
 
 import torch
 
+from .temporal_ops import GIF_SCALE_MIN
 from .gif_mse_calibration import (
     normalize_mse_refinement_config,
     mse_refinement_signature,
@@ -106,6 +107,9 @@ def refine_gif_state(
             reasons.append(optimized.get("fallback_reason"))
             for name in names:
                 fields[name][index] = float(optimized.get(name, 0.0))
+        runtime_floor = torch.tensor(GIF_SCALE_MIN, dtype=torch.float32).to(direct_scale.dtype)
+        if torch.any(direct_scale < runtime_floor) or torch.any(refined_scale < runtime_floor):
+            raise RuntimeError("Refined GIF scale violates runtime GIF_SCALE_MIN")
         result[f"direct_{branch}_scale"] = direct_state[scale_key].clone()
         result[f"direct_{branch}_zero"] = direct_state[zero_key].clone()
         result[scale_key], result[zero_key] = refined_scale.float(), refined_zero.float()

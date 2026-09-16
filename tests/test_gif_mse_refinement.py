@@ -6,12 +6,15 @@ import pytest
 import torch
 
 from snn2.artifacts import ArtifactLayout, gif_qparam_calibration_suffix
-from snn2.config import load_config, resolve_config, validate_config
+from snn2.config import gif_mse_refinement_signature, load_config, resolve_config, validate_config
+from snn2.gif_mse_validation import validate_gif_qparam_manifest_compatibility
+from snn2.temporal_ops import GIF_SCALE_MIN
 from snn2.gif_mse_calibration import (
     GIFMSEHistogramStore,
     normalize_mse_refinement_config,
     optimize_static_qparams,
     runtime_fake_quant,
+    canonical_runtime_scale,
 )
 
 
@@ -66,7 +69,7 @@ def test_empty_branch_is_direct_fallback_without_nan():
         config=normalize_mse_refinement_config({"histogram_bins": 8}),
     )
     assert result == {
-        "scale": 0.1, "zero": 8, "refinement_applied": False,
+        "scale": canonical_runtime_scale(0.1), "zero": 8, "refinement_applied": False,
         "fallback_reason": "empty_branch", "sample_count": 0,
     }
 
@@ -152,3 +155,63 @@ def test_group_size_and_mse_suffix_both_isolate_paths():
     assert group_128.ann_training_calibration_dir != group_64.ann_training_calibration_dir
     assert "calibration_group_size_128" in str(group_128.ann_training_calibration_dir)
     assert "calibration_group_size_64" in str(group_64.ann_training_calibration_dir)
+
+
+
+def test_mse_local_scale_search_respects_runtime_scale_floor():
+    result = optimize_static_qparams(
+        {
+            "counts": torch.tensor([1], dtype=torch.long),
+            "bin_edges": torch.tensor([0.0, GIF_SCALE_MIN], dtype=torch.float64),
+            "sample_count": 1,
+            "sum_sq": GIF_SCALE_MIN ** 2,
+        },
+        direct_scale=GIF_SCALE_MIN,
+        direct_zero=0,
+        qmin=0,
+        qmax=15,
+        config=normalize_mse_refinement_config({"histogram_bins": 1}),
+    )
+    assert result["scale"] >= canonical_runtime_scale(GIF_SCALE_MIN)
+    assert result["scale"] == canonical_runtime_scale(result["scale"])
+
+
+def test_runtime_fake_quant_clamps_scale_to_runtime_floor():
+    values = torch.tensor([-2.5e-8, -0.5e-8, 0.5e-8, 2.5e-8])
+    floored = runtime_fake_quant(values, GIF_SCALE_MIN, 8, qmin=0, qmax=15)
+    below_floor = runtime_fake_quant(values, 0.95 * GIF_SCALE_MIN, 8, qmin=0, qmax=15)
+    assert torch.equal(floored, below_floor)
+
+
+def test_direct_artifact_ignores_unused_mse_refinement_config():
+    cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__gif_aware.yaml")
+    alternate = deepcopy(cfg)
+    alternate["gif"]["mse_refinement"]["histogram_bins"] = 2048
+    manifest = {
+        "gif_scale_initialization": "direct_min_max",
+        "gif_mse_scale_refinement": False,
+        "gif_qparam_calibration_method": "direct_min_max",
+        "gif_mse_refinement_signature": None,
+        "gif_mse_refinement_config": cfg["gif"]["mse_refinement"],
+    }
+    validate_gif_qparam_manifest_compatibility(manifest, alternate, context="direct")
+    assert ArtifactLayout(cfg).ann_training_site_dir == ArtifactLayout(alternate).ann_training_site_dir
+    assert ArtifactLayout(cfg).post_finetuning_site_dir == ArtifactLayout(alternate).post_finetuning_site_dir
+    assert ArtifactLayout(cfg).ann_dir == ArtifactLayout(alternate).ann_dir
+
+
+
+def test_mse_enabled_manifest_remains_strict_for_search_config():
+    cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__gif_aware.yaml")
+    cfg["gif"]["mse_scale_refinement"] = True
+    other = deepcopy(cfg)
+    other["gif"]["mse_refinement"]["histogram_bins"] = 2048
+    manifest = {
+        "gif_scale_initialization": "direct_min_max",
+        "gif_mse_scale_refinement": True,
+        "gif_qparam_calibration_method": "offline_static_mse",
+        "gif_mse_refinement_signature": gif_mse_refinement_signature(cfg),
+        "gif_mse_refinement_config": cfg["gif"]["mse_refinement"],
+    }
+    with pytest.raises(ValueError, match="gif_mse_refinement_signature"):
+        validate_gif_qparam_manifest_compatibility(manifest, other, context="mse")

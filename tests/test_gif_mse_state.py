@@ -12,6 +12,7 @@ from snn2.gif_mse_calibration import GIFMSEHistogramStore, runtime_fake_quant
 from snn2.gif_mse_integration import histogram_provenance, save_histogram_store
 from snn2.gif_mse_provenance import validate_histogram_provenance
 from snn2.gif_mse_state import build_histogram_spec
+from snn2.gif_mse_validation import validate_gif_mse_state
 from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE,
     PHASE_TAU_CALIBRATION,
@@ -19,7 +20,7 @@ from snn2.phase_statistics import (
     PHASE_TAU_EMA_FACTOR,
     PHASE_TAU_REDUCTION_POLICY,
 )
-from snn2.temporal_ops import STATISTICS_FORMAT_VERSION
+from snn2.temporal_ops import GIF_SCALE_MIN, STATISTICS_FORMAT_VERSION
 
 
 def _statistics(width: int = 4):
@@ -294,3 +295,61 @@ def test_common_calibration_cleanup_removes_stale_histogram(tmp_path):
     torch.save({"sentinel": True}, stale)
     clear_common_gif_mse_histograms(tmp_path)
     assert not stale.exists()
+
+
+
+def test_gif_scale_floor_matches_mse_ann_and_temporal_paths():
+    from snn2.neurons import gif_module_from_state
+
+    cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__gif_aware.yaml")
+    cfg["calibration"]["group_size"] = -1
+    statistics = _statistics()
+    statistics["site_index"] = 10
+    statistics.update({
+        "saliency_sum_by_role": {"default": torch.ones(4)},
+        "saliency_row_count_by_role": {"default": torch.ones(4, dtype=torch.long)},
+        "saliency_rule_by_role": {"default": "test"},
+        "saliency_accumulator_dtype_by_role": {"default": "float64"},
+    })
+    state = build_gif_state(statistics, cfg)
+    values = torch.tensor([
+        [-1.5e-8, -0.5e-8, 0.5e-8, 1.5e-8],
+        [2.5e-8, -2.5e-8, 7.5e-8, -7.5e-8],
+    ])
+    for low_branch, qmax in ((True, 15), (False, 30)):
+        branch_state = deepcopy(state)
+        branch_state["mask_low"] = torch.full_like(branch_state["mask_low"], low_branch)
+        branch_state["low_scale"] = torch.full_like(branch_state["low_scale"], 0.95 * GIF_SCALE_MIN)
+        branch_state["high_scale"] = torch.full_like(branch_state["high_scale"], 0.95 * GIF_SCALE_MIN)
+        module = gif_module_from_state(branch_state)
+        scale_key, zero_key = ("low_scale", "low_zero") if low_branch else ("high_scale", "high_zero")
+        zero = int(branch_state[zero_key].reshape(-1)[0])
+        mse = runtime_fake_quant(values, 0.95 * GIF_SCALE_MIN, zero, qmin=0, qmax=qmax).float()
+        ann = module(values)
+        temporal = module.temporal(torch.stack((values, torch.zeros_like(values)))).sum(dim=0)
+        assert torch.equal(mse, ann)
+        torch.testing.assert_close(ann, temporal, rtol=0.0, atol=1e-14)
+
+
+
+def test_mse_state_rejects_scale_below_runtime_floor(tmp_path):
+    cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__gif_aware.yaml")
+    cfg["calibration"]["group_size"] = -1
+    cfg["gif"]["mse_scale_refinement"] = True
+    cfg["gif"]["mse_refinement"]["histogram_bins"] = 16
+    direct_cfg = deepcopy(cfg)
+    direct_cfg["gif"]["mse_scale_refinement"] = False
+    statistics = _statistics()
+    direct = build_gif_state(statistics, direct_cfg)
+    spec = build_histogram_spec(statistics, direct, configured_group_size=-1)
+    store = GIFMSEHistogramStore({"layer_000/site_02": spec}, histogram_bins=16)
+    store.update(0, 2, torch.zeros(2, 4))
+    histogram = store.state_for(
+        "layer_000/site_02", histogram_provenance(cfg, {}, trajectory_source="ann_common")
+    )
+    state = build_gif_state(statistics, cfg, histogram)
+    path = tmp_path / "gif_state.pt"
+    torch.save(histogram, tmp_path / "gif_mse_histogram.pt")
+    state["low_scale"] = torch.full_like(state["low_scale"], 0.95 * GIF_SCALE_MIN)
+    with pytest.raises(ValueError, match="below runtime GIF_SCALE_MIN"):
+        validate_gif_mse_state(state, cfg, path=path)

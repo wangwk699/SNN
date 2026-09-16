@@ -7,6 +7,7 @@ import torch
 
 from .config import gif_mse_refinement_enabled, gif_mse_refinement_signature
 from .gif_mse_calibration import normalize_mse_refinement_config
+from .temporal_ops import GIF_SCALE_MIN
 from .gif_mse_provenance import validate_histogram_provenance
 
 
@@ -16,25 +17,27 @@ def validate_gif_qparam_manifest_compatibility(
     """Validate MSE manifest fields while retaining legacy direct artifacts."""
     context = Path(context)
     enabled = gif_mse_refinement_enabled(cfg)
-    expected = {
-        "gif_scale_initialization": "direct_min_max",
-        "gif_mse_scale_refinement": enabled,
-        "gif_qparam_calibration_method": "offline_static_mse" if enabled else "direct_min_max",
-        "gif_mse_refinement_signature": gif_mse_refinement_signature(cfg) if enabled else None,
-        "gif_mse_refinement_config": normalize_mse_refinement_config(cfg["gif"].get("mse_refinement")) if enabled else None,
-    }
-    for key, value in expected.items():
-        actual = manifest.get(key)
-        if enabled:
-            if key not in manifest or actual != value:
+    if enabled:
+        expected = {
+            "gif_scale_initialization": "direct_min_max",
+            "gif_mse_scale_refinement": True,
+            "gif_qparam_calibration_method": "offline_static_mse",
+            "gif_mse_refinement_signature": gif_mse_refinement_signature(cfg),
+            "gif_mse_refinement_config": normalize_mse_refinement_config(cfg["gif"].get("mse_refinement")),
+        }
+        for key, value in expected.items():
+            if key not in manifest or manifest.get(key) != value:
                 raise ValueError(f"MSE calibration manifest has invalid {key}: {context}")
-        elif key in manifest:
-            # Older direct artifacts retained the normalized MSE config even
-            # though refinement was disabled. It is informational only.
-            if key == "gif_mse_refinement_config" and actual == normalize_mse_refinement_config(cfg["gif"].get("mse_refinement")):
-                continue
-            if actual != value:
-                raise ValueError(f"Direct GIF calibration manifest conflicts at {key}: {context}")
+        return
+    direct_expected = {
+        "gif_scale_initialization": "direct_min_max",
+        "gif_mse_scale_refinement": False,
+        "gif_qparam_calibration_method": "direct_min_max",
+        "gif_mse_refinement_signature": None,
+    }
+    for key, value in direct_expected.items():
+        if key in manifest and manifest.get(key) != value:
+            raise ValueError(f"Direct GIF calibration manifest conflicts at {key}: {context}")
 
 
 def validate_gif_mse_state(
@@ -76,8 +79,8 @@ def validate_gif_mse_state(
         for prefix in ("", "direct_"):
             scale = torch.as_tensor(state[f"{prefix}{branch}_scale"])
             zero = torch.as_tensor(state[f"{prefix}{branch}_zero"])
-            if not torch.isfinite(scale).all() or not torch.all(scale > 0):
-                raise ValueError(f"MSE GIF {branch} scale is invalid: {path}")
+            if not torch.isfinite(scale).all() or not torch.all(scale >= GIF_SCALE_MIN):
+                raise ValueError(f"MSE GIF {branch} scale is below runtime GIF_SCALE_MIN: {path}")
             if not torch.isfinite(zero).all() or not torch.equal(zero, torch.round(zero)):
                 raise ValueError(f"MSE GIF {branch} zero is not integer-valued: {path}")
             if torch.any(zero < 0) or torch.any(zero > qmax):

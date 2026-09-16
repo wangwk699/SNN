@@ -43,6 +43,7 @@ from .temporal_ops import (
     GIF_LOCAL_STEPS,
     GIF_LOW_QMAX,
     GIF_SALIENT_POLICY,
+    GIF_SCALE_MIN,
     GIF_ALL_LOW_POLICY,
     GIF_IDENTITY_POLICY,
     GIF_STEP_QMAX,
@@ -253,7 +254,7 @@ def _qparams(
     qmin, qmax = int(qmin), int(qmax)
     if qmin != 0 or qmax <= qmin:
         raise ValueError(f"Invalid unsigned quantization range [{qmin}, {qmax}]")
-    scale = ((maximum - minimum) / (qmax - qmin)).clamp_min(1e-8)
+    scale = ((maximum - minimum) / (qmax - qmin)).clamp_min(GIF_SCALE_MIN)
     zero = torch.round(qmin - minimum / scale).clamp(qmin, qmax)
     representable_min = (qmin - zero) * scale
     representable_max = (qmax - zero) * scale

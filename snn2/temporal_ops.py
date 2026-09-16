@@ -58,6 +58,7 @@ GIF_HIGH_QMIN = 0
 GIF_HIGH_QMAX = 30
 GIF_STEP_QMIN = 0
 GIF_STEP_QMAX = 15
+GIF_SCALE_MIN = 1e-8
 GIF_INTEGER_DECOMPOSITION = (
     "two_unsigned_chunks_each_0_to_15_high_qmax_30"
 )

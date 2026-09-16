@@ -9,6 +9,8 @@ from typing import Any, Callable
 
 import torch
 
+from .temporal_ops import GIF_SCALE_MIN
+
 
 MSE_REFINEMENT_DEFAULTS: dict[str, Any] = {
     "version": "static_mse_v1",
@@ -88,6 +90,14 @@ def validate_mse_refinement_config(value: dict[str, Any]) -> None:
             raise ValueError(f"gif.mse_refinement.{key} is fixed and must be true")
 
 
+def canonical_runtime_scale(scale: float) -> float:
+    """Return the exact FP32, floored scale used by GIF runtime quantization."""
+    value = torch.tensor(float(scale), dtype=torch.float32).clamp_min(GIF_SCALE_MIN)
+    if not torch.isfinite(value):
+        raise ValueError("GIF scale must be finite")
+    return float(value.item())
+
+
 def runtime_fake_quant(values: torch.Tensor, scale: float, zero: int, *, qmin: int, qmax: int) -> torch.Tensor:
     if not math.isfinite(float(scale)) or float(scale) <= 0.0:
         raise ValueError("scale must be positive and finite")
@@ -96,7 +106,9 @@ def runtime_fake_quant(values: torch.Tensor, scale: float, zero: int, *, qmin: i
     # StaticGIF makes its rounding/clamping decision in FP32. Keep that exact
     # forward arithmetic here, then return FP64 for MSE accumulation.
     work = values.to(torch.float32)
-    scale32 = torch.tensor(float(scale), dtype=torch.float32, device=work.device)
+    scale32 = torch.tensor(
+        canonical_runtime_scale(scale), dtype=torch.float32, device=work.device
+    )
     zero32 = torch.tensor(float(zero), dtype=torch.float32, device=work.device)
     quantized = torch.round(work / scale32) + zero32
     quantized = torch.clamp(quantized, qmin, qmax)
@@ -158,14 +170,14 @@ def optimize_static_qparams(
         raise ValueError("Histogram sample_count does not match counts")
     if sample_count == 0:
         return {
-            "scale": float(direct_scale), "zero": int(direct_zero),
+            "scale": canonical_runtime_scale(direct_scale), "zero": int(direct_zero),
             "refinement_applied": False, "fallback_reason": "empty_branch",
             "sample_count": 0,
         }
     if qparams_fn is None:
         from .calibration import _qparams as qparams_fn
     minimum, maximum = float(edges[0]), float(edges[-1])
-    direct_scale = float(torch.tensor(float(direct_scale), dtype=torch.float32))
+    direct_scale = canonical_runtime_scale(direct_scale)
     direct_metrics = evaluate_histogram_mse(
         counts, edges, direct_scale, direct_zero, qmin=qmin, qmax=qmax,
         sum_sq=float(histogram.get("sum_sq", 0.0)),
@@ -181,7 +193,7 @@ def optimize_static_qparams(
             scale, zero = float(s), int(z)
         # Deployment persists scale buffers as FP32, so rank the exact qparams
         # that StaticGIF will consume.
-        scale = float(torch.tensor(float(scale), dtype=torch.float32))
+        scale = canonical_runtime_scale(scale)
         metrics = evaluate_histogram_mse(counts, edges, scale, zero, qmin=qmin, qmax=qmax)
         candidates.append(_Candidate(metrics["mse"], scale, int(zero), float(lower), float(upper), label))
 
@@ -244,7 +256,7 @@ def optimize_static_qparams(
         best = candidates[0]
     # Persisted scales are FP32. Re-evaluate that exact value so diagnostics and
     # the fallback guarantee describe the qparams that deployment will consume.
-    persisted_scale = float(torch.tensor(best.scale, dtype=torch.float32))
+    persisted_scale = canonical_runtime_scale(best.scale)
     final_metrics = evaluate_histogram_mse(
         counts, edges, persisted_scale, best.zero, qmin=qmin, qmax=qmax,
         sum_sq=float(histogram.get("sum_sq", 0.0)),

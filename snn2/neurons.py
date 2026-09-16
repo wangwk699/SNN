@@ -32,6 +32,7 @@ from .temporal_ops import (
     GIF_ALL_LOW_POLICY,
     GIF_IDENTITY_POLICY,
     GIF_STEP_QMAX,
+    GIF_SCALE_MIN,
     SITE_STATE_FORMAT_VERSION,
     SOFTMAX_SITE5_GIF_POLICY,
     TEMPORAL_IMPLEMENTATION_VERSION,
@@ -460,7 +461,7 @@ class StaticGIF(nn.Module):
         qmin: int,
         qmax: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        scale = _parameter_values(x, scale_values, self.layout).clamp_min(1e-8)
+        scale = _parameter_values(x, scale_values, self.layout).clamp_min(GIF_SCALE_MIN)
         zero = _parameter_values(x, zero_values, self.layout)
         qmin, qmax = int(qmin), int(qmax)
         if qmin != 0 or qmax <= qmin:
@@ -484,8 +485,8 @@ class StaticGIF(nn.Module):
         self, x: torch.Tensor, *, role: str | None = None
     ) -> torch.Tensor:
         mask = _mask_values(x, self._mask(role), self.layout)
-        low_scale = _parameter_values(x, self.low_scale, self.layout).clamp_min(1e-8)
-        high_scale = _parameter_values(x, self.high_scale, self.layout).clamp_min(1e-8)
+        low_scale = _parameter_values(x, self.low_scale, self.layout).clamp_min(GIF_SCALE_MIN)
+        high_scale = _parameter_values(x, self.high_scale, self.layout).clamp_min(GIF_SCALE_MIN)
         low_zero = _parameter_values(x, self.low_zero, self.layout)
         high_zero = _parameter_values(x, self.high_zero, self.layout)
         scale = torch.where(mask, low_scale, high_scale)
@@ -543,8 +544,8 @@ class StaticGIF(nn.Module):
             qmax=self.high_qmax,
         )
         mask = _mask_values(x, self._mask(role), self.layout)
-        scale_low = _parameter_values(x, self.low_scale, self.layout)
-        scale_high = _parameter_values(x, self.high_scale, self.layout)
+        scale_low = _parameter_values(x, self.low_scale, self.layout).clamp_min(GIF_SCALE_MIN)
+        scale_high = _parameter_values(x, self.high_scale, self.layout).clamp_min(GIF_SCALE_MIN)
         high_chunks = self.integer_chunks(high_q)
         outputs = []
         for timestep, chunk in enumerate(high_chunks):
