@@ -90,15 +90,31 @@ def _load_source_ann_training_runtime_provenance(
 def _validate_phase_deployment_calibration_runtime(
     cfg: dict[str, Any], layout: ArtifactLayout, neuron: str | None
 ) -> None:
-    """Reject deployment overrides that invalidate sequential Phase Stage-A."""
+    """Reject deployment overrides that lack matching sequential Phase Stage-A."""
     if neuron != "phase" or not previous_layers_snn_enabled(cfg, "phase"):
         return
     manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
     if not manifest_path.exists():
-        return
-    trajectory = read_json(manifest_path).get("calibration_trajectory", {}).get("phase", {})
-    if not isinstance(trajectory, dict) or not trajectory.get("previous_layers_snn"):
-        return
+        raise FileNotFoundError(
+            "Sequential Phase deployment requires calibration manifest: "
+            f"{manifest_path}"
+        )
+    manifest = read_json(manifest_path)
+    calibration_trajectory = manifest.get("calibration_trajectory")
+    if not isinstance(calibration_trajectory, dict):
+        raise ValueError(
+            "Phase deployment requires sequential Phase calibration provenance "
+            "when phase_previous_layers_snn=true"
+        )
+    trajectory = calibration_trajectory.get("phase")
+    if (
+        not isinstance(trajectory, dict)
+        or trajectory.get("previous_layers_snn") is not True
+    ):
+        raise ValueError(
+            "Phase deployment requires sequential Phase calibration provenance "
+            "when phase_previous_layers_snn=true"
+        )
     expected_T = int(cfg["phase"]["T"])
     expected_base = validate_phase_base(cfg["phase"]["base"])
     actual_T = trajectory.get("phase_T")

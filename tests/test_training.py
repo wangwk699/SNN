@@ -56,7 +56,7 @@ def _provenance_fixture(tmp_path):
     (clip_dir / "clip_profile_manifest.json").write_text(json.dumps({"format_version": 1}), encoding="utf-8")
     cfg = {"experiment": {"ann_mode": "phase_aware"}, "ann_training": {"prefix_enabled": True},
            "prefix": {"enabled": True}, "calibration": {"group_size": -1, "num_samples": 128},
-           "phase": {"T": 4}, "mtn": {"T": 4}}
+           "phase": {"T": 4, "base": 2.0}, "mtn": {"T": 4}}
     layout = SimpleNamespace(ann_training_prefix_dir=prefix_dir, ann_training_site_dir=site_dir,
                              ann_training_clip_profile_dir=clip_dir,
                              calibration_data_manifest_path=manifest)
@@ -74,6 +74,7 @@ def test_training_artifact_provenance_capture_and_verify(monkeypatch, tmp_path):
     assert captured["ann_training_prefix_token_ids"] == [7, 8]
     assert captured["ann_training_prefix_state_sha256"]
     assert captured["ann_training_prefix_kv_sha256"]
+    assert captured["ann_training_phase_base"] == 2.0
 
 @pytest.mark.parametrize(
     ("relative_path", "replacement"),

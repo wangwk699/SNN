@@ -386,10 +386,16 @@ def _write_stage_a_fixture(root, cfg, *, post, ann_checkpoint):
     for index in SITE_IDS:
         directory = root / "layer_000" / f"site_{index:02d}_{SITE_NAMES[index]}"
         directory.mkdir(parents=True, exist_ok=True)
-        torch.save(_statistics(index), directory / "statistics.pt")
+        statistics = _statistics(index)
+        torch.save(statistics, directory / "statistics.pt")
+        if cfg["calibration"].get("phase_previous_layers_snn", False):
+            torch.save(statistics, directory / "phase_statistics.pt")
     global_directory = root / "_global" / "final_rmsnorm"
     global_directory.mkdir(parents=True, exist_ok=True)
-    torch.save(_statistics(None), global_directory / "statistics.pt")
+    final_statistics = _statistics(None)
+    torch.save(final_statistics, global_directory / "statistics.pt")
+    if cfg["calibration"].get("phase_previous_layers_snn", False):
+        torch.save(final_statistics, global_directory / "phase_statistics.pt")
     metadata = {
         "purpose": "post_finetuning_conversion_calibration" if post else "ann_training_calibration",
         "eligible_for_ann_training": not post,
@@ -538,58 +544,101 @@ def test_common_phase_calibration_allows_deployment_base_override(tmp_path):
     assert metadata["deployment_phase_base"] == 1.5
 
 
-def test_sequential_phase_calibration_rejects_deployment_base_override(tmp_path):
+def test_sequential_phase_calibration_missing_trajectory_fails(tmp_path):
     cfg, layout, _, _ = _prepare_selector_fixture(
         tmp_path, ann_mode="phase_aware", use_post=True, include_training_result=True
     )
     cfg["calibration"]["phase_previous_layers_snn"] = True
     manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["calibration_trajectory"]["phase"] = {
-        "previous_layers_snn": True,
-        "source": "sequential_temporal_phase",
-        "phase_T": 4,
-        "phase_base": 2.0,
-    }
+    manifest["calibration_trajectory"].pop("phase")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="requires sequential Phase calibration provenance"):
+        create_conversion(cfg, layout, "phase")
+
+
+def test_sequential_phase_calibration_missing_manifest_fails(tmp_path):
+    cfg, layout, _, _ = _prepare_selector_fixture(
+        tmp_path, ann_mode="phase_aware", use_post=True, include_training_result=True
+    )
+    cfg["calibration"]["phase_previous_layers_snn"] = True
+    (layout.conversion_site_dir / "calibration_state_manifest.json").unlink()
+    with pytest.raises(FileNotFoundError, match="Sequential Phase deployment requires calibration manifest"):
+        create_conversion(cfg, layout, "phase")
+
+
+def test_sequential_phase_calibration_false_trajectory_fails(tmp_path):
+    cfg, layout, _, _ = _prepare_selector_fixture(
+        tmp_path, ann_mode="phase_aware", use_post=True, include_training_result=True
+    )
+    cfg["calibration"]["phase_previous_layers_snn"] = True
+    with pytest.raises(ValueError, match="requires sequential Phase calibration provenance"):
+        create_conversion(cfg, layout, "phase")
+
+
+def test_sequential_phase_calibration_rejects_deployment_base_override(tmp_path):
+    cfg, layout, _, _ = _prepare_selector_fixture(
+        tmp_path,
+        ann_mode="phase_aware",
+        use_post=True,
+        include_training_result=True,
+        phase_previous_layers_snn=True,
+    )
     cfg["phase"]["base"] = 1.5
     with pytest.raises(ValueError, match="Phase deployment runtime disagrees with sequential Stage-A calibration"):
         create_conversion(cfg, layout, "phase")
 
 
-def test_sequential_phase_calibration_allows_matching_deployment_base(monkeypatch, tmp_path):
-    cfg, layout, _, post_manifest = _prepare_selector_fixture(
-        tmp_path, ann_mode="phase_aware", use_post=True, include_training_result=True, phase_base=1.5
+def test_sequential_phase_calibration_matching_runtime_end_to_end(tmp_path):
+    cfg, layout, _, _ = _prepare_selector_fixture(
+        tmp_path,
+        ann_mode="phase_aware",
+        use_post=True,
+        include_training_result=True,
+        phase_base=1.5,
+        phase_previous_layers_snn=True,
     )
-    cfg["calibration"]["phase_previous_layers_snn"] = True
-    manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["calibration_trajectory"]["phase"] = {
+    manifest = json.loads(
+        (layout.conversion_site_dir / "calibration_state_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["requested_previous_layers_snn"]["phase"] is True
+    assert manifest["effective_previous_layers_snn"]["phase"] is True
+    assert manifest["calibration_trajectory"]["phase"] == {
         "previous_layers_snn": True,
         "source": "sequential_temporal_phase",
         "phase_T": 4,
         "phase_base": 1.5,
     }
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    monkeypatch.setattr(
-        "snn2.conversion._source_bundle",
-        lambda _cfg, _layout: (
-            {
-                "prefix_source_stage": "post_finetuning",
-                "prefix_token_ids": [],
-                "prefix_state_sha256": None,
-                "prefix_kv_sha256": None,
-                "prefix_root": None,
-            },
-            {"temporal_steps": {"phase": 4}},
-            post_manifest,
-            {
-                "ann_training_phase_T": 4,
-                "ann_training_phase_base": 2.0,
-                "ann_training_mtn_T": 4,
-            },
-        ),
-    )
+    site_key = next(iter(manifest["sites"]))
+    assert manifest["sites"][site_key]["state_statistics_source"]["phase"]["file"] == "phase_statistics.pt"
+    assert manifest["sites"][site_key]["state_statistics_source"]["phase"]["previous_layers_snn"] is True
+    for path in (
+        layout.conversion_site_dir / site_key / "phase_state.pt",
+        layout.conversion_site_dir / "_global" / "final_rmsnorm" / "phase_state.pt",
+    ):
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        assert state["previous_layers_snn"] is True
+        assert state["calibration_phase_T"] == 4
+        assert state["calibration_phase_base"] == 1.5
     metadata = create_conversion(cfg, layout, "phase")
+    assert validate_conversion_metadata(cfg, layout, "phase") == metadata
     assert metadata["source_ann_training_phase_base"] == 2.0
     assert metadata["deployment_phase_base"] == 1.5
+
+
+def test_validate_conversion_metadata_rejects_stale_sequential_phase_runtime(tmp_path):
+    cfg, layout, _, _ = _prepare_selector_fixture(
+        tmp_path,
+        ann_mode="phase_aware",
+        use_post=True,
+        include_training_result=True,
+        phase_base=1.5,
+        phase_previous_layers_snn=True,
+    )
+    create_conversion(cfg, layout, "phase")
+    manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["calibration_trajectory"]["phase"]["phase_base"] = 2.0
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="Phase deployment runtime disagrees with sequential Stage-A calibration"):
+        validate_conversion_metadata(cfg, layout, "phase")
