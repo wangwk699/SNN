@@ -64,6 +64,31 @@ def _evaluation_metadata(path):
     payload = read_json(path)
     return payload.get("snn2_metadata", payload)
 
+def _validate_tulu_stage_a_calibration_manifest(cfg, layout) -> None:
+    """Validate that Tulu-3 Stage-A data is nested in its ANN selection."""
+    train_manifest = read_json(layout.data_dir / "train_manifest.json")
+    calibration_manifest = read_json(layout.calibration_data_manifest_path)
+    train_indices = train_manifest.get("indices")
+    positions = calibration_manifest.get("positions_in_selected_train")
+    calibration_indices = calibration_manifest.get("indices")
+    if not all(isinstance(value, list) for value in (train_indices, positions, calibration_indices)):
+        raise ValueError("Tulu-3 train/calibration manifests must contain index lists")
+    if calibration_manifest.get("selection_pool") != "selected_ann_training_subset":
+        raise ValueError("Tulu-3 calibration must be selected from the ANN training subset")
+    if calibration_manifest.get("retained_in_ann_training_subset") is not True:
+        raise ValueError("Tulu-3 calibration manifest must retain ANN-training membership")
+    if calibration_manifest.get("parent_training_samples") != len(train_indices):
+        raise ValueError("Tulu-3 calibration parent training sample count is invalid")
+    if calibration_manifest.get("parent_training_seed") != int(cfg["training"]["train_seed"]):
+        raise ValueError("Tulu-3 calibration parent training seed is invalid")
+    if any(type(position) is not int or position < 0 or position >= len(train_indices) for position in positions):
+        raise ValueError("Tulu-3 calibration positions are outside the ANN training subset")
+    if [train_indices[position] for position in positions] != calibration_indices:
+        raise ValueError("Tulu-3 calibration indices do not match their ANN training positions")
+    if not set(calibration_indices).issubset(train_indices):
+        raise ValueError("Tulu-3 calibration indices are not a subset of ANN training indices")
+
+
 def _tulu_lm_eval_root(cfg, root, *, neuron):
     enabled = (final_ann_evaluation_prefix_enabled(cfg) if neuron == "ann"
                else evaluation_prefix_enabled(cfg))
@@ -914,6 +939,7 @@ def main():
                 + "\n".join(missing)
             )
         if task == "tulu3":
+            _validate_tulu_stage_a_calibration_manifest(cfg, layout)
             for spec in enabled_lm_eval_task_specs(cfg):
                 result_root = _tulu_lm_eval_task_root(cfg, layout.ann_dir, spec, neuron="ann")
                 _validate_tulu_lm_eval_result(

@@ -408,10 +408,10 @@ def test_tulu_full_run_paths_include_aware_training_identity(generated_configs):
     from snn2.artifacts import ArtifactLayout, calibration_trajectory_dirname
 
     expected = {
-        "vanilla": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/vanilla/lr1e-06_train_samples_10000/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.0/seed42",
-        "unaware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/unaware/lr1e-06_train_samples_10000/prefix_enabled_ture/lr_scheduler_type_cosine_warmup_ratio_0.0/seed42",
-        "phase_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/phase_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_base_2_T_4_mtn_T_4_surrogate_slope_1.0_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/seed42",
-        "gif_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/gif_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_base_2_T_4_mtn_T_4_round_gradient_estimator_STE_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/seed42",
+        "vanilla": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/vanilla/lr1e-06_train_samples_10000/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.0/experiment_seed_42_train_seed_42_calibration_seed_42",
+        "unaware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/unaware/lr1e-06_train_samples_10000/prefix_enabled_ture/lr_scheduler_type_cosine_warmup_ratio_0.0/experiment_seed_42_train_seed_42_calibration_seed_42",
+        "phase_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/phase_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_base_2_T_4_mtn_T_4_surrogate_slope_1.0_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/experiment_seed_42_train_seed_42_calibration_seed_42",
+        "gif_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/gif_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_base_2_T_4_mtn_T_4_round_gradient_estimator_STE_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/experiment_seed_42_train_seed_42_calibration_seed_42",
     }
     for path in generated_configs:
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))

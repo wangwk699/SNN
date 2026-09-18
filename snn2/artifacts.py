@@ -26,6 +26,23 @@ def prefix_enabled_dirname(enabled: bool) -> str:
     return "prefix_enabled_ture" if enabled else "prefix_enabled_false"
 
 
+def run_seed_dirname(cfg: dict[str, Any]) -> str:
+    """Return the concrete ANN run identity for a configuration."""
+    exp_seed = int(cfg["experiment"]["seed"])
+    if cfg["experiment"]["task"] == "tulu3":
+        return (
+            f"experiment_seed_{exp_seed}_"
+            f"train_seed_{int(cfg['training']['train_seed'])}_"
+            f"calibration_seed_{int(cfg['calibration']['seed'])}"
+        )
+    return f"seed{exp_seed}"
+
+
+def data_selection_seed_dirname(cfg: dict[str, Any]) -> str:
+    """Return the seed scope for artifacts derived from Stage-A data selection."""
+    return run_seed_dirname(cfg)
+
+
 def conversion_artifact_source_dirname(use_post: bool) -> str:
     return f"use_post_finetuning_artifacts_{str(bool(use_post)).lower()}"
 
@@ -157,7 +174,9 @@ class ArtifactLayout:
         experiment_root = Path(exp["output_root"]) / exp["id"]
         task_root = experiment_root / exp["task"]
         model_root = task_root / model
-        seed = f"seed{int(exp['seed'])}"
+        experiment_seed_name = f"seed{int(exp['seed'])}"
+        run_seed_name = run_seed_dirname(cfg)
+        data_selection_seed_name = data_selection_seed_dirname(cfg)
         learning_rate = f"lr{cfg['training']['learning_rate']}"
         epochs = cfg["training"].get("num_train_epochs")
         if exp["task"] == "tldr":
@@ -191,7 +210,13 @@ class ArtifactLayout:
                 learning_rate = f"{learning_rate}_{qparam_suffix}"
 
         self.model_root = model_root
-        self.seed_name = seed
+        self.experiment_seed_name = experiment_seed_name
+        self.run_seed_name = run_seed_name
+        self.data_selection_seed_name = data_selection_seed_name
+        # Kept for callers that historically inspected this field. It now
+        # identifies the concrete run; experiment_seed_name remains for
+        # artifacts that depend only on experiment-level randomness.
+        self.seed_name = run_seed_name
         ann_prefix = bool(
             cfg.get("ann_training", {}).get(
                 "prefix_enabled", cfg.get("prefix", {}).get("enabled", False)
@@ -253,15 +278,20 @@ class ArtifactLayout:
             )
         if is_aware_ann_mode(cfg):
             run_root = run_root / calibration_trajectory_dirname(cfg)
-        self.root = run_root / seed
+        self.root = run_root / run_seed_name
         # 原始 Base 模型独立目录：
         # 不依赖 ann_mode，也不依赖 learning_rate
-        self.base_root = model_root / "base" / seed
+        self.base_root = model_root / "base" / experiment_seed_name
 
-        self.shared_task_root = task_root / "_shared" / seed
-        self.shared_model_root = model_root / "_shared" / seed
+        self.shared_task_root = task_root / "_shared" / data_selection_seed_name
+        self.shared_model_root = model_root / "_shared" / experiment_seed_name
         policy = "rotated_prefix" if cfg["rotation"]["enabled"] else "vanilla_original"
         self.policy_root = self.shared_model_root / policy
+        self.data_selection_policy_root = (
+            self.policy_root / data_selection_seed_name
+            if exp["task"] == "tulu3"
+            else self.policy_root
+        )
 
     @property
     def base_dir(self) -> Path:
@@ -320,7 +350,7 @@ class ArtifactLayout:
 
     @property
     def ann_training_prefix_base_dir(self) -> Path:
-        return self.policy_root / "pre_finetuning_prefix"
+        return self.data_selection_policy_root / "pre_finetuning_prefix"
 
     @property
     def ann_training_prefix_dir(self) -> Path:
@@ -336,7 +366,7 @@ class ArtifactLayout:
     @property
     def rotated_pre_finetuning_dir(self) -> Path:
         """Shared artifacts for evaluating the rotated Base before ANN fine-tuning."""
-        return self.shared_model_root / "rotated_prefix" / "rotated_pre_finetuning"
+        return self.data_selection_policy_root / "rotated_pre_finetuning"
 
     @property
     def rotated_pre_finetuning_config_dir(self) -> Path:
@@ -363,8 +393,7 @@ class ArtifactLayout:
             )
         )
         return _with_gif_qparam_suffix((
-            self.shared_model_root
-            / "rotated_prefix"
+            self.data_selection_policy_root
             / "ann_training_calibration"
             / prefix_enabled_dirname(enabled)
             / calibration_variant_dirname(
@@ -406,8 +435,7 @@ class ArtifactLayout:
     @property
     def vanilla_analysis_calibration_dir(self) -> Path:
         return _with_gif_qparam_suffix((
-            self.shared_model_root
-            / "vanilla_original"
+            self.data_selection_policy_root
             / "vanilla_analysis_calibration"
             / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
         ), self._cfg) / calibration_trajectory_dirname(self._source_cfg, effective=False)

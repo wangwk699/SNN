@@ -110,6 +110,50 @@ def _calibration_selection(
     return positions, [train_indices[position] for position in positions]
 
 
+def _validate_stage_a_calibration_selection(
+    train_indices: list[int],
+    calibration_positions: list[int],
+    calibration_indices: list[int],
+) -> None:
+    """Guard the Stage-A invariant and the meaning of recorded positions."""
+    expected_indices = [train_indices[position] for position in calibration_positions]
+    if expected_indices != calibration_indices:
+        raise RuntimeError(
+            "Stage-A calibration positions do not resolve to the selected ANN "
+            "training indices"
+        )
+    if not set(calibration_indices).issubset(train_indices):
+        raise RuntimeError(
+            "Stage-A calibration indices must be a subset of the selected ANN "
+            "training indices"
+        )
+
+
+def _stage_a_calibration_provenance(
+    cfg: dict[str, Any], train_indices: list[int]
+) -> dict[str, Any]:
+    """Describe the ANN selection from which Stage-A calibration was drawn."""
+    task = cfg["experiment"]["task"]
+    parent_seed = (
+        int(cfg["training"].get("tldr_train_seed", 42))
+        if task == "tldr"
+        else int(cfg["training"].get("train_seed", 42))
+    )
+    provenance = {
+        "parent_training_samples": len(train_indices),
+        "parent_training_seed": parent_seed,
+    }
+    if task == "tulu3":
+        provenance.update({
+            "selection_pool": "selected_ann_training_subset",
+            "retained_in_shared_training_pool": True,
+            "retained_in_ann_training_subset": True,
+        })
+    else:
+        provenance["retained_in_training"] = True
+    return provenance
+
+
 def _tulu3_shared_split_selection(raw_train: Any, cfg: dict[str, Any]) -> tuple[list[int], list[int]]:
     """Return fixed validation and the validation-excluded shared training pool."""
     validation_size = int(cfg["data"].get("validation_size", 1_000))
@@ -165,17 +209,17 @@ def prepare_calibration_manifest(
     """Write only the current config's Stage-A calibration manifest."""
     raw = _load_raw(cfg)
     raw_train, train_split, train_indices, _, _, _ = _manifest_split_selection(cfg, raw)
-    calibration_pool_indices = train_indices
-    if cfg["experiment"]["task"] == "tulu3":
-        _, calibration_pool_indices = _tulu3_shared_split_selection(raw_train, cfg)
     data_cfg = cfg["data"]
     calibration_num_samples = int(cfg["calibration"]["num_samples"])
     with_replacement = bool(cfg["calibration"].get("with_replacement", False))
     calibration_positions, calibration_indices = _calibration_selection(
-        calibration_pool_indices,
+        train_indices,
         seed=int(cfg["calibration"]["seed"]),
         num_samples=calibration_num_samples,
         with_replacement=with_replacement,
+    )
+    _validate_stage_a_calibration_selection(
+        train_indices, calibration_positions, calibration_indices
     )
     manifest = {
         "dataset_name": data_cfg["dataset_name"],
@@ -191,7 +235,7 @@ def prepare_calibration_manifest(
         "indices": calibration_indices,
         "record_ids": _record_ids(raw_train, calibration_indices),
         "duplicates_preserved": with_replacement,
-        **({"selection_pool": "validation_excluded_shared_training_pool", "retained_in_shared_training_pool": True, "retained_in_ann_training_subset": None} if cfg["experiment"]["task"] == "tulu3" else {"retained_in_training": True}),
+        **_stage_a_calibration_provenance(cfg, train_indices),
     }
     manifest_path = layout.calibration_data_manifest_path
     write_json(manifest_path, manifest)
@@ -214,14 +258,14 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
 
     calibration_num_samples = int(cfg["calibration"]["num_samples"])
     with_replacement = bool(cfg["calibration"].get("with_replacement", False))
-    calibration_pool_indices = train_indices
-    if task == "tulu3":
-        _, calibration_pool_indices = _tulu3_shared_split_selection(raw_train, cfg)
     calibration_positions, calibration_indices = _calibration_selection(
-        calibration_pool_indices,
+        train_indices,
         seed=int(cfg["calibration"]["seed"]),
         num_samples=calibration_num_samples,
         with_replacement=with_replacement,
+    )
+    _validate_stage_a_calibration_selection(
+        train_indices, calibration_positions, calibration_indices
     )
     canonical_positions, canonical_indices = _calibration_selection(
         list(range(len(raw_train))),
@@ -271,7 +315,7 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
             "indices": calibration_indices,
             "record_ids": _record_ids(raw_train, calibration_indices),
             "duplicates_preserved": with_replacement,
-            **({"selection_pool": "validation_excluded_shared_training_pool", "retained_in_shared_training_pool": True, "retained_in_ann_training_subset": None} if task == "tulu3" else {"retained_in_training": True}),
+            **_stage_a_calibration_provenance(cfg, train_indices),
         },
         "canonical_preprocessing_calibration": {
             **common,

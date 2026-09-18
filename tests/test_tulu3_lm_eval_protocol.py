@@ -1,11 +1,17 @@
 import random
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import pytest
 
-from snn2.data import _manifest_split_selection, prepare_manifests
+from snn2.artifacts import ArtifactLayout
+from snn2.data import (
+    _manifest_split_selection,
+    prepare_calibration_manifest,
+    prepare_manifests,
+)
 from snn2.lm_eval_protocol import (LM_EVAL_0_4_8_TASK_COT, LM_EVAL_0_4_8_TASK_METRIC, build_test_selection, correct_effective_sample_counts, prune_empty_selected_leaves,
     extract_metric_value, result_contains_metric, seconds_to_hms, selection_by_leaf, validate_lm_eval_task_specs)
 
@@ -37,11 +43,13 @@ def test_lm_eval_cot_validation_rejects_conflict():
         validate_lm_eval_task_specs(cfg)
 
 
-def test_tulu_shared_calibration_is_independent_of_ann_subset(monkeypatch, tmp_path):
+def test_tulu_stage_a_calibration_is_nested_in_ann_subset(monkeypatch, tmp_path):
     class Dataset(list):
         column_names = ()
+
         def select(self, indices):
             return Dataset(self[index] for index in indices)
+
     raw = {"train": Dataset({"id": i} for i in range(200))}
     monkeypatch.setattr("snn2.data._load_raw", lambda cfg: raw)
     base = _cfg(samples=10, seed=42)
@@ -50,9 +58,97 @@ def test_tulu_shared_calibration_is_independent_of_ann_subset(monkeypatch, tmp_p
     changed = {**base, "training": {"train_samples": 20, "train_seed": 99}}
     second = prepare_manifests(changed, type("L", (), {"data_dir": tmp_path / "two"})())
     assert first["validation"]["indices"] == second["validation"]["indices"]
-    assert first["calibration"]["indices"] == second["calibration"]["indices"]
     assert first["train"]["indices"] != second["train"]["indices"]
-    assert first["calibration"]["retained_in_ann_training_subset"] is None
+    for manifests in (first, second):
+        train = manifests["train"]["indices"]
+        calibration = manifests["calibration"]
+        assert set(calibration["indices"]).issubset(train)
+        assert [train[position] for position in calibration["positions_in_selected_train"]] == calibration["indices"]
+        assert calibration["selection_pool"] == "selected_ann_training_subset"
+        assert calibration["retained_in_ann_training_subset"] is True
+        # This is intentionally a separate rotation-regression selection.
+        assert not set(manifests["canonical_preprocessing_calibration"]["indices"]).issubset(train)
+
+
+def test_tulu_calibration_seed_changes_only_nested_calibration(monkeypatch, tmp_path):
+    class Dataset(list):
+        column_names = ()
+
+        def select(self, indices):
+            return Dataset(self[index] for index in indices)
+
+    raw = {"train": Dataset({"id": i} for i in range(200))}
+    monkeypatch.setattr("snn2.data._load_raw", lambda cfg: raw)
+    base = _cfg(samples=40, seed=42)
+    base.update({"data": {"dataset_name": "fake", "train_split": "train", "validation_size": 5}, "calibration": {"seed": 42, "num_samples": 4, "with_replacement": False}})
+    changed = {**base, "calibration": {**base["calibration"], "seed": 43}}
+    first = prepare_manifests(base, type("L", (), {"data_dir": tmp_path / "one"})())
+    second = prepare_manifests(changed, type("L", (), {"data_dir": tmp_path / "two"})())
+    assert first["train"]["indices"] == second["train"]["indices"]
+    assert first["calibration"]["indices"] != second["calibration"]["indices"]
+    assert set(first["calibration"]["indices"]).issubset(first["train"]["indices"])
+    assert set(second["calibration"]["indices"]).issubset(second["train"]["indices"])
+
+
+def test_tulu_calibration_only_matches_full_prepare(monkeypatch, tmp_path):
+    class Dataset(list):
+        column_names = ()
+
+        def select(self, indices):
+            return Dataset(self[index] for index in indices)
+
+    raw = {"train": Dataset({"id": i} for i in range(200))}
+    monkeypatch.setattr("snn2.data._load_raw", lambda cfg: raw)
+    cfg = _cfg(samples=40, seed=42)
+    cfg.update({
+        "data": {"dataset_name": "fake", "train_split": "train", "validation_size": 5},
+        "calibration": {"seed": 43, "num_samples": 4, "with_replacement": False},
+        "experiment": {**cfg["experiment"], "id": "nested", "model_name": "model", "output_root": str(tmp_path), "ann_mode": "vanilla"},
+        "rotation": {"enabled": False},
+    })
+    layout = SimpleNamespace(
+        data_dir=tmp_path / "data",
+        calibration_data_manifest_path=tmp_path / "data" / "calibration_manifest.json",
+        canonical_preprocessing_calibration_manifest_path=(
+            tmp_path / "data" / "canonical_preprocessing" / "calibration_manifest.json"
+        ),
+    )
+    full = prepare_manifests(cfg, layout)["calibration"]
+    calibration_only = prepare_calibration_manifest(cfg, layout)
+    for key in ("indices", "positions_in_selected_train", "record_ids", "calibration_seed", "num_samples"):
+        assert calibration_only[key] == full[key]
+
+
+def test_tulu_run_and_shared_data_paths_encode_all_selection_seeds():
+    cfg = _cfg(samples=10, seed=43)
+    cfg.update({
+        "data": {"validation_size": 5},
+        "calibration": {"seed": 44, "num_samples": 4, "group_size": -1},
+        "experiment": {**cfg["experiment"], "id": "nested", "model_name": "model", "output_root": "artifacts", "ann_mode": "vanilla"},
+        "training": {**cfg["training"], "learning_rate": 1e-6, "lr_scheduler_type": "cosine", "warmup_ratio": 0.0},
+        "rotation": {"enabled": True},
+        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 1.0},
+        "mtn": {"T": 4, "K": 6},
+        "conversion": {"use_post_finetuning_artifacts": True},
+    })
+    layout = ArtifactLayout(cfg)
+    assert layout.root.name == "experiment_seed_7_train_seed_43_calibration_seed_44"
+    assert layout.data_selection_seed_name == layout.root.name
+    assert layout.ann_dir.parent == layout.root
+    assert layout.post_finetuning_dir.parent == layout.root
+    assert layout.snn_dir("phase").is_relative_to(layout.root)
+    assert layout.rotation_dir.parts[-3:] == ("seed7", "rotated_prefix", "rotation")
+    changed_train = ArtifactLayout({**cfg, "training": {**cfg["training"], "train_seed": 45}})
+    changed_calibration = ArtifactLayout({**cfg, "calibration": {**cfg["calibration"], "seed": 46}})
+    changed_experiment = ArtifactLayout({**cfg, "experiment": {**cfg["experiment"], "seed": 8}})
+    for changed in (changed_train, changed_calibration, changed_experiment):
+        assert changed.root != layout.root
+    assert changed_train.calibration_data_manifest_path != layout.calibration_data_manifest_path
+    assert changed_train.ann_training_prefix_dir != layout.ann_training_prefix_dir
+    assert changed_train.ann_training_calibration_dir != layout.ann_training_calibration_dir
+    assert changed_train.rotation_dir == layout.rotation_dir
+    assert changed_calibration.ann_training_prefix_dir != layout.ann_training_prefix_dir
+    assert changed_experiment.rotation_dir != layout.rotation_dir
 
 def test_prune_empty_group_leaves():
     tree = {"group": {"a": object(), "b": object(), "c": object()}}
