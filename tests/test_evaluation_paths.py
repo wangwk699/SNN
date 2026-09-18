@@ -342,6 +342,8 @@ def test_evaluation_forward_metadata(monkeypatch, ann_mode, neuron, kind):
         cfg, layout, neuron=neuron, controller=controller
     )
     assert metadata["evaluation_forward_kind"] == kind
+    expected_phase_base = 2.0 if (neuron == "phase" or (neuron == "ann" and ann_mode == "phase_aware")) else None
+    assert metadata["phase_base"] == expected_phase_base
     assert metadata["temporal_execution"] is (neuron != "ann")
     assert metadata["evaluation_common_clip_applied"] is (
         neuron == "ann" and ann_mode in {"phase_aware", "gif_aware"}

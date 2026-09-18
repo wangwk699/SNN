@@ -100,13 +100,18 @@ def _softmax_gif_state():
 
 @pytest.mark.parametrize("kind,shape", [("last_dim_grouped", (2, 3, 4)), ("attention_head_grouped", (1, 2, 3, 4)), ("attention_head_scalar", (1, 2, 3, 7))])
 def test_phase_supports_all_grouped_layouts(kind, shape):
-    module = PhaseSurrogate(_phase_state(kind), T=4, surrogate_slope=1.0)
+    module = PhaseSurrogate(_phase_state(kind), T=4, base=2.0, surrogate_slope=1.0)
     x = torch.randn(*shape)
     assert module(x).shape == x.shape
 
 
+def test_phase_surrogate_requires_explicit_base():
+    with pytest.raises(TypeError, match="base"):
+        PhaseSurrogate(_phase_state(), T=4)
+
+
 def test_phase_hard_forward_and_temporal_sum_match():
-    module = PhaseSurrogate(_phase_state(), T=4)
+    module = PhaseSurrogate(_phase_state(), T=4, base=2.0)
     x = torch.randn(2, 3, 4)
     incoming = x.unsqueeze(0).expand(4, *x.shape) / 4
     assert torch.equal(module(x), module.temporal(incoming).sum(0))
@@ -134,13 +139,13 @@ def test_phase_base_validation_rejects_invalid_values(base):
 
 
 def test_phase_rejects_wrong_head_or_parameter_shape():
-    module = PhaseSurrogate(_phase_state("attention_head_grouped"), T=4)
+    module = PhaseSurrogate(_phase_state("attention_head_grouped"), T=4, base=2.0)
     with pytest.raises(ValueError, match="runtime shape"):
         module(torch.randn(1, 3, 2, 4))
     state = _phase_state("attention_head_grouped")
     state["tau"] = torch.ones(2, 1)
     with pytest.raises(ValueError, match="tau shape"):
-        PhaseSurrogate(state, T=4)
+        PhaseSurrogate(state, T=4, base=2.0)
 
 
 @pytest.mark.parametrize("kind,shape", [("last_dim_grouped", (2, 3, 4)), ("attention_head_grouped", (1, 2, 3, 4))])
@@ -225,15 +230,15 @@ def test_legacy_state_versions_and_metadata_are_rejected():
     state = _phase_state()
     state["format_version"] -= 1
     with pytest.raises(ValueError, match="legacy"):
-        PhaseSurrogate(state, T=4)
+        PhaseSurrogate(state, T=4, base=2.0)
     state = _phase_state()
     state["surrogate_slope"] = 1.0
     with pytest.raises(ValueError, match="surrogate_slope"):
-        PhaseSurrogate(state, T=4)
+        PhaseSurrogate(state, T=4, base=2.0)
 
 
 def test_attention_head_grouped_parameters_support_merged_runtime():
-    module = PhaseSurrogate(_phase_state("attention_head_grouped"), T=4)
+    module = PhaseSurrogate(_phase_state("attention_head_grouped"), T=4, base=2.0)
     x = torch.randn(2, 3, 8)
     assert module(x).shape == x.shape
 
@@ -390,7 +395,7 @@ def _legacy_static_gif_forward(module, x, *, role=None):
 )
 def test_phase_ann_streaming_matches_legacy_forward_and_input_gradient(kind, shape):
     torch.manual_seed(17)
-    module = PhaseSurrogate(_phase_state(kind), T=4, surrogate_slope=1.0)
+    module = PhaseSurrogate(_phase_state(kind), T=4, base=2.0, surrogate_slope=1.0)
     x = torch.randn(*shape)
     x_reference = x.detach().clone().requires_grad_(True)
     x_optimized = x.detach().clone().requires_grad_(True)
@@ -405,7 +410,7 @@ def test_phase_ann_streaming_matches_legacy_forward_and_input_gradient(kind, sha
 
 def test_phase_temporal_still_matches_legacy_encode_reference():
     torch.manual_seed(23)
-    module = PhaseSurrogate(_phase_state("attention_head_grouped"), T=4)
+    module = PhaseSurrogate(_phase_state("attention_head_grouped"), T=4, base=2.0)
     incoming = torch.randn(4, 1, 2, 3, 4)
     assert torch.equal(
         module.temporal(incoming),
@@ -527,7 +532,7 @@ def test_sequential_phase_runtime_t_mismatch_is_rejected_even_at_one():
     state = _phase_state()
     state.update({"previous_layers_snn": True, "calibration_phase_T": 4, "calibration_phase_base": 2.0})
     with pytest.raises(ValueError, match="provenance mismatch"):
-        PhaseSurrogate(state, T=1)
+        PhaseSurrogate(state, T=1, base=2.0)
 
 
 def test_sequential_mtn_runtime_signature_mismatch_is_rejected():

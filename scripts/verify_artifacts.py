@@ -26,6 +26,7 @@ from snn2.config import (
     training_prefix_enabled,
 )
 from snn2.conversion import (
+    _load_source_ann_training_runtime_provenance,
     validate_calibration,
     validate_conversion_metadata,
     validate_conversion_prefix,
@@ -251,6 +252,12 @@ def _selected_snn_prefix_summary(prefix_info):
 def _validate_aware_final_ann_training_provenance(cfg, layout):
     if is_aware_ann_mode(cfg):
         return validate_recorded_training_artifact_provenance(cfg, layout)
+    return None
+
+
+def _validate_aware_source_ann_runtime_provenance(cfg, layout):
+    if is_aware_ann_mode(cfg):
+        return _load_source_ann_training_runtime_provenance(cfg, layout)
     return None
 
 
@@ -939,6 +946,7 @@ def main():
             )
 
         _validate_aware_final_ann_training_provenance(cfg, layout)
+        _validate_aware_source_ann_runtime_provenance(cfg, layout)
 
         if cfg["rotation"]["enabled"]:
             regression_path = layout.rotation_dir / "rotation_regression.json"

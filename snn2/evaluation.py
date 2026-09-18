@@ -260,7 +260,7 @@ def evaluation_forward_metadata(
         "static_replacement_impl": implementation,
         "evaluation_common_clip_applied": clip_applied,
         "replacement_state_root": root,
-        "phase_base": float(cfg["phase"]["base"]) if neuron in {"ann", "phase"} else None,
+        "phase_base": float(cfg["phase"]["base"]) if (neuron == "phase" or (neuron == "ann" and controller.mode == "phase")) else None,
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,

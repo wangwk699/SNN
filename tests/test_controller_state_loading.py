@@ -103,13 +103,34 @@ def _write(root, site_index, name, state, *, clip=False):
     torch.save(state, directory / ("clip_state.pt" if clip else f"{name}_state.pt"))
 
 
+def test_identity_controller_does_not_default_phase_base():
+    assert SiteController(mode="identity").phase_base is None
+
+
+def test_phase_controller_requires_explicit_phase_base():
+    with pytest.raises(ValueError, match="phase_base"):
+        SiteController(mode="phase", phase_T=4, phase_surrogate_slope=1.0)
+
+
+def test_phase_deployment_and_sequential_calibration_require_explicit_base(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "snn2.controller.validate_site_state_bundle",
+        lambda *_args, **_kwargs: {"temporal_steps": {"gif": 2}},
+    )
+    controller = SiteController(site_root=tmp_path, phase_T=4)
+    with pytest.raises(ValueError, match="Phase deployment requires phase_T and phase_base"):
+        controller.set_deployment("phase", clip_bundle_policy="forbid_all")
+    with pytest.raises(ValueError, match="Sequential Phase calibration requires explicit phase_T and phase_base"):
+        controller.begin_sequential_calibration("phase", 0)
+
+
 def test_phase_state_is_runtime_t_independent_and_v0_is_derived():
     state = _phase_state()
     assert not {"T", "base", "v0", "max_spikes"}.intersection(state)
 
 
     for T in (1, 2, 4, 8):
-        module = PhaseSurrogate(state, T=T)
+        module = PhaseSurrogate(state, T=T, base=2.0)
         torch.testing.assert_close(module.v0, 0.5 * module.tau * 2.0 ** (-T))
 
 
@@ -127,7 +148,7 @@ def test_global_final_rmsnorm_phase_mtn_and_gif_topologies_are_clip_free(tmp_pat
         phase = SiteController(
             mode="phase", site_root=tmp_path,
             clip_root=tmp_path if common_clip_enabled else None,
-            common_clip_enabled=common_clip_enabled, phase_T=4, phase_surrogate_slope=1.0,
+            common_clip_enabled=common_clip_enabled, phase_T=4, phase_base=2.0, phase_surrogate_slope=1.0,
         )
         output = phase.apply_final_norm_neuron(x)
         assert output.shape == x.shape
@@ -136,7 +157,7 @@ def test_global_final_rmsnorm_phase_mtn_and_gif_topologies_are_clip_free(tmp_pat
     gif_ann = SiteController(mode="gif", site_root=tmp_path)
     assert gif_ann.apply_final_norm_neuron(x) is x
     assert gif_ann._final_norm_phase is None and gif_ann._final_norm_mtn is None
-    phase_snn = SiteController(site_root=tmp_path, phase_T=2)
+    phase_snn = SiteController(site_root=tmp_path, phase_T=2, phase_base=2.0)
     phase_snn.mode, phase_snn.temporal_steps = "deploy_phase", 2
     phase_output = phase_snn.apply_final_norm_neuron(torch.cat((x, x), dim=0))
     assert phase_output.shape == (2, 1, 4)
@@ -160,7 +181,7 @@ def test_phase_controller_loads_stage_a_and_separate_stage_b(tmp_path):
     _write(stage_b, 6, "clip", _clip_state(), clip=True)
     controller = SiteController(
         mode="phase", site_root=stage_a, clip_root=stage_b,
-        common_clip_enabled=True, phase_T=4, phase_surrogate_slope=1.0,
+        common_clip_enabled=True, phase_T=4, phase_base=2.0, phase_surrogate_slope=1.0,
     )
     output = controller.apply(0, 6, torch.full((1, 1, 4), 3.0))
     assert torch.all(output <= 0.25)
@@ -182,7 +203,7 @@ def test_phase_site1_shared_apply_does_not_clip_then_branch_clips(tmp_path):
     _write(stage_b, 1, "clip", _clip_state(roles=("q", "k", "v")), clip=True)
     controller = SiteController(
         mode="phase", site_root=stage_a, clip_root=stage_b,
-        common_clip_enabled=True, phase_T=4, phase_surrogate_slope=1.0,
+        common_clip_enabled=True, phase_T=4, phase_base=2.0, phase_surrogate_slope=1.0,
     )
     shared = controller.apply(0, 1, torch.full((1, 1, 4), 3.0))
     assert "clip" not in controller._modules[site_key(0, 1)]
@@ -200,7 +221,7 @@ def test_phase_multirole_shared_apply_never_reuses_role_clip(tmp_path, site_inde
     _write(stage_b, site_index, "clip", _clip_state(roles=roles), clip=True)
     controller = SiteController(
         mode="phase", site_root=stage_a, clip_root=stage_b,
-        common_clip_enabled=True, phase_T=4, phase_surrogate_slope=1.0,
+        common_clip_enabled=True, phase_T=4, phase_base=2.0, phase_surrogate_slope=1.0,
     )
     x = torch.full((1, 1, 4), 3.0)
     shared_before = controller.apply(0, site_index, x)
@@ -215,7 +236,7 @@ def test_deployment_uses_explicit_runtime_parameters(monkeypatch, tmp_path):
         lambda *_args, **_kwargs: {"temporal_steps": {"gif": 2}},
     )
     controller = SiteController(
-        site_root=tmp_path, phase_T=8, mtn_T=6, mtn_K=4,
+        site_root=tmp_path, phase_T=8, phase_base=2.0, mtn_T=6, mtn_K=4,
         mtn_threshold_factor=0.75,
     )
     assert controller.set_deployment("phase", clip_bundle_policy="forbid_all") == 8
@@ -226,7 +247,7 @@ def test_legacy_phase_and_mtn_runtime_fields_fail_fast():
     phase = _phase_state()
     phase["T"] = 4
     with pytest.raises(ValueError, match="pre-A/B"):
-        PhaseSurrogate(phase, T=4)
+        PhaseSurrogate(phase, T=4, base=2.0)
 
 
 def test_common_clip_requires_explicit_stage_b_root():

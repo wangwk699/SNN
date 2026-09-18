@@ -158,7 +158,7 @@ def test_blockwise_runner_e2e_uses_fresh_phase_state_and_clears_stale(monkeypatc
     cfg["calibration"].update({"phase_previous_layers_snn": True, "group_size": -1})
     cfg["phase"]["T"] = 2
     controller = SiteController(
-        mode="collect", site_root=tmp_path, phase_T=2, mtn_T=2,
+        mode="collect", site_root=tmp_path, phase_T=2, phase_base=2.0, mtn_T=2,
         mtn_K=2, mtn_threshold_factor=0.75,
     )
     model = _ToyModel(controller)
@@ -220,7 +220,7 @@ def test_gif_mse_blockwise_order_is_statistics_histogram_state_deploy(
     cfg["gif"]["mse_scale_refinement"] = True
     cfg["gif"]["mse_refinement"]["histogram_bins"] = 16
     controller = SiteController(
-        mode="collect", site_root=tmp_path, phase_T=2, mtn_T=2,
+        mode="collect", site_root=tmp_path, phase_T=2, phase_base=2.0, mtn_T=2,
         mtn_K=2, mtn_threshold_factor=0.75,
     )
     model = _ToyModel(controller)

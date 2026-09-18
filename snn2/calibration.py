@@ -100,7 +100,7 @@ def stage_a_trajectory_metadata(cfg: dict[str, Any], *, effective: bool = True) 
         "effective_previous_layers_snn": flags,
         "calibration_trajectory": details,
         "stage_a_parameter_independence": [
-            name for name, active in (("phase.T", flags["phase"]), ("mtn.T", flags["mtn"]),
+            name for name, active in (("phase.T", flags["phase"]), ("phase.base", flags["phase"]), ("mtn.T", flags["mtn"]),
                                       ("mtn.K", flags["mtn"]), ("mtn.threshold_factor", flags["mtn"]))
             if not active
         ],

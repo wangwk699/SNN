@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from .config import (
     conversion_prefix_artifact_stage,
     conversion_reuses_ann_training_artifacts,
     is_aware_ann_mode,
+    previous_layers_snn_enabled,
     training_common_clip_enabled,
     use_post_finetuning_artifacts,
     calibration_trajectory_config,
@@ -39,6 +41,83 @@ def _ann_num_hidden_layers(ann_config: Path) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ValueError(f"{ann_config} num_hidden_layers must be a positive integer")
     return value
+
+
+def _load_source_ann_training_runtime_provenance(
+    cfg: dict[str, Any], layout: ArtifactLayout
+) -> dict[str, Any]:
+    """Read the fixed runtime identity of an aware source ANN checkpoint.
+
+    This deliberately does not consult deployment overrides in ``cfg``. A
+    post-finetuning conversion may deploy with different temporal parameters,
+    while the source ANN checkpoint retains its training-time identity.
+    """
+    result_path = layout.ann_dir / "training_result.json"
+    config_path = layout.ann_checkpoint_dir / "config.json"
+    if not result_path.exists() or not config_path.exists():
+        raise FileNotFoundError(result_path if not result_path.exists() else config_path)
+    result = read_json(result_path)
+    config = read_json(config_path)
+    for key in ("ann_training_phase_T", "ann_training_mtn_T"):
+        value = result.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"Aware source ANN training provenance is missing {key}")
+    try:
+        result_base = validate_phase_base(result.get("ann_training_phase_base"))
+        config_base = validate_phase_base(config.get("snn2_phase_base"))
+    except ValueError as exc:
+        raise ValueError("Aware source ANN training provenance is missing phase base") from exc
+    config_T = config.get("snn2_phase_T")
+    if not isinstance(config_T, int) or isinstance(config_T, bool) or config_T <= 0:
+        raise ValueError("Aware source ANN checkpoint config is missing snn2_phase_T")
+    mismatch = {}
+    if int(result["ann_training_phase_T"]) != int(config_T):
+        mismatch["phase_T"] = (result["ann_training_phase_T"], config_T)
+    if not math.isclose(result_base, config_base, rel_tol=0.0, abs_tol=1e-12):
+        mismatch["phase_base"] = (result_base, config_base)
+    if mismatch:
+        raise ValueError(
+            "Aware source ANN checkpoint/config runtime provenance mismatch: "
+            f"{mismatch}"
+        )
+    return {
+        "ann_training_phase_T": int(result["ann_training_phase_T"]),
+        "ann_training_phase_base": result_base,
+        "ann_training_mtn_T": int(result["ann_training_mtn_T"]),
+    }
+
+
+def _validate_phase_deployment_calibration_runtime(
+    cfg: dict[str, Any], layout: ArtifactLayout, neuron: str | None
+) -> None:
+    """Reject deployment overrides that invalidate sequential Phase Stage-A."""
+    if neuron != "phase" or not previous_layers_snn_enabled(cfg, "phase"):
+        return
+    manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
+    if not manifest_path.exists():
+        return
+    trajectory = read_json(manifest_path).get("calibration_trajectory", {}).get("phase", {})
+    if not isinstance(trajectory, dict) or not trajectory.get("previous_layers_snn"):
+        return
+    expected_T = int(cfg["phase"]["T"])
+    expected_base = validate_phase_base(cfg["phase"]["base"])
+    actual_T = trajectory.get("phase_T")
+    actual_base = trajectory.get("phase_base")
+    matches = (
+        isinstance(actual_T, int)
+        and not isinstance(actual_T, bool)
+        and actual_T == expected_T
+        and isinstance(actual_base, (int, float))
+        and not isinstance(actual_base, bool)
+        and math.isclose(float(actual_base), expected_base, rel_tol=0.0, abs_tol=1e-12)
+    )
+    if not matches:
+        raise ValueError(
+            "Phase deployment runtime disagrees with sequential Stage-A calibration "
+            f"(calibrated phase_T={actual_T}, phase_base={actual_base}; "
+            f"deployment phase_T={expected_T}, phase_base={expected_base}). "
+            "Re-run calibration for the selected deployment parameters."
+        )
 
 
 def validate_calibration(
@@ -255,11 +334,17 @@ def _source_bundle(
         raise ValueError(f"Conversion calibration grouping provenance mismatch: {mismatch}")
     if manifest.get("prefix_enabled") != conversion_prefix_enabled(cfg):
         raise ValueError("Conversion calibration Prefix policy disagrees with config")
-    provenance = (
+    source_runtime_provenance = (
+        _load_source_ann_training_runtime_provenance(cfg, layout)
+        if is_aware_ann_mode(cfg)
+        else {}
+    )
+    frozen_training_provenance = (
         _validate_aware_training_provenance(cfg, layout, prefix, manifest_path)
         if reused and is_aware_ann_mode(cfg)
         else {}
     )
+    provenance = {**source_runtime_provenance, **frozen_training_provenance}
     return prefix, validation, manifest_path, provenance
 
 
@@ -278,6 +363,7 @@ def validate_conversion_metadata(
             f"format v{CONVERSION_METADATA_FORMAT_VERSION} is required"
         )
     validate_temporal_policy(metadata, context=str(path))
+    _validate_phase_deployment_calibration_runtime(cfg, layout, neuron)
     prefix, bundle, manifest_path, training_provenance = _source_bundle(cfg, layout)
     reused = conversion_reuses_ann_training_artifacts(cfg)
     final_norm_states = read_json(manifest_path).get("global_states", {}).get("final_rmsnorm")
@@ -344,6 +430,7 @@ def create_conversion(
     ann_config = ann_checkpoint / "config.json"
     expected_num_hidden_layers = _ann_num_hidden_layers(ann_config)
     reused = conversion_reuses_ann_training_artifacts(cfg)
+    _validate_phase_deployment_calibration_runtime(cfg, layout, neuron)
     prefix, validation, manifest_path, training_provenance = _source_bundle(cfg, layout)
     controller = SiteController(
         site_root=layout.conversion_site_dir,

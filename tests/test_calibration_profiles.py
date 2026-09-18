@@ -5,7 +5,7 @@ import pytest
 
 from snn2.calibration import (
     build_clip_state, build_site_states, materialize_calibration_states,
-    materialize_clip_profile,
+    materialize_clip_profile, stage_a_trajectory_metadata,
 )
 from snn2.sites import SITE_IDS, SITE_NAMES
 from snn2.state_validation import validate_clip_profile, validate_site_state_bundle
@@ -247,6 +247,16 @@ def test_calibration_manifest_records_saliency_and_mask_provenance(tmp_path):
         assert by_index[site]["gif_mask_roles"] == []
 
 
+def test_stage_a_parameter_independence_tracks_phase_base():
+    cfg = _cfg()
+    common = stage_a_trajectory_metadata(cfg)
+    assert {"phase.T", "phase.base"}.issubset(common["stage_a_parameter_independence"])
+    cfg["calibration"]["phase_previous_layers_snn"] = True
+    sequential = stage_a_trajectory_metadata(cfg)
+    assert "phase.T" not in sequential["stage_a_parameter_independence"]
+    assert "phase.base" not in sequential["stage_a_parameter_independence"]
+
+
 def test_stage_a_validator_rejects_runtime_field_in_manifest(tmp_path):
     _write_statistics(tmp_path)
     materialize_calibration_states(
@@ -254,7 +264,7 @@ def test_stage_a_validator_rejects_runtime_field_in_manifest(tmp_path):
     )
     path = tmp_path / "calibration_state_manifest.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    manifest["phase_T"] = 4
+    manifest["phase_base"] = 1.5
     path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="runtime-dependent fields"):
         validate_site_state_bundle(tmp_path, clip_policy="forbid_all")

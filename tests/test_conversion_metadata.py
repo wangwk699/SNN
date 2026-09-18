@@ -410,11 +410,16 @@ def _write_stage_a_fixture(root, cfg, *, post, ann_checkpoint):
     return root / "calibration_state_manifest.json"
 
 
-def _prepare_selector_fixture(tmp_path, *, ann_mode, use_post, include_training_result=False):
+def _prepare_selector_fixture(
+    tmp_path, *, ann_mode, use_post, include_training_result=False, phase_base=2.0,
+    phase_previous_layers_snn=False,
+):
     cfg = _cfg(True, ann_mode=ann_mode, use_post=use_post)
+    cfg["phase"]["base"] = phase_base
+    cfg["calibration"]["phase_previous_layers_snn"] = phase_previous_layers_snn
     layout = _SelectorLayout(tmp_path, use_post=use_post)
     layout.ann_checkpoint_dir.mkdir(parents=True)
-    (layout.ann_checkpoint_dir / "config.json").write_text(json.dumps({"num_hidden_layers": 1}), encoding="utf-8")
+    (layout.ann_checkpoint_dir / "config.json").write_text(json.dumps({"num_hidden_layers": 1, "snn2_phase_T": 4, "snn2_phase_base": 2.0}), encoding="utf-8")
     layout.rotation_dir.mkdir(parents=True)
     (layout.rotation_dir / "rotation_state.pt").write_bytes(b"rotation")
     _write_prefix_fixture(layout, layout.ann_training_prefix_dir)
@@ -500,7 +505,7 @@ def test_aware_pre_bundle_conversion_validates_frozen_provenance(tmp_path, ann_m
 
 def test_phase_aware_post_bundle_conversion_does_not_require_aware_training_provenance(monkeypatch, tmp_path):
     cfg, layout, ann_manifest, post_manifest = _prepare_selector_fixture(
-        tmp_path, ann_mode="phase_aware", use_post=True
+        tmp_path, ann_mode="phase_aware", use_post=True, include_training_result=True
     )
     monkeypatch.setattr(
         "snn2.conversion._validate_aware_training_provenance",
@@ -513,8 +518,78 @@ def test_phase_aware_post_bundle_conversion_does_not_require_aware_training_prov
     assert metadata["calibration_source_stage"] == "post_finetuning"
     assert metadata["reused_ann_training_artifacts"] is False
     assert metadata["post_finetuning_recalibration"] is True
+    assert metadata["source_ann_training_phase_T"] == 4
+    assert metadata["source_ann_training_phase_base"] == 2.0
+    assert metadata["source_ann_training_mtn_T"] == 4
     manifest = json.loads(post_manifest.read_text(encoding="utf-8"))
     assert sha256_file(post_manifest) != sha256_file(ann_manifest)
     assert manifest["source_model_stage"] == "final_ann_checkpoint"
     assert manifest["source_ann_mode"] == "phase_aware"
     assert manifest["source_ann_checkpoint"] == str(layout.ann_checkpoint_dir.resolve())
+
+
+def test_common_phase_calibration_allows_deployment_base_override(tmp_path):
+    cfg, layout, _, _ = _prepare_selector_fixture(
+        tmp_path, ann_mode="phase_aware", use_post=True, include_training_result=True
+    )
+    cfg["phase"]["base"] = 1.5
+    metadata = create_conversion(cfg, layout, "phase")
+    assert metadata["source_ann_training_phase_base"] == 2.0
+    assert metadata["deployment_phase_base"] == 1.5
+
+
+def test_sequential_phase_calibration_rejects_deployment_base_override(tmp_path):
+    cfg, layout, _, _ = _prepare_selector_fixture(
+        tmp_path, ann_mode="phase_aware", use_post=True, include_training_result=True
+    )
+    cfg["calibration"]["phase_previous_layers_snn"] = True
+    manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["calibration_trajectory"]["phase"] = {
+        "previous_layers_snn": True,
+        "source": "sequential_temporal_phase",
+        "phase_T": 4,
+        "phase_base": 2.0,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    cfg["phase"]["base"] = 1.5
+    with pytest.raises(ValueError, match="Phase deployment runtime disagrees with sequential Stage-A calibration"):
+        create_conversion(cfg, layout, "phase")
+
+
+def test_sequential_phase_calibration_allows_matching_deployment_base(monkeypatch, tmp_path):
+    cfg, layout, _, post_manifest = _prepare_selector_fixture(
+        tmp_path, ann_mode="phase_aware", use_post=True, include_training_result=True, phase_base=1.5
+    )
+    cfg["calibration"]["phase_previous_layers_snn"] = True
+    manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["calibration_trajectory"]["phase"] = {
+        "previous_layers_snn": True,
+        "source": "sequential_temporal_phase",
+        "phase_T": 4,
+        "phase_base": 1.5,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(
+        "snn2.conversion._source_bundle",
+        lambda _cfg, _layout: (
+            {
+                "prefix_source_stage": "post_finetuning",
+                "prefix_token_ids": [],
+                "prefix_state_sha256": None,
+                "prefix_kv_sha256": None,
+                "prefix_root": None,
+            },
+            {"temporal_steps": {"phase": 4}},
+            post_manifest,
+            {
+                "ann_training_phase_T": 4,
+                "ann_training_phase_base": 2.0,
+                "ann_training_mtn_T": 4,
+            },
+        ),
+    )
+    metadata = create_conversion(cfg, layout, "phase")
+    assert metadata["source_ann_training_phase_base"] == 2.0
+    assert metadata["deployment_phase_base"] == 1.5

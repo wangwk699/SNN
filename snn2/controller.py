@@ -37,7 +37,7 @@ class SiteController:
         self.common_clip_enabled = bool(common_clip_enabled)
         self.phase_surrogate_slope = None if phase_surrogate_slope is None else float(phase_surrogate_slope)
         self.phase_T = None if phase_T is None else int(phase_T)
-        self.phase_base = validate_phase_base(2.0 if phase_base is None else phase_base)
+        self.phase_base = None if phase_base is None else validate_phase_base(phase_base)
         self.mtn_T = None if mtn_T is None else int(mtn_T)
         self.mtn_K = None if mtn_K is None else int(mtn_K)
         self.mtn_threshold_factor = None if mtn_threshold_factor is None else float(mtn_threshold_factor)
@@ -104,6 +104,8 @@ class SiteController:
             raise ValueError(f"Unknown sequential calibration neuron: {neuron}")
         if block_index < 0:
             raise ValueError("block_index must be non-negative")
+        if neuron == "phase" and (self.phase_T is None or self.phase_base is None):
+            raise ValueError("Sequential Phase calibration requires explicit phase_T and phase_base")
         self.calibration_neuron, self.calibration_block_index = neuron, int(block_index)
         self.calibration_collect_current_block = True
         self.mode = "calibration_collect"

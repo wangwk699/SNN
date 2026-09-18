@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 
 from _common import apply_deployment_overrides, parser, setup
-from snn2.artifacts import write_json
+from snn2.artifacts import phase_snn_dirname, write_json
 from snn2.data import encode_tldr_generation_prompt, load_selected_raw
 from snn2.evaluation import position_ids_from_attention_mask
 from snn2.model_integration import install_model_integration, temporal_forward
@@ -197,9 +197,13 @@ def main() -> None:
         raise ValueError("max-input-tokens must be positive and decode-steps non-negative")
 
     cfg, layout = setup(args.config)
-    source_phase_T, source_mtn_T = int(cfg["phase"]["T"]), int(cfg["mtn"]["T"])
+    source_phase_T, source_phase_base, source_mtn_T = (
+        int(cfg["phase"]["T"]), float(cfg["phase"]["base"]), int(cfg["mtn"]["T"])
+    )
     cfg = apply_deployment_overrides(args, cfg)
-    output_dir = layout.root / "analysis" / "phase_conversion_regression"
+    output_dir = layout.root / "analysis" / "phase_conversion_regression" / phase_snn_dirname(
+        cfg["phase"]["base"], cfg["phase"]["T"]
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     validation = validate_phase_conversion_artifacts(cfg, layout)
     write_json(output_dir / "artifact_validation.json", validation)
@@ -229,8 +233,10 @@ def main() -> None:
         "batch_size": 1,
         "use_cache": False,
         "source_phase_T": source_phase_T,
+        "source_phase_base": source_phase_base,
         "source_mtn_T": source_mtn_T,
         "deployment_phase_T": int(cfg["phase"]["T"]),
+        "deployment_phase_base": float(cfg["phase"]["base"]),
         "deployment_mtn_T": int(cfg["mtn"]["T"]),
         "dropout": 0,
         "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()),
@@ -238,7 +244,12 @@ def main() -> None:
     write_json(output_dir / "regression_metadata.json", metadata)
 
     num_layers = int(validation["conversion"]["expected_num_hidden_layers"])
-    micro = run_phase_neuron_micro_regression(layout.ann_training_site_dir, num_layers, phase_T=int(cfg["phase"]["T"]))
+    micro = run_phase_neuron_micro_regression(
+        layout.ann_training_site_dir,
+        num_layers,
+        phase_T=int(cfg["phase"]["T"]),
+        phase_base=float(cfg["phase"]["base"]),
+    )
     primitives = run_temporal_primitive_regression(
         steps=int(validation["conversion"]["full_temporal_steps"])
     )

@@ -71,7 +71,7 @@ def load_calibration_manifest(site_root: str | Path) -> dict[str, Any]:
     runtime_free_manifest = dict(manifest)
     runtime_free_manifest.pop("calibration_trajectory", None)
     forbidden_paths = _forbidden_manifest_paths(
-        runtime_free_manifest, {"phase_T", "mtn_T", "mtn_K", "max_spikes", "v0"}
+        runtime_free_manifest, {"phase_T", "phase_base", "mtn_T", "mtn_K", "max_spikes", "v0"}
     )
     if forbidden_paths:
         raise ValueError(

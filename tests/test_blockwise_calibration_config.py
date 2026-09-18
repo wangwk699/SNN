@@ -46,7 +46,7 @@ def test_previous_layers_snn_requires_yaml_boolean(value):
 
 
 def test_sequential_collection_uses_one_logical_activation_per_sample():
-    controller = SiteController(mode="collect", phase_T=2, mtn_T=2, mtn_K=2, mtn_threshold_factor=0.75)
+    controller = SiteController(mode="collect", phase_T=2, phase_base=2.0, mtn_T=2, mtn_K=2, mtn_threshold_factor=0.75)
     controller.begin_sequential_calibration("phase", 0)
     temporal = torch.tensor([[[[1.0, 2.0]]], [[[3.0, 4.0]]]])
     controller.apply(0, 1, from_temporal(temporal))

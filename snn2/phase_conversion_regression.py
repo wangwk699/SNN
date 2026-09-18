@@ -250,7 +250,7 @@ def _selected_phase_state_paths(site_root: Path, num_layers: int) -> list[Path]:
 
 
 def run_phase_neuron_micro_regression(
-    site_root: str | Path, num_layers: int, *, phase_T: int, phase_base: float = 2.0, seed: int = 42
+    site_root: str | Path, num_layers: int, *, phase_T: int, phase_base: float, seed: int = 42
 ) -> dict[str, Any]:
     generator = torch.Generator().manual_seed(seed)
     cases = []

@@ -53,7 +53,7 @@ def _phase_state():
 @pytest.mark.parametrize("decomposition", ["first", "uniform", "random"])
 def test_phase_static_matches_temporal_sum_for_all_decompositions(decomposition):
     torch.manual_seed(101)
-    module = PhaseSurrogate(_phase_state(), T=4).eval()
+    module = PhaseSurrogate(_phase_state(), T=4, base=2.0).eval()
     x = torch.randn(2, 3, 9)
     if decomposition == "first":
         incoming = torch.cat((x.unsqueeze(0), torch.zeros(3, *x.shape)), dim=0)

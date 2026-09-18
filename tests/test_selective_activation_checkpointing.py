@@ -183,6 +183,7 @@ class _RealPhaseAttentionController:
         self.phase = PhaseSurrogate(
             _real_phase_state(layout="attention_head_scalar"),
             T=4,
+            base=2.0,
             surrogate_slope=1.0,
         )
 
@@ -200,6 +201,7 @@ class _RealPhaseMLPController:
             site: PhaseSurrogate(
                 _real_phase_state(layout="last_dim_grouped", channels=12),
                 T=4,
+                base=2.0,
                 surrogate_slope=1.0,
             )
             for site in (8, 9, 10)

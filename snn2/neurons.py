@@ -266,7 +266,7 @@ class PhaseSurrogate(nn.Module):
         state: dict[str, Any],
         *,
         T: int,
-        base: float = 2.0,
+        base: float,
         surrogate_slope: float | None = None,
     ):
         super().__init__()
