@@ -359,10 +359,13 @@ class ArtifactLayout:
 
     @property
     def rotation_regression_dir(self) -> Path:
-        """Regression artifacts scoped to the canonical preprocessing seed."""
-        return self.rotation_dir / "regression" / (
-            f"calibration_seed_{int(self._cfg['calibration']['seed'])}"
-        )
+        if self._cfg["experiment"]["task"] == "tulu3":
+            return (
+                self.rotation_dir
+                / "regression"
+                / f"calibration_seed_{int(self._cfg['calibration']['seed'])}"
+            )
+        return self.rotation_dir
 
     @property
     def rotation_regression_path(self) -> Path:
