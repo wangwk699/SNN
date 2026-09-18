@@ -7,6 +7,7 @@ from typing import Any
 import torch
 
 from .neurons import Clipper, MultiThresholdNeuron, PhaseSurrogate, gif_module_from_state
+from .phase_math import validate_phase_base
 from .sites import site_key, site_supports_clip, site_supports_clip_for_mode
 from .stats import StatisticsStore
 from .state_validation import ClipBundlePolicy, validate_site_state_bundle
@@ -22,6 +23,7 @@ class SiteController:
         clip_root: str | Path | None = None,
         common_clip_enabled: bool = False,
         phase_T: int | None = None,
+        phase_base: float | None = None,
         mtn_T: int | None = None,
         mtn_K: int | None = None,
         mtn_threshold_factor: float | None = None,
@@ -35,6 +37,7 @@ class SiteController:
         self.common_clip_enabled = bool(common_clip_enabled)
         self.phase_surrogate_slope = None if phase_surrogate_slope is None else float(phase_surrogate_slope)
         self.phase_T = None if phase_T is None else int(phase_T)
+        self.phase_base = validate_phase_base(2.0 if phase_base is None else phase_base)
         self.mtn_T = None if mtn_T is None else int(mtn_T)
         self.mtn_K = None if mtn_K is None else int(mtn_K)
         self.mtn_threshold_factor = None if mtn_threshold_factor is None else float(mtn_threshold_factor)
@@ -48,8 +51,8 @@ class SiteController:
             raise ValueError("gif_htge_t must be a positive finite number")
         self.gif_round_gradient_estimator = estimator
         self.gif_htge_t = value
-        if self.mode == "phase" and (self.phase_surrogate_slope is None or self.phase_T is None):
-            raise ValueError("Phase ANN replacement requires explicit phase_T and phase_surrogate_slope")
+        if self.mode == "phase" and (self.phase_surrogate_slope is None or self.phase_T is None or self.phase_base is None):
+            raise ValueError("Phase ANN replacement requires explicit phase_T, phase_base and phase_surrogate_slope")
         if self.mode not in {"phase", "gif"} and self.common_clip_enabled:
             raise ValueError("common_clip_enabled only applies to phase/gif ANN replacement modes")
         self.site_root = Path(site_root) if site_root is not None else None
@@ -183,7 +186,7 @@ class SiteController:
             state = torch.load(state_directory / f"{name}_state.pt", map_location="cpu", weights_only=False)
             if name == "phase":
                 modules[name] = PhaseSurrogate(
-                    state, T=int(self.phase_T),
+                    state, T=int(self.phase_T), base=float(self.phase_base),
                     surrogate_slope=self.phase_surrogate_slope if self.mode == "phase" else None,
                 )
             elif name == "mtn":
@@ -218,8 +221,8 @@ class SiteController:
         )
         self.mode = f"deploy_{neuron}"
         if neuron == "phase":
-            if self.phase_T is None:
-                raise ValueError("Phase deployment requires phase_T")
+            if self.phase_T is None or self.phase_base is None:
+                raise ValueError("Phase deployment requires phase_T and phase_base")
             self.temporal_steps = self.phase_T
         elif neuron == "mtn":
             if None in (self.mtn_T, self.mtn_K, self.mtn_threshold_factor):
@@ -367,12 +370,12 @@ class SiteController:
         if self.mode == "phase":
             if self._final_norm_phase is None:
                 state = torch.load(root / "phase_state.pt", map_location="cpu", weights_only=False)
-                self._final_norm_phase = PhaseSurrogate(state, T=int(self.phase_T), surrogate_slope=self.phase_surrogate_slope)
+                self._final_norm_phase = PhaseSurrogate(state, T=int(self.phase_T), base=float(self.phase_base), surrogate_slope=self.phase_surrogate_slope)
             module, temporal = self._final_norm_phase, False
         elif self.mode == "deploy_phase":
             if self._final_norm_phase is None:
                 state = torch.load(root / "phase_state.pt", map_location="cpu", weights_only=False)
-                self._final_norm_phase = PhaseSurrogate(state, T=int(self.phase_T))
+                self._final_norm_phase = PhaseSurrogate(state, T=int(self.phase_T), base=float(self.phase_base))
             module, temporal = self._final_norm_phase, True
         elif self.mode == "deploy_mtn":
             if self._final_norm_mtn is None:

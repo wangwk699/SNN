@@ -132,10 +132,10 @@ def test_two_stage_b_profiles_reuse_unchanged_stage_a(tmp_path):
         path.relative_to(tmp_path / "sites").as_posix(): path.read_bytes()
         for path in (tmp_path / "sites").glob("**/*_state.pt")
     }
-    first = tmp_path / "clip_profiles" / "phase_T_2_mtn_T_2"
+    first = tmp_path / "clip_profiles" / "phase_base_2_T_2_mtn_T_2"
     cfg["phase"]["T"], cfg["mtn"]["T"] = 2, 2
     materialize_clip_profile(tmp_path / "sites", first, cfg)
-    second = tmp_path / "clip_profiles" / "phase_T_4_mtn_T_8"
+    second = tmp_path / "clip_profiles" / "phase_base_2_T_4_mtn_T_8"
     cfg["phase"]["T"], cfg["mtn"]["T"] = 4, 8
     materialize_clip_profile(tmp_path / "sites", second, cfg)
     assert (first / "clip_profile_manifest.json").exists()
@@ -150,6 +150,21 @@ def test_two_stage_b_profiles_reuse_unchanged_stage_a(tmp_path):
         assert (second / relative / "clip_state.pt").exists() == (index != 5)
 
 
+def test_phase_clip_bound_uses_configured_geometric_base():
+    cfg = _cfg()
+    cfg["calibration"]["group_size"] = -1
+    states = build_site_states(_statistics(1), cfg)
+    states["phase"]["tau"] = torch.full_like(states["phase"]["tau"], 8.0)
+    states["gif"]["gif_policy"] = "identity"
+    clip = build_clip_state(
+        states["phase"], states["gif"], states["mtn"],
+        phase_T=3, phase_base=4.0, mtn_T=8,
+    )
+    expected = torch.full_like(clip["upper"], 2.625)
+    torch.testing.assert_close(clip["upper"], expected)
+    torch.testing.assert_close(clip["lower"], -expected)
+
+
 def test_mask_aware_role_specific_clip_classifies_site1_roles():
     cfg = _cfg()
     cfg["calibration"]["group_size"] = -1
@@ -160,7 +175,7 @@ def test_mask_aware_role_specific_clip_classifies_site1_roles():
         "v": torch.tensor([True, False, True, False]),
     }
     clip = build_clip_state(
-        states["phase"], states["gif"], states["mtn"], phase_T=4, mtn_T=8
+        states["phase"], states["gif"], states["mtn"], phase_T=4, phase_base=2.0, mtn_T=8
     )
     assert clip["clip_role_policy"] == "role_specific"
     assert clip["clip_roles"] == ["q", "k", "v"]
@@ -252,7 +267,7 @@ def test_clip_profile_validator_rejects_tampered_site_summary(tmp_path):
     materialize_calibration_states(
         site_root, cfg, expected_num_hidden_layers=1
     )
-    profile_root = tmp_path / "phase_T_4_mtn_T_4"
+    profile_root = tmp_path / "phase_base_2_T_4_mtn_T_4"
     materialize_clip_profile(site_root, profile_root, cfg)
     summary_path = next(profile_root.glob("layer_*/site_*/calibration_summary.json"))
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -263,6 +278,7 @@ def test_clip_profile_validator_rejects_tampered_site_summary(tmp_path):
             site_root,
             profile_root,
             phase_T=4,
+            phase_base=2.0,
             mtn_T=4,
             group_size=-1,
             num_samples=128,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -7,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .phase_math import format_phase_base
 from .config import (
     conversion_prefix_enabled,
     calibration_trajectory_config,
@@ -41,9 +43,9 @@ def ann_run_variant_dirname(
     return result
 
 
-def phase_training_dirname(*, phase_T: Any, mtn_T: Any, surrogate_slope: Any, warmup_ratio: Any) -> str:
+def phase_training_dirname(*, phase_base: Any, phase_T: Any, mtn_T: Any, surrogate_slope: Any, warmup_ratio: Any) -> str:
     return (
-        f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}_"
+        f"phase_base_{format_phase_base(phase_base)}_T_{int(phase_T)}_mtn_T_{int(mtn_T)}_"
         f"surrogate_slope_{float(surrogate_slope)}"
         f"_warmup_ratio_{float(warmup_ratio)}"
     )
@@ -51,6 +53,7 @@ def phase_training_dirname(*, phase_T: Any, mtn_T: Any, surrogate_slope: Any, wa
 
 def gif_training_dirname(
     *,
+    phase_base: Any,
     phase_T: Any,
     mtn_T: Any,
     warmup_ratio: Any,
@@ -72,7 +75,7 @@ def gif_training_dirname(
         )
     else:
         raise ValueError("round_gradient_estimator must be STE or HTGE")
-    result = f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}_{estimator_suffix}"
+    result = f"phase_base_{format_phase_base(phase_base)}_T_{int(phase_T)}_mtn_T_{int(mtn_T)}_{estimator_suffix}"
     if lr_scheduler_type is not None:
         result += f"_lr_scheduler_type_{lr_scheduler_type}"
     result += f"_warmup_ratio_{float(warmup_ratio)}"
@@ -85,12 +88,12 @@ def lm_eval_spec_dirname(spec: dict[str, Any]) -> str:
     return f"num_fewshot_{int(spec['num_fewshot'])}_cot_{str(bool(spec['cot'])).lower()}_test_samples_{samples}_test_seed_{int(spec['test_seed'])}"
 
 
-def clip_profile_dirname(phase_T: Any, mtn_T: Any) -> str:
-    return f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}"
+def clip_profile_dirname(phase_base: Any, phase_T: Any, mtn_T: Any) -> str:
+    return f"phase_base_{format_phase_base(phase_base)}_T_{int(phase_T)}_mtn_T_{int(mtn_T)}"
 
 
-def phase_snn_dirname(phase_T: Any) -> str:
-    return f"phase_T_{int(phase_T)}"
+def phase_snn_dirname(phase_base: Any, phase_T: Any) -> str:
+    return f"phase_base_{format_phase_base(phase_base)}_T_{int(phase_T)}"
 
 
 def mtn_snn_dirname(mtn_T: Any, mtn_K: Any) -> str:
@@ -128,7 +131,7 @@ def calibration_trajectory_dirname(cfg: dict[str, Any], *, effective: bool = Tru
     flags = trajectory["effective_previous_layers_snn"]
     pieces = [f"{name}_previous_layers_snn_{str(flags[name]).lower()}" for name in ("phase", "gif", "mtn")]
     if flags["phase"]:
-        pieces.append(f"phase_T_{trajectory['phase_T']}")
+        pieces.append(f"phase_base_{format_phase_base(trajectory['phase_base'])}_T_{trajectory['phase_T']}")
     if flags["gif"]:
         pieces.append(f"gif_temporal_steps_{trajectory['gif_temporal_steps']}")
     if flags["mtn"]:
@@ -144,6 +147,11 @@ def safe_name(value: str) -> str:
 class ArtifactLayout:
     def __init__(self, cfg: dict[str, Any]):
         self._cfg = cfg
+        # Source artifact identity remains fixed when deployment overrides mutate cfg.
+        self._source_cfg = copy.deepcopy(cfg)
+        self._training_phase_base = self._source_cfg["phase"]["base"]
+        self._training_phase_T = self._source_cfg["phase"]["T"]
+        self._training_mtn_T = self._source_cfg["mtn"]["T"]
         exp = cfg["experiment"]
         model = safe_name(exp["model_name"])
         experiment_root = Path(exp["output_root"]) / exp["id"]
@@ -207,7 +215,7 @@ class ArtifactLayout:
             )
         if exp["ann_mode"] == "phase_aware":
             run_root = run_root / phase_training_dirname(
-                phase_T=cfg["phase"]["T"], mtn_T=cfg["mtn"]["T"],
+                phase_base=cfg["phase"]["base"], phase_T=cfg["phase"]["T"], mtn_T=cfg["mtn"]["T"],
                 surrogate_slope=cfg["phase"]["surrogate_slope"],
                 warmup_ratio=cfg["training"]["warmup_ratio"],
             )
@@ -228,7 +236,7 @@ class ArtifactLayout:
             if not isinstance(gif, dict):
                 raise ValueError("gif configuration must be a mapping")
             run_root = run_root / gif_training_dirname(
-                phase_T=cfg["phase"]["T"], mtn_T=cfg["mtn"]["T"],
+                phase_base=cfg["phase"]["base"], phase_T=cfg["phase"]["T"], mtn_T=cfg["mtn"]["T"],
                 warmup_ratio=cfg["training"]["warmup_ratio"],
                 round_gradient_estimator=gif.get("round_gradient_estimator", "STE"),
                 htge_t=gif.get("htge_t", 16.0),
@@ -363,7 +371,7 @@ class ArtifactLayout:
                 self._cfg["calibration"]["group_size"],
                 self._cfg["calibration"]["num_samples"],
             )
-        ), self._cfg) / calibration_trajectory_dirname(self._cfg)
+        ), self._cfg) / f"phase_base_{format_phase_base(self._training_phase_base)}" / calibration_trajectory_dirname(self._source_cfg)
 
     @property
     def ann_training_site_dir(self) -> Path:
@@ -376,7 +384,7 @@ class ArtifactLayout:
     @property
     def ann_training_clip_profile_dir(self) -> Path:
         return self.ann_training_clip_profiles_dir / clip_profile_dirname(
-            self._cfg["phase"]["T"], self._cfg["mtn"]["T"]
+            self._training_phase_base, self._training_phase_T, self._training_mtn_T
         )
 
     @property
@@ -402,7 +410,7 @@ class ArtifactLayout:
             / "vanilla_original"
             / "vanilla_analysis_calibration"
             / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
-        ), self._cfg) / calibration_trajectory_dirname(self._cfg, effective=False)
+        ), self._cfg) / f"phase_base_{format_phase_base(self._training_phase_base)}" / calibration_trajectory_dirname(self._source_cfg, effective=False)
 
     @property
     def vanilla_analysis_site_dir(self) -> Path:
@@ -465,7 +473,7 @@ class ArtifactLayout:
             / "conversion_calibration"
             / prefix_enabled_dirname(enabled)
             / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
-        ), self._cfg) / calibration_trajectory_dirname(self._cfg)
+        ), self._cfg) / f"phase_base_{format_phase_base(self._training_phase_base)}" / calibration_trajectory_dirname(self._source_cfg)
 
     @property
     def post_finetuning_site_dir(self) -> Path:
@@ -477,7 +485,7 @@ class ArtifactLayout:
 
     @property
     def post_finetuning_clip_profile_dir(self) -> Path:
-        return self.post_finetuning_clip_profiles_dir / clip_profile_dirname(self._cfg["phase"]["T"], self._cfg["mtn"]["T"])
+        return self.post_finetuning_clip_profiles_dir / clip_profile_dirname(self._training_phase_base, self._training_phase_T, self._training_mtn_T)
 
     @property
     def post_finetuning_clip_profile_config_dir(self) -> Path:
@@ -529,9 +537,9 @@ class ArtifactLayout:
             result = _with_gif_qparam_suffix(base / calibration_variant_dirname(
                 self._cfg["calibration"]["group_size"],
                 self._cfg["calibration"]["num_samples"],
-            ), self._cfg) / calibration_trajectory_dirname(self._cfg) / neuron
+            ), self._cfg) / calibration_trajectory_dirname(self._source_cfg) / neuron
         if neuron == "phase":
-            return result / phase_snn_dirname(self._cfg["phase"]["T"])
+            return result / phase_snn_dirname(self._cfg["phase"]["base"], self._cfg["phase"]["T"])
         if neuron == "mtn":
             return result / mtn_snn_dirname(self._cfg["mtn"]["T"], self._cfg["mtn"]["K"])
         return result

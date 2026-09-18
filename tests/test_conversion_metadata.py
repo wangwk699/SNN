@@ -166,8 +166,10 @@ def _prepare(tmp_path, *, rotation_enabled=False):
         "calibration_group_size": -1,
         "calibration_num_samples": 128,
         "source_ann_training_phase_T": None,
+        "source_ann_training_phase_base": None,
         "source_ann_training_mtn_T": None,
         "deployment_phase_T": None,
+        "deployment_phase_base": None,
         "deployment_mtn_T": None,
         "deployment_mtn_K": None,
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
@@ -442,6 +444,7 @@ def _prepare_selector_fixture(tmp_path, *, ann_mode, use_post, include_training_
             "ann_training_calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
             "statistics_format_version": STATISTICS_FORMAT_VERSION,
             "ann_training_phase_T": 4,
+            "ann_training_phase_base": 2.0,
             "ann_training_mtn_T": 4,
             "ann_training_calibration_num_samples": 128,
             "ann_training_clip_profile_root": str(profile_root.resolve()),
@@ -485,6 +488,7 @@ def test_aware_pre_bundle_conversion_validates_frozen_provenance(tmp_path, ann_m
     assert metadata["reused_ann_training_artifacts"] is True
     assert metadata["post_finetuning_recalibration"] is False
     assert metadata["source_ann_training_phase_T"] == 4
+    assert metadata["source_ann_training_phase_base"] == 2.0
     assert metadata["source_ann_training_mtn_T"] == 4
     result_path = layout.ann_dir / "training_result.json"
     result = json.loads(result_path.read_text(encoding="utf-8"))

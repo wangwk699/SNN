@@ -80,6 +80,7 @@ def capture_training_artifact_provenance(
             layout.ann_training_site_dir,
             layout.ann_training_clip_profile_dir,
             phase_T=int(cfg["phase"]["T"]),
+            phase_base=float(cfg["phase"]["base"]),
             mtn_T=int(cfg["mtn"]["T"]),
             group_size=int(cfg["calibration"]["group_size"]),
             num_samples=int(cfg["calibration"]["num_samples"]),
@@ -111,6 +112,7 @@ def capture_training_artifact_provenance(
             "ann_training_clip_profile_manifest_sha256": sha256_file(profile_manifest),
             "ann_training_calibration_num_samples": expected_samples,
             "ann_training_phase_T": int(cfg["phase"]["T"]),
+            "ann_training_phase_base": float(cfg["phase"]["base"]),
             "ann_training_mtn_T": int(cfg["mtn"]["T"]),
             "ann_training_phase_previous_layers_snn": trajectory["effective_previous_layers_snn"]["phase"],
             "ann_training_gif_previous_layers_snn": trajectory["effective_previous_layers_snn"]["gif"],
@@ -170,6 +172,7 @@ def validate_recorded_training_artifact_provenance(
         "ann_training_clip_profile_manifest_sha256",
         "ann_training_calibration_num_samples",
         "ann_training_phase_T",
+        "ann_training_phase_base",
         "ann_training_mtn_T",
         "ann_training_phase_previous_layers_snn",
         "ann_training_gif_previous_layers_snn",
@@ -213,6 +216,7 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         clip_root=layout.ann_training_clip_profile_dir,
         common_clip_enabled=common_clip_enabled,
         phase_T=int(cfg["phase"]["T"]),
+        phase_base=float(cfg["phase"]["base"]),
         mtn_T=int(cfg["mtn"]["T"]),
         mtn_K=int(cfg["mtn"]["K"]),
         mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
@@ -231,13 +235,15 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         validate_clip_profile(
             layout.ann_training_site_dir,
             layout.ann_training_clip_profile_dir,
-            phase_T=int(cfg["phase"]["T"]), mtn_T=int(cfg["mtn"]["T"]),
+            phase_T=int(cfg["phase"]["T"]), phase_base=float(cfg["phase"]["base"]), mtn_T=int(cfg["mtn"]["T"]),
             group_size=int(cfg["calibration"]["group_size"]),
             num_samples=int(cfg["calibration"]["num_samples"]),
         )
     if cfg["rotation"]["enabled"] or mode != "none":
         install_model_integration(model, controller, rotation_state(cfg, layout))
     model.config.snn2_ann_mode = cfg["experiment"]["ann_mode"]
+    model.config.snn2_phase_T = int(cfg["phase"]["T"])
+    model.config.snn2_phase_base = float(cfg["phase"]["base"])
     model.config.snn2_ann_common_clip_enabled = common_clip_enabled
     if mode == "gif":
         model.config.snn2_gif_round_gradient_estimator = cfg["gif"]["round_gradient_estimator"]

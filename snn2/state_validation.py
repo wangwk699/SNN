@@ -6,7 +6,8 @@ from typing import Any, Literal
 
 import torch
 
-from .artifacts import sha256_file
+from .artifacts import clip_profile_dirname, sha256_file
+from .phase_math import phase_representable_bound, validate_phase_base
 from .neurons import (
     Clipper, MultiThresholdNeuron, PhaseSurrogate, gif_module_from_state,
     validate_mtn_state_schema, validate_phase_state_schema,
@@ -118,13 +119,13 @@ def _clip_classification(mask_low: torch.Tensor, layout: dict[str, Any]) -> torc
 
 
 def _expected_clip_intervals(
-    phase: dict[str, Any], gif: dict[str, Any], mtn: dict[str, Any], *, phase_T: int, mtn_T: int
+    phase: dict[str, Any], gif: dict[str, Any], mtn: dict[str, Any], *, phase_T: int, phase_base: float, mtn_T: int
 ) -> tuple[dict[str, tuple[torch.Tensor, torch.Tensor]], dict[str, torch.Tensor]]:
     layout = {key: phase[key] for key in (
         "parameter_layout", "configured_group_size", "group_size", "num_heads",
         "channels_per_head", "groups_per_head",
     )}
-    phase_bound = phase["tau"].double() * (1.0 - 2.0 ** (-int(phase_T)))
+    phase_bound = phase_representable_bound(phase["tau"].double(), T=int(phase_T), base=phase_base)
     mtn_bound = mtn["base_scale"].double() * int(mtn_T)
     base = (torch.maximum(-phase_bound, -mtn_bound), torch.minimum(phase_bound, mtn_bound))
     if gif["gif_policy"] == GIF_IDENTITY_POLICY:
@@ -164,13 +165,14 @@ def _validate_clip_semantics(
     state: dict[str, Any],
     *,
     phase_T: int,
+    phase_base: float,
     mtn_T: int,
 ) -> None:
     phase = torch.load(stage_a_directory / "phase_state.pt", map_location="cpu", weights_only=False)
     gif = torch.load(stage_a_directory / "gif_state.pt", map_location="cpu", weights_only=False)
     mtn = torch.load(stage_a_directory / "mtn_state.pt", map_location="cpu", weights_only=False)
     intervals, classifications = _expected_clip_intervals(
-        phase, gif, mtn, phase_T=phase_T, mtn_T=mtn_T
+        phase, gif, mtn, phase_T=phase_T, phase_base=phase_base, mtn_T=mtn_T
     )
     if state.get("clip_role_policy") == "role_specific":
         actual = {
@@ -212,6 +214,7 @@ def validate_clip_profile(
     clip_root: str | Path,
     *,
     phase_T: int,
+    phase_base: float,
     mtn_T: int,
     group_size: int,
     num_samples: int,
@@ -227,7 +230,7 @@ def validate_clip_profile(
         "calibration_phase": "B",
         "phase_T": int(phase_T),
         "mtn_T": int(mtn_T),
-        "phase_base": 2.0,
+        "phase_base": validate_phase_base(phase_base),
         "calibration_group_size": int(group_size),
         "calibration_num_samples": int(num_samples),
         "stage_a_root": str(stage_a_root.resolve()),
@@ -242,10 +245,9 @@ def validate_clip_profile(
         for key, value in expected.items()
         if profile.get(key) != value
     }
-    if root.name != f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}":
-        mismatched["profile_dirname"] = (
-            f"phase_T_{int(phase_T)}_mtn_T_{int(mtn_T)}", root.name
-        )
+    expected_dirname = clip_profile_dirname(phase_base, phase_T, mtn_T)
+    if root.name != expected_dirname:
+        mismatched["profile_dirname"] = (expected_dirname, root.name)
     if mismatched:
         raise ValueError(f"Stage B Clip profile provenance mismatch: {mismatched}")
     validate_temporal_policy(profile, context=str(path))
@@ -285,7 +287,12 @@ def validate_clip_profile(
         if not clip_path.exists() or summary.get("clip_state_sha256") != sha256_file(clip_path):
             raise ValueError(f"Stage B Clip state hash mismatch: {clip_path}")
         state = torch.load(clip_path, map_location="cpu", weights_only=False)
-        if state.get("phase_T") != int(phase_T) or state.get("mtn_T") != int(mtn_T):
+        if (
+            state.get("phase_T") != int(phase_T)
+            or state.get("mtn_T") != int(mtn_T)
+            or not isinstance(state.get("phase_base"), (int, float))
+            or abs(float(state["phase_base"]) - validate_phase_base(phase_base)) > 1e-12
+        ):
             raise ValueError(f"Stage B Clip runtime bounds differ from profile: {clip_path}")
         Clipper(state)
         expected_roles = GIF_MULTI_MASK_ROLES.get(site_index)
@@ -297,7 +304,7 @@ def validate_clip_profile(
         if expected_roles is None and state.get("clip_role_policy") != "single":
             raise ValueError(f"Invalid single-role Clip schema at {clip_path}")
         _validate_clip_semantics(
-            stage_a_root / key, summary, state, phase_T=phase_T, mtn_T=mtn_T
+            stage_a_root / key, summary, state, phase_T=phase_T, phase_base=phase_base, mtn_T=mtn_T
         )
     return profile
 
@@ -315,7 +322,11 @@ def _validate_state_runtime_provenance(
     if not recorded or cfg is None:
         return
     if kind == "phase":
-        if state.get("calibration_phase_T") != int(cfg["phase"]["T"]):
+        if (
+            state.get("calibration_phase_T") != int(cfg["phase"]["T"])
+            or not isinstance(state.get("calibration_phase_base"), (int, float))
+            or abs(float(state["calibration_phase_base"]) - validate_phase_base(cfg["phase"]["base"])) > 1e-12
+        ):
             raise ValueError(f"Phase sequential-calibration runtime provenance mismatch: {context}")
     else:
         expected = (int(cfg["mtn"]["T"]), int(cfg["mtn"]["K"]), float(cfg["mtn"]["threshold_factor"]))

@@ -1,3 +1,4 @@
+import argparse
 import json
 from pathlib import Path
 
@@ -102,9 +103,9 @@ def test_aware_run_root_records_common_clip_variant(mode, enabled):
     variant_dir = layout.root.parent.parent.parent
     assert variant_dir.name == expected
     expected_training = (
-        "phase_T_4_mtn_T_4_surrogate_slope_1.0_warmup_ratio_0.03"
+        "phase_base_2_T_4_mtn_T_4_surrogate_slope_1.0_warmup_ratio_0.03"
         if mode == "phase_aware"
-        else "phase_T_4_mtn_T_4_round_gradient_estimator_STE_warmup_ratio_0.03"
+        else "phase_base_2_T_4_mtn_T_4_round_gradient_estimator_STE_warmup_ratio_0.03"
     )
     assert layout.root.parent.parent.name == expected_training
     assert layout.root.parent.parent.parent.parent.name == "num_samples_128_lr1e-06_calibration_group_size_-1"
@@ -120,8 +121,8 @@ def test_phase_aware_run_root_records_slope_and_warmup_ratio():
 
     assert first.root.parent.name == calibration_trajectory_dirname(first_cfg)
     assert second.root.parent.name == calibration_trajectory_dirname(second_cfg)
-    assert first.root.parent.parent.name == "phase_T_4_mtn_T_4_surrogate_slope_1.0_warmup_ratio_0.03"
-    assert second.root.parent.parent.name == "phase_T_4_mtn_T_4_surrogate_slope_0.5_warmup_ratio_0.1"
+    assert first.root.parent.parent.name == "phase_base_2_T_4_mtn_T_4_surrogate_slope_1.0_warmup_ratio_0.03"
+    assert second.root.parent.parent.name == "phase_base_2_T_4_mtn_T_4_surrogate_slope_0.5_warmup_ratio_0.1"
     assert first.root.parent.parent.parent.parent.name == "num_samples_128_lr1e-06_calibration_group_size_-1"
     assert first.root != second.root
     assert first.ann_training_prefix_dir == second.ann_training_prefix_dir
@@ -166,7 +167,7 @@ def test_aware_snn_path_contains_group_size_exactly_once(mode):
     assert sum(
         part.count("calibration_group_size_-1") for part in path.parts
     ) == 1
-    assert path.parts[-3:] == ("use_post_finetuning_artifacts_true", "phase", "phase_T_4")
+    assert path.parts[-3:] == ("use_post_finetuning_artifacts_true", "phase", "phase_base_2_T_4")
     assert "num_samples_128_lr1e-06_calibration_group_size_-1" in path.parts
 
 @pytest.mark.parametrize("mode", ["vanilla", "unaware"])
@@ -176,7 +177,7 @@ def test_identity_ann_snn_path_groups_below_snn(mode):
     assert path.parts.count("calibration_group_size_-1_num_samples_128") == 1
     assert path.parts.count("calibration_group_size_-1_num_samples_128") == 1
     assert path.parts[-5:] == (
-        "use_post_finetuning_artifacts_true", "calibration_group_size_-1_num_samples_128", calibration_trajectory_dirname(_cfg(mode)), "phase", "phase_T_4"
+        "use_post_finetuning_artifacts_true", "calibration_group_size_-1_num_samples_128", calibration_trajectory_dirname(_cfg(mode)), "phase", "phase_base_2_T_4"
     )
 
 def test_calibration_config_logs_and_sites_are_group_isolated_but_shared_inputs_are_not():
@@ -281,13 +282,18 @@ def test_deployment_override_keeps_aware_training_root_and_changes_snn_path():
     training_root = layout.root
     checkpoint = layout.ann_checkpoint_dir
 
-    cfg["phase"]["T"] = 8
+    from scripts._common import apply_deployment_overrides
+
+    apply_deployment_overrides(
+        argparse.Namespace(neuron="phase", phase_T=8, phase_base=1.5, mtn_T=None, mtn_K=None),
+        cfg,
+    )
     cfg["mtn"]["T"] = 9
     cfg["mtn"]["K"] = 12
 
     assert layout.root == training_root
     assert layout.ann_checkpoint_dir == checkpoint
-    assert layout.snn_dir("phase").parts[-2:] == ("phase", "phase_T_8")
+    assert layout.snn_dir("phase").parts[-2:] == ("phase", "phase_base_1.5_T_8")
     assert layout.snn_dir("mtn").parts[-2:] == ("mtn", "mtn_T_9_mtn_K_12")
 
 def test_vanilla_ann_and_snn_evaluation_prefix_stages_are_distinct(tmp_path):

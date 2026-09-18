@@ -170,7 +170,7 @@ def build_evaluation_controller(
             validate_clip_profile(
                 layout.ann_training_site_dir,
                 layout.ann_training_clip_profile_dir,
-                phase_T=int(cfg["phase"]["T"]), mtn_T=int(cfg["mtn"]["T"]),
+                phase_T=int(cfg["phase"]["T"]), phase_base=float(cfg["phase"]["base"]), mtn_T=int(cfg["mtn"]["T"]),
                 group_size=int(cfg["calibration"]["group_size"]),
                 num_samples=int(cfg["calibration"]["num_samples"]),
             )
@@ -185,6 +185,7 @@ def build_evaluation_controller(
             site_root=layout.ann_training_site_dir if aware else None,
             clip_root=layout.ann_training_clip_profile_dir if aware else None,
             phase_T=int(cfg["phase"]["T"]),
+            phase_base=float(cfg["phase"]["base"]),
             mtn_T=int(cfg["mtn"]["T"]),
             mtn_K=int(cfg["mtn"]["K"]),
             mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
@@ -207,6 +208,7 @@ def build_evaluation_controller(
         mode="identity",
         site_root=layout.conversion_site_dir,
         phase_T=int(cfg["phase"]["T"]),
+        phase_base=float(cfg["phase"]["base"]),
         mtn_T=int(cfg["mtn"]["T"]),
         mtn_K=int(cfg["mtn"]["K"]),
         mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
@@ -258,6 +260,7 @@ def evaluation_forward_metadata(
         "static_replacement_impl": implementation,
         "evaluation_common_clip_applied": clip_applied,
         "replacement_state_root": root,
+        "phase_base": float(cfg["phase"]["base"]) if neuron in {"ann", "phase"} else None,
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
         "softmax_site5_gif_policy": SOFTMAX_SITE5_GIF_POLICY,

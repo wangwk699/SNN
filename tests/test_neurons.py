@@ -11,6 +11,7 @@ from snn2.neurons import (
     _mask_values,
     gif_module_from_state,
 )
+from snn2.phase_math import validate_phase_base
 from snn2.phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE,
     MTN_BASE_SCALE_CALIBRATION,
@@ -109,6 +110,27 @@ def test_phase_hard_forward_and_temporal_sum_match():
     x = torch.randn(2, 3, 4)
     incoming = x.unsqueeze(0).expand(4, *x.shape) / 4
     assert torch.equal(module(x), module.temporal(incoming).sum(0))
+
+
+def test_phase_non_binary_base_amplitudes_and_v0():
+    state = _phase_state()
+    state["tau"] = torch.full_like(state["tau"], 8.0)
+    module = PhaseSurrogate(state, T=3, base=4.0)
+    torch.testing.assert_close(module.v0, torch.full_like(module.v0, 0.0625))
+    encoded = module.encode(torch.full((1, 4), 2.7), return_temporal=True)
+    expected = torch.tensor([2.0, 0.5, 0.125]).view(3, 1, 1).expand_as(encoded)
+    torch.testing.assert_close(encoded, expected)
+
+
+@pytest.mark.parametrize("base", [1.01, 1.25, 1.5, 2.0, 3.0])
+def test_phase_base_validation_accepts_finite_values_above_one(base):
+    assert validate_phase_base(base) == base
+
+
+@pytest.mark.parametrize("base", [1.0, 0.0, -1.0, float("inf"), float("-inf"), float("nan"), "invalid", True])
+def test_phase_base_validation_rejects_invalid_values(base):
+    with pytest.raises(ValueError, match="phase.base"):
+        validate_phase_base(base)
 
 
 def test_phase_rejects_wrong_head_or_parameter_shape():
@@ -503,7 +525,7 @@ def test_static_gif_ann_mixed_quant_matches_legacy_clamp_boundary_gradients():
 
 def test_sequential_phase_runtime_t_mismatch_is_rejected_even_at_one():
     state = _phase_state()
-    state.update({"previous_layers_snn": True, "calibration_phase_T": 4})
+    state.update({"previous_layers_snn": True, "calibration_phase_T": 4, "calibration_phase_base": 2.0})
     with pytest.raises(ValueError, match="provenance mismatch"):
         PhaseSurrogate(state, T=1)
 

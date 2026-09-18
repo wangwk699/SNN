@@ -998,6 +998,7 @@ def main():
                 layout.ann_training_site_dir,
                 training_profile_root,
                 phase_T=int(training_result["ann_training_phase_T"]),
+                phase_base=float(training_result["ann_training_phase_base"]),
                 mtn_T=int(training_result["ann_training_mtn_T"]),
                 group_size=int(training_result["ann_training_calibration_group_size"]),
                 num_samples=int(training_result["ann_training_calibration_num_samples"]),

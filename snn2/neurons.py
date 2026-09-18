@@ -6,6 +6,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from .phase_math import validate_phase_base
 from .phase_statistics import (
     PHASE_TAU_ACCUMULATOR_DTYPE,
     MTN_BASE_SCALE_CALIBRATION,
@@ -210,6 +211,10 @@ def validate_phase_state_schema(state: dict[str, Any]) -> None:
         recorded = state.get("calibration_phase_T")
         if not isinstance(recorded, int) or recorded <= 0:
             raise ValueError("Phase sequential-calibration T provenance is invalid")
+        try:
+            validate_phase_base(state.get("calibration_phase_base"))
+        except ValueError as exc:
+            raise ValueError("Phase sequential-calibration base provenance is invalid") from exc
     elif "previous_layers_snn" in state and state.get("previous_layers_snn") is not False:
         raise ValueError("Phase state is missing previous_layers_snn provenance")
     layout = _state_layout(state)
@@ -261,6 +266,7 @@ class PhaseSurrogate(nn.Module):
         state: dict[str, Any],
         *,
         T: int,
+        base: float = 2.0,
         surrogate_slope: float | None = None,
     ):
         super().__init__()
@@ -283,16 +289,23 @@ class PhaseSurrogate(nn.Module):
         self.T = int(T)
         if self.T <= 0:
             raise ValueError("Phase T must be positive")
+        self.base = validate_phase_base(base)
         if state.get("previous_layers_snn") is True:
-            recorded = state.get("calibration_phase_T")
-            if not isinstance(recorded, int) or recorded != self.T:
-                raise ValueError("Phase sequential-calibration T provenance mismatch")
+            recorded_T = state.get("calibration_phase_T")
+            recorded_base = state.get("calibration_phase_base")
+            if (
+                not isinstance(recorded_T, int)
+                or recorded_T != self.T
+                or not isinstance(recorded_base, (int, float))
+                or not math.isclose(float(recorded_base), self.base, rel_tol=0.0, abs_tol=1e-12)
+            ):
+                raise ValueError("Phase sequential-calibration runtime provenance mismatch")
         self.layout = _state_layout(state)
         self.slope = None if surrogate_slope is None else float(surrogate_slope)
         if self.slope is not None and (not math.isfinite(self.slope) or self.slope <= 0.0):
             raise ValueError("Phase surrogate_slope must be a positive finite number")
         self.register_buffer("tau", state["tau"].float())
-        self.register_buffer("v0", (0.5 * self.tau * 2.0 ** (-self.T)).float())
+        self.register_buffer("v0", (0.5 * self.tau * self.base ** (-self.T)).float())
         _require_parameter_shape("Phase tau", self.tau, self.layout)
         if not torch.isfinite(self.tau).all() or torch.any(self.tau < NEURON_PARAMETER_CLAMP_MIN) or torch.any(self.tau > NEURON_PARAMETER_CLAMP_MAX):
             raise ValueError("Phase tau must be finite and materialized within the clamp range")
@@ -304,7 +317,7 @@ class PhaseSurrogate(nn.Module):
         membrane = x.abs() + v0
         outputs = []
         for timestep in range(self.T):
-            amplitude = tau * 2.0 ** (-(timestep + 1))
+            amplitude = tau * self.base ** (-(timestep + 1))
             distance = membrane - amplitude
             spike = (
                 (distance > 0).to(distance.dtype)
@@ -323,7 +336,7 @@ class PhaseSurrogate(nn.Module):
         membrane = x.abs() + v0
         accumulated = None
         for timestep in range(self.T):
-            amplitude = tau * 2.0 ** (-(timestep + 1))
+            amplitude = tau * self.base ** (-(timestep + 1))
             distance = membrane - amplitude
             spike = (
                 (distance > 0).to(distance.dtype)

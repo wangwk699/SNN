@@ -15,6 +15,7 @@ from .config import (
     calibration_trajectory_config,
 )
 from .controller import SiteController
+from .phase_math import validate_phase_base
 from .data import validate_prefix_discovery_state
 from .sites import topology_metadata
 from .state_validation import validate_site_state_bundle
@@ -175,6 +176,10 @@ def _validate_aware_training_provenance(
     for key in ("ann_training_phase_T", "ann_training_mtn_T", "ann_training_calibration_num_samples"):
         if not isinstance(result.get(key), int):
             raise ValueError(f"Aware ANN training provenance is missing {key}")
+    try:
+        validate_phase_base(result.get("ann_training_phase_base"))
+    except ValueError as exc:
+        raise ValueError("Aware ANN training provenance is missing ann_training_phase_base") from exc
     mismatched = {
         key: {"expected": value, "actual": result.get(key)}
         for key, value in expected.items()
@@ -189,6 +194,7 @@ def _validate_aware_training_provenance(
         "training_result_path": str(result_path.resolve()),
         **expected,
         "ann_training_phase_T": int(result["ann_training_phase_T"]),
+        "ann_training_phase_base": float(result["ann_training_phase_base"]),
         "ann_training_mtn_T": int(result["ann_training_mtn_T"]),
         "ann_training_calibration_num_samples": int(result["ann_training_calibration_num_samples"]),
         "ann_training_clip_profile_root": result["ann_training_clip_profile_root"],
@@ -305,8 +311,10 @@ def validate_conversion_metadata(
         "calibration_group_size": int(cfg["calibration"]["group_size"]),
         "calibration_num_samples": int(cfg["calibration"]["num_samples"]),
         "source_ann_training_phase_T": training_provenance.get("ann_training_phase_T"),
+        "source_ann_training_phase_base": training_provenance.get("ann_training_phase_base"),
         "source_ann_training_mtn_T": training_provenance.get("ann_training_mtn_T"),
         "deployment_phase_T": int(cfg["phase"]["T"]) if neuron == "phase" else None,
+        "deployment_phase_base": float(cfg["phase"]["base"]) if neuron == "phase" else None,
         "deployment_mtn_T": int(cfg["mtn"]["T"]) if neuron == "mtn" else None,
         "deployment_mtn_K": int(cfg["mtn"]["K"]) if neuron == "mtn" else None,
         "calibration_grouping_policy": CALIBRATION_GROUPING_POLICY,
@@ -340,6 +348,7 @@ def create_conversion(
     controller = SiteController(
         site_root=layout.conversion_site_dir,
         phase_T=int(cfg["phase"]["T"]),
+        phase_base=float(cfg["phase"]["base"]),
         mtn_T=int(cfg["mtn"]["T"]),
         mtn_K=int(cfg["mtn"]["K"]),
         mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
@@ -371,8 +380,10 @@ def create_conversion(
         "deployment_neuron": neuron,
         "full_temporal_steps": steps,
         "source_ann_training_phase_T": training_provenance.get("ann_training_phase_T"),
+        "source_ann_training_phase_base": training_provenance.get("ann_training_phase_base"),
         "source_ann_training_mtn_T": training_provenance.get("ann_training_mtn_T"),
         "deployment_phase_T": int(cfg["phase"]["T"]) if neuron == "phase" else None,
+        "deployment_phase_base": float(cfg["phase"]["base"]) if neuron == "phase" else None,
         "deployment_mtn_T": int(cfg["mtn"]["T"]) if neuron == "mtn" else None,
         "deployment_mtn_K": int(cfg["mtn"]["K"]) if neuron == "mtn" else None,
         "ordinary_gif_local_decomposition_steps": GIF_LOCAL_STEPS,

@@ -267,7 +267,7 @@ def test_final_ann_replacement_mode_mapping(ann_mode, expected):
 def _evaluation_cfg(ann_mode, clip=False):
     return {
         "experiment": {"ann_mode": ann_mode},
-        "phase": {"T": 4, "surrogate_slope": 2.0},
+        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 2.0},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
         "replacement": {"common_clip_enabled": clip},
         "calibration": {"group_size": -1, "num_samples": 128},

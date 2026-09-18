@@ -53,12 +53,13 @@ def _controller(cfg, layout, graph: str, *, bypass_final_norm_phase: bool):
             site_root=layout.ann_training_site_dir,
             common_clip_enabled=False,
             phase_T=int(cfg["phase"]["T"]),
+            phase_base=float(cfg["phase"]["base"]),
             phase_surrogate_slope=float(cfg["phase"]["surrogate_slope"]),
         )
     elif graph == "phase_temporal":
         controller = SiteController(
             mode="identity", site_root=layout.ann_training_site_dir,
-            phase_T=int(cfg["phase"]["T"]), mtn_T=int(cfg["mtn"]["T"]),
+            phase_T=int(cfg["phase"]["T"]), phase_base=float(cfg["phase"]["base"]), mtn_T=int(cfg["mtn"]["T"]),
             mtn_K=int(cfg["mtn"]["K"]),
             mtn_threshold_factor=float(cfg["mtn"]["threshold_factor"]),
         )

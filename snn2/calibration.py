@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
+from .phase_math import format_phase_base, phase_representable_bound, validate_phase_base
 from .config import post_finetuning_prefix_enabled, training_prefix_enabled, previous_layers_snn_enabled, calibration_trajectory_config, gif_mse_refinement_enabled, gif_mse_refinement_signature
 from .data import CausalLMCollator, tokenize_dataset, validate_prefix_discovery_state
 from .neurons import gif_high_qmax
@@ -89,6 +90,7 @@ def stage_a_trajectory_metadata(cfg: dict[str, Any], *, effective: bool = True) 
     }
     if flags["phase"]:
         details["phase"]["phase_T"] = trajectory["phase_T"]
+        details["phase"]["phase_base"] = trajectory["phase_base"]
     if flags["gif"]:
         details["gif"]["gif_temporal_steps"] = trajectory["gif_temporal_steps"]
     if flags["mtn"]:
@@ -413,9 +415,11 @@ def build_clip_state(
     mtn_state: dict[str, Any],
     *,
     phase_T: int,
+    phase_base: float,
     mtn_T: int,
 ) -> dict[str, Any]:
     phase_T, mtn_T = int(phase_T), int(mtn_T)
+    phase_base = validate_phase_base(phase_base)
     if phase_T <= 0 or mtn_T <= 0:
         raise ValueError("Clip profile phase_T and mtn_T must be positive")
     for state, kind in ((phase_state, "phase"), (gif_state, "gif"), (mtn_state, "mtn")):
@@ -425,7 +429,7 @@ def build_clip_state(
         "parameter_layout", "configured_group_size", "group_size", "num_heads",
         "channels_per_head", "groups_per_head",
     )}
-    phase_bound = phase_state["tau"].double() * (1.0 - 2.0 ** (-phase_T))
+    phase_bound = phase_representable_bound(phase_state["tau"].double(), T=phase_T, base=phase_base)
     mtn_bound = mtn_state["base_scale"].double() * mtn_T
     base_lower = torch.maximum(-phase_bound, -mtn_bound)
     base_upper = torch.minimum(phase_bound, mtn_bound)
@@ -435,6 +439,7 @@ def build_clip_state(
         "format_version": SITE_STATE_FORMAT_VERSION,
         "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
         "phase_T": phase_T,
+        "phase_base": phase_base,
         "mtn_T": mtn_T,
         "ordinary_gif_high_qmax": GIF_HIGH_QMAX,
         "ordinary_gif_per_step_qmax": GIF_STEP_QMAX,
@@ -847,7 +852,8 @@ def materialize_clip_profile(
     if stage_a_manifest.get("calibration_phase") != "A":
         raise ValueError("Stage B requires a Stage A calibration manifest")
     phase_T, mtn_T = int(cfg["phase"]["T"]), int(cfg["mtn"]["T"])
-    expected_name = f"phase_T_{phase_T}_mtn_T_{mtn_T}"
+    phase_base = validate_phase_base(cfg["phase"]["base"])
+    expected_name = f"phase_base_{format_phase_base(phase_base)}_T_{phase_T}_mtn_T_{mtn_T}"
     if output_root.name != expected_name:
         raise ValueError(f"Clip profile directory must be named {expected_name}")
     output_root.mkdir(parents=True, exist_ok=True)
@@ -866,7 +872,7 @@ def materialize_clip_profile(
                     "configured_group_size", "effective_group_size", "num_heads",
                     "channels_per_head", "groups_per_head", "gif_policy",
                 )},
-                "phase_T": phase_T, "mtn_T": mtn_T,
+                "phase_T": phase_T, "phase_base": phase_base, "mtn_T": mtn_T,
                 "clip_state_present": False, "clip_valid": True,
                 "clip_rule": "disabled", "clip_role_policy": "disabled",
                 "clip_roles": [],
@@ -880,7 +886,7 @@ def materialize_clip_profile(
             gif_state = torch.load(source / "gif_state.pt", map_location="cpu", weights_only=False)
             mtn_state = torch.load(source / "mtn_state.pt", map_location="cpu", weights_only=False)
             clip_state = build_clip_state(
-                phase_state, gif_state, mtn_state, phase_T=phase_T, mtn_T=mtn_T
+                phase_state, gif_state, mtn_state, phase_T=phase_T, phase_base=phase_base, mtn_T=mtn_T
             )
             torch.save(clip_state, clip_path)
             role_policy = clip_state["clip_role_policy"]
@@ -895,7 +901,7 @@ def materialize_clip_profile(
                     "configured_group_size", "effective_group_size", "num_heads",
                     "channels_per_head", "groups_per_head", "gif_policy",
                 )},
-                "phase_T": phase_T, "mtn_T": mtn_T,
+                "phase_T": phase_T, "phase_base": phase_base, "mtn_T": mtn_T,
                 "phase_bound_shape": list(phase_state["tau"].shape),
                 "mtn_bound_shape": list(mtn_state["base_scale"].shape),
                 "clip_state_present": True,
@@ -924,7 +930,7 @@ def materialize_clip_profile(
         "calibration_phase": "B",
         "phase_T": phase_T,
         "mtn_T": mtn_T,
-        "phase_base": 2.0,
+        "phase_base": phase_base,
         "stage_a_root": str(stage_a_root.resolve()),
         "stage_a_calibration_manifest_path": str(stage_a_manifest_path.resolve()),
         "stage_a_calibration_manifest_sha256": sha256_file(stage_a_manifest_path),
@@ -1184,6 +1190,7 @@ def _annotate_trajectory_state(state: dict[str, Any], cfg: dict[str, Any], neuro
     state["calibration_trajectory"] = f"sequential_temporal_{neuron}" if enabled else "ann_common"
     if enabled and neuron == "phase":
         state["calibration_phase_T"] = int(cfg["phase"]["T"])
+        state["calibration_phase_base"] = validate_phase_base(cfg["phase"]["base"])
     elif enabled and neuron == "gif":
         state["calibration_gif_temporal_steps"] = GIF_LOCAL_STEPS
     elif enabled and neuron == "mtn":

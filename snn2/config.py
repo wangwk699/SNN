@@ -15,6 +15,7 @@ from .gif_mse_calibration import (
     validate_mse_refinement_config,
 )
 
+from .phase_math import validate_phase_base
 from .sites import SITE_COUNT
 from .temporal_ops import (
     EMBEDDING_TEMPORAL_POLICY,
@@ -55,6 +56,7 @@ def calibration_trajectory_config(cfg: dict[str, Any], *, effective: bool = True
     active = result["effective_previous_layers_snn"]
     if active["phase"]:
         result["phase_T"] = int(cfg["phase"]["T"])
+        result["phase_base"] = validate_phase_base(cfg["phase"]["base"])
     if active["gif"]:
         from .temporal_ops import GIF_LOCAL_STEPS
         result["gif_temporal_steps"] = GIF_LOCAL_STEPS
@@ -217,8 +219,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
     phase_t = cfg["phase"].get("T")
     if not isinstance(phase_t, int) or isinstance(phase_t, bool) or phase_t <= 0:
         raise ValueError("phase.T must be a positive integer")
-    if float(cfg["phase"].get("base", float("nan"))) != 2.0:
-        raise ValueError("phase.base is fixed and must equal 2.0")
+    validate_phase_base(cfg["phase"].get("base"))
     try:
         surrogate_slope = float(cfg["phase"]["surrogate_slope"])
     except (TypeError, ValueError) as exc:

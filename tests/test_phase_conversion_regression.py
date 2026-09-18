@@ -188,7 +188,7 @@ def test_official_phase_ann_controller_matches_graph_p(monkeypatch):
     layout = SimpleNamespace(ann_training_site_dir="training", ann_training_clip_profile_dir="clip", conversion_site_dir="conversion")
     cfg = {
         "experiment": {"ann_mode": "phase_aware"},
-        "phase": {"T": 4, "surrogate_slope": 2.0},
+        "phase": {"T": 4, "base": 2.0, "surrogate_slope": 2.0},
         "mtn": {"T": 4, "K": 6, "threshold_factor": 0.75},
         "replacement": {"common_clip_enabled": False},
         "calibration": {"group_size": -1, "num_samples": 128},
