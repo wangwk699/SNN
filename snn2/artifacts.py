@@ -371,7 +371,7 @@ class ArtifactLayout:
                 self._cfg["calibration"]["group_size"],
                 self._cfg["calibration"]["num_samples"],
             )
-        ), self._cfg) / f"phase_base_{format_phase_base(self._training_phase_base)}" / calibration_trajectory_dirname(self._source_cfg)
+        ), self._cfg) / calibration_trajectory_dirname(self._source_cfg)
 
     @property
     def ann_training_site_dir(self) -> Path:
@@ -410,7 +410,7 @@ class ArtifactLayout:
             / "vanilla_original"
             / "vanilla_analysis_calibration"
             / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
-        ), self._cfg) / f"phase_base_{format_phase_base(self._training_phase_base)}" / calibration_trajectory_dirname(self._source_cfg, effective=False)
+        ), self._cfg) / calibration_trajectory_dirname(self._source_cfg, effective=False)
 
     @property
     def vanilla_analysis_site_dir(self) -> Path:
@@ -473,7 +473,7 @@ class ArtifactLayout:
             / "conversion_calibration"
             / prefix_enabled_dirname(enabled)
             / calibration_variant_dirname(self._cfg["calibration"]["group_size"], self._cfg["calibration"]["num_samples"])
-        ), self._cfg) / f"phase_base_{format_phase_base(self._training_phase_base)}" / calibration_trajectory_dirname(self._source_cfg)
+        ), self._cfg) / calibration_trajectory_dirname(self._source_cfg)
 
     @property
     def post_finetuning_site_dir(self) -> Path:

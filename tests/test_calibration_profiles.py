@@ -3,6 +3,7 @@ import json
 import torch
 import pytest
 
+from snn2.artifacts import ArtifactLayout
 from snn2.calibration import (
     build_clip_state, build_site_states, materialize_calibration_states,
     materialize_clip_profile, stage_a_trajectory_metadata,
@@ -120,6 +121,50 @@ def test_stage_a_materialization_is_clip_free_and_runtime_independent(tmp_path):
     assert not {"T", "base", "max_spikes", "v0", "surrogate_slope"}.intersection(phase)
     assert not {"T", "K", "threshold_factor"}.intersection(mtn)
     assert set(manifest["sites"][directories[0].relative_to(tmp_path).as_posix()]["state_sha256"]) == {"phase", "gif", "mtn"}
+
+
+def _artifact_cfg(tmp_path, *, phase_base: float, phase_T: int):
+    cfg = _cfg()
+    cfg.update({
+        "experiment": {
+            "id": "stage_a_path_test",
+            "task": "unit",
+            "model_name": "model",
+            "seed": 0,
+            "output_root": str(tmp_path / "artifacts"),
+            "ann_mode": "phase_aware",
+        },
+        "training": {"learning_rate": 1e-6, "warmup_ratio": 0.0, "gradient_accumulation_steps": 1},
+        "rotation": {"enabled": True},
+        "prefix": {"enabled": True},
+        "ann_training": {"prefix_enabled": True},
+        "post_finetuning": {"prefix_enabled": True},
+        "conversion": {"use_post_finetuning_artifacts": False},
+        "replacement": {"common_clip_enabled": False},
+    })
+    cfg["phase"].update({"base": phase_base, "T": phase_T})
+    return cfg
+
+
+def test_common_stage_a_layout_reuses_states_for_runtime_specific_clip_profiles(tmp_path):
+    stage_a_cfg = _artifact_cfg(tmp_path, phase_base=2.0, phase_T=4)
+    runtime_cfg = _artifact_cfg(tmp_path, phase_base=1.5, phase_T=4)
+    stage_a_layout = ArtifactLayout(stage_a_cfg)
+    runtime_layout = ArtifactLayout(runtime_cfg)
+
+    assert stage_a_layout.ann_training_site_dir == runtime_layout.ann_training_site_dir
+    assert stage_a_layout.ann_training_clip_profile_dir != runtime_layout.ann_training_clip_profile_dir
+    _write_statistics(stage_a_layout.ann_training_site_dir)
+    materialize_calibration_states(
+        stage_a_layout.ann_training_site_dir, stage_a_cfg, expected_num_hidden_layers=1
+    )
+    materialize_clip_profile(
+        runtime_layout.ann_training_site_dir,
+        runtime_layout.ann_training_clip_profile_dir,
+        runtime_cfg,
+    )
+    assert runtime_layout.ann_training_clip_profile_dir.name == "phase_base_1.5_T_4_mtn_T_4"
+    assert (runtime_layout.ann_training_clip_profile_dir / "clip_profile_manifest.json").exists()
 
 
 def test_two_stage_b_profiles_reuse_unchanged_stage_a(tmp_path):

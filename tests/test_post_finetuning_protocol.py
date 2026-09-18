@@ -129,6 +129,52 @@ def test_phase_aware_run_root_records_slope_and_warmup_ratio():
     assert first.ann_training_calibration_dir == second.ann_training_calibration_dir
 
 
+def _phase_runtime_layout(*, base: float, steps: int, sequential: bool) -> ArtifactLayout:
+    cfg = _cfg("phase_aware")
+    cfg["phase"].update({"base": base, "T": steps})
+    cfg["calibration"].update({
+        "phase_previous_layers_snn": sequential,
+        "gif_previous_layers_snn": False,
+        "mtn_previous_layers_snn": False,
+    })
+    return ArtifactLayout(cfg)
+
+
+def test_common_phase_runtime_shares_all_stage_a_paths_but_not_stage_b():
+    first = _phase_runtime_layout(base=2.0, steps=4, sequential=False)
+    second = _phase_runtime_layout(base=1.5, steps=6, sequential=False)
+
+    assert first.ann_training_calibration_dir == second.ann_training_calibration_dir
+    assert first.ann_training_site_dir == second.ann_training_site_dir
+    # Post-finetuning roots retain the distinct source ANN run identity, but
+    # their Stage-A dependency suffix must be independent of common Phase runtime.
+    assert first.post_finetuning_conversion_calibration_dir.parts[-2:] == second.post_finetuning_conversion_calibration_dir.parts[-2:]
+    assert first.vanilla_analysis_calibration_dir == second.vanilla_analysis_calibration_dir
+    assert first.ann_training_clip_profile_dir != second.ann_training_clip_profile_dir
+    assert first.ann_training_clip_profile_dir.name == "phase_base_2_T_4_mtn_T_4"
+    assert second.ann_training_clip_profile_dir.name == "phase_base_1.5_T_6_mtn_T_4"
+
+
+def test_sequential_phase_runtime_isolates_stage_a_without_redundant_parent():
+    first = _phase_runtime_layout(base=2.0, steps=4, sequential=True)
+    changed_base = _phase_runtime_layout(base=1.5, steps=4, sequential=True)
+    changed_steps = _phase_runtime_layout(base=2.0, steps=6, sequential=True)
+
+    assert first.ann_training_calibration_dir != changed_base.ann_training_calibration_dir
+    assert first.ann_training_calibration_dir != changed_steps.ann_training_calibration_dir
+    assert first.post_finetuning_conversion_calibration_dir.name != changed_base.post_finetuning_conversion_calibration_dir.name
+    assert first.post_finetuning_conversion_calibration_dir.name != changed_steps.post_finetuning_conversion_calibration_dir.name
+    assert calibration_trajectory_dirname(first._source_cfg) in first.ann_training_calibration_dir.parts
+    assert "phase_base_2" not in first.ann_training_calibration_dir.parts
+    assert first.ann_training_calibration_dir.name.endswith("phase_base_2_T_4")
+
+
+def test_vanilla_analysis_stage_a_path_ignores_phase_runtime():
+    first = _phase_runtime_layout(base=2.0, steps=4, sequential=True)
+    second = _phase_runtime_layout(base=1.5, steps=6, sequential=True)
+    assert first.vanilla_analysis_calibration_dir == second.vanilla_analysis_calibration_dir
+
+
 def test_aware_modes_and_surrogate_slopes_share_calibration():
     phase = ArtifactLayout(_cfg("phase_aware"))
     gif_cfg = _cfg("gif_aware")
