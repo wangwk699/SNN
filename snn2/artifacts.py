@@ -285,6 +285,15 @@ class ArtifactLayout:
 
         self.shared_task_root = task_root / "_shared" / data_selection_seed_name
         self.shared_model_root = model_root / "_shared" / experiment_seed_name
+        self.canonical_preprocessing_root = (
+            task_root
+            / "_shared"
+            / experiment_seed_name
+            / "canonical_preprocessing"
+            / f"calibration_seed_{int(cfg['calibration']['seed'])}"
+            if exp["task"] == "tulu3"
+            else self.shared_task_root / "data" / "canonical_preprocessing"
+        )
         policy = "rotated_prefix" if cfg["rotation"]["enabled"] else "vanilla_original"
         self.policy_root = self.shared_model_root / policy
         self.data_selection_policy_root = (
@@ -323,7 +332,7 @@ class ArtifactLayout:
 
     @property
     def canonical_preprocessing_calibration_dir(self) -> Path:
-        return self.data_dir / "canonical_preprocessing" / "num_samples_128"
+        return self.canonical_preprocessing_root / "num_samples_128"
 
     @property
     def canonical_preprocessing_calibration_manifest_path(self) -> Path:
@@ -347,6 +356,21 @@ class ArtifactLayout:
     @property
     def rotation_dir(self) -> Path:
         return self.shared_model_root / "rotated_prefix" / "rotation"
+
+    @property
+    def rotation_regression_dir(self) -> Path:
+        """Regression artifacts scoped to the canonical preprocessing seed."""
+        return self.rotation_dir / "regression" / (
+            f"calibration_seed_{int(self._cfg['calibration']['seed'])}"
+        )
+
+    @property
+    def rotation_regression_path(self) -> Path:
+        return self.rotation_regression_dir / "rotation_regression.json"
+
+    @property
+    def rotation_summary_path(self) -> Path:
+        return self.rotation_regression_dir / "rotation_summary.json"
 
     @property
     def ann_training_prefix_base_dir(self) -> Path:
@@ -585,6 +609,7 @@ class ArtifactLayout:
             self.post_finetuning_prefix_logs_dir,
             self.shared_task_logs_dir,
             self.rotation_dir,
+            self.rotation_regression_dir,
             self.ann_training_prefix_dir,
             self.rotated_pre_finetuning_config_dir,
             self.rotated_pre_finetuning_logs_dir,

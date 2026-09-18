@@ -34,7 +34,7 @@ def main():
             run.event("rotation_disabled")
             return
 
-        regression_path = layout.rotation_dir / "rotation_regression.json"
+        regression_path = layout.rotation_regression_path
         write_json(
             regression_path,
             {
@@ -117,7 +117,7 @@ def main():
         model_c.save_pretrained(destination, safe_serialization=True)
         tokenizer.save_pretrained(destination)
         write_json(
-            layout.rotation_dir / "rotation_summary.json",
+            layout.rotation_summary_path,
             {
                 **{key: value for key, value in state.items() if key != "specs"},
                 "hadamard_backend": "fast_hadamard_transform",

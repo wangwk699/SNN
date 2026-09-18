@@ -146,9 +146,18 @@ def test_tulu_run_and_shared_data_paths_encode_all_selection_seeds():
     assert changed_train.calibration_data_manifest_path != layout.calibration_data_manifest_path
     assert changed_train.ann_training_prefix_dir != layout.ann_training_prefix_dir
     assert changed_train.ann_training_calibration_dir != layout.ann_training_calibration_dir
+    assert changed_train.canonical_preprocessing_calibration_manifest_path == layout.canonical_preprocessing_calibration_manifest_path
     assert changed_train.rotation_dir == layout.rotation_dir
+    assert changed_train.rotation_regression_path == layout.rotation_regression_path
+    assert changed_train.rotation_summary_path == layout.rotation_summary_path
     assert changed_calibration.ann_training_prefix_dir != layout.ann_training_prefix_dir
+    assert changed_calibration.canonical_preprocessing_calibration_manifest_path != layout.canonical_preprocessing_calibration_manifest_path
+    assert changed_calibration.rotation_dir == layout.rotation_dir
+    assert changed_calibration.rotation_regression_path != layout.rotation_regression_path
     assert changed_experiment.rotation_dir != layout.rotation_dir
+    for changed in (changed_train, changed_calibration):
+        assert changed.rotation_dir / "rotation_state.pt" == layout.rotation_dir / "rotation_state.pt"
+        assert changed.rotation_dir / "fused_base" == layout.rotation_dir / "fused_base"
 
 def test_prune_empty_group_leaves():
     tree = {"group": {"a": object(), "b": object(), "c": object()}}

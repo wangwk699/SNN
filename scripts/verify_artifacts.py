@@ -906,11 +906,9 @@ def main():
                     layout.rotation_dir
                     / "rotation_state.pt",
 
-                    layout.rotation_dir
-                    / "rotation_regression.json",
+                    layout.rotation_regression_path,
 
-                    layout.rotation_dir
-                    / "rotation_summary.json",
+                    layout.rotation_summary_path,
 
                     layout.rotation_dir
                     / "fused_base"
@@ -975,10 +973,10 @@ def main():
         _validate_aware_source_ann_runtime_provenance(cfg, layout)
 
         if cfg["rotation"]["enabled"]:
-            regression_path = layout.rotation_dir / "rotation_regression.json"
+            regression_path = layout.rotation_regression_path
             regression = read_json(regression_path)
             _verify_rotation_regression_suite(regression)
-            summary = read_json(layout.rotation_dir / "rotation_summary.json")
+            summary = read_json(layout.rotation_summary_path)
             if (
                 summary.get("random_hadamard_orientation") != "DU"
                 or summary.get("precision_policy") != "roste_aligned_v1"
