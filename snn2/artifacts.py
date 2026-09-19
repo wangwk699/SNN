@@ -26,14 +26,38 @@ def prefix_enabled_dirname(enabled: bool) -> str:
     return "prefix_enabled_ture" if enabled else "prefix_enabled_false"
 
 
+def train_samples_dir_value(value: Any) -> str:
+    """Return the stable path component for a configured training sample count."""
+    if value is None:
+        return "full"
+    samples = int(value)
+    if samples <= 0:
+        raise ValueError("train_samples must be a positive integer or null")
+    return str(samples)
+
+
 def run_seed_dirname(cfg: dict[str, Any]) -> str:
     """Return the concrete ANN run identity for a configuration."""
     exp_seed = int(cfg["experiment"]["seed"])
-    if cfg["experiment"]["task"] == "tulu3":
+    task = cfg["experiment"]["task"]
+    calibration_seed = int(cfg["calibration"].get("seed", 42))
+    if task == "tldr":
+        samples = train_samples_dir_value(
+            cfg["training"].get("tldr_train_samples")
+        )
         return (
             f"experiment_seed_{exp_seed}_"
-            f"train_seed_{int(cfg['training']['train_seed'])}_"
-            f"calibration_seed_{int(cfg['calibration']['seed'])}"
+            f"tldr_train_seed_{int(cfg['training'].get('tldr_train_seed', 42))}_"
+            f"train_samples_{samples}_"
+            f"calibration_seed_{calibration_seed}"
+        )
+    if task == "tulu3":
+        samples = train_samples_dir_value(cfg["training"].get("train_samples"))
+        return (
+            f"experiment_seed_{exp_seed}_"
+            f"train_seed_{int(cfg['training'].get('train_seed', 42))}_"
+            f"train_samples_{samples}_"
+            f"calibration_seed_{calibration_seed}"
         )
     return f"seed{exp_seed}"
 
@@ -290,15 +314,13 @@ class ArtifactLayout:
             / "_shared"
             / experiment_seed_name
             / "canonical_preprocessing"
-            / f"calibration_seed_{int(cfg['calibration']['seed'])}"
-            if exp["task"] == "tulu3"
-            else self.shared_task_root / "data" / "canonical_preprocessing"
+            / f"calibration_seed_{int(cfg['calibration'].get('seed', 42))}"
         )
         policy = "rotated_prefix" if cfg["rotation"]["enabled"] else "vanilla_original"
         self.policy_root = self.shared_model_root / policy
         self.data_selection_policy_root = (
             self.policy_root / data_selection_seed_name
-            if exp["task"] == "tulu3"
+            if exp["task"] in {"tldr", "tulu3"}
             else self.policy_root
         )
 
@@ -359,11 +381,11 @@ class ArtifactLayout:
 
     @property
     def rotation_regression_dir(self) -> Path:
-        if self._cfg["experiment"]["task"] == "tulu3":
+        if self._cfg["experiment"]["task"] in {"tldr", "tulu3"}:
             return (
                 self.rotation_dir
                 / "regression"
-                / f"calibration_seed_{int(self._cfg['calibration']['seed'])}"
+                / f"calibration_seed_{int(self._cfg['calibration'].get('seed', 42))}"
             )
         return self.rotation_dir
 

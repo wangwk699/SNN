@@ -392,9 +392,15 @@ def test_tldr_full_run_paths_record_scheduler_warmup_and_aware_accumulation(
                 f"lr_scheduler_type_{training['lr_scheduler_type']}_"
                 f"warmup_ratio_{float(training['warmup_ratio'])}"
             )
+        run_identity = (
+            f"experiment_seed_{cfg['experiment']['seed']}_"
+            f"tldr_train_seed_{training['tldr_train_seed']}_"
+            f"train_samples_{training['tldr_train_samples']}_"
+            f"calibration_seed_{cfg['calibration']['seed']}"
+        )
         expected = Path(
             f"artifacts/{cfg['experiment']['id']}/tldr/{model}/{mode}/{learning}/"
-            f"{prefix}/{training_identity}/seed{cfg['experiment']['seed']}"
+            f"{prefix}/{training_identity}/{run_identity}"
         )
         if mode in {"phase_aware", "gif_aware"}:
             expected = expected.parent / calibration_trajectory_dirname(cfg) / expected.name
@@ -408,10 +414,10 @@ def test_tulu_full_run_paths_include_aware_training_identity(generated_configs):
     from snn2.artifacts import ArtifactLayout, calibration_trajectory_dirname
 
     expected = {
-        "vanilla": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/vanilla/lr1e-06_train_samples_10000/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.0/experiment_seed_42_train_seed_42_calibration_seed_42",
-        "unaware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/unaware/lr1e-06_train_samples_10000/prefix_enabled_ture/lr_scheduler_type_cosine_warmup_ratio_0.0/experiment_seed_42_train_seed_42_calibration_seed_42",
-        "phase_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/phase_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_base_2_T_4_mtn_T_4_surrogate_slope_1.0_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/experiment_seed_42_train_seed_42_calibration_seed_42",
-        "gif_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/gif_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_base_2_T_4_mtn_T_4_round_gradient_estimator_STE_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/experiment_seed_42_train_seed_42_calibration_seed_42",
+        "vanilla": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/vanilla/lr1e-06_train_samples_10000/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.0/experiment_seed_42_train_seed_42_train_samples_10000_calibration_seed_42",
+        "unaware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/unaware/lr1e-06_train_samples_10000/prefix_enabled_ture/lr_scheduler_type_cosine_warmup_ratio_0.0/experiment_seed_42_train_seed_42_train_samples_10000_calibration_seed_42",
+        "phase_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/phase_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_base_2_T_4_mtn_T_4_surrogate_slope_1.0_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/experiment_seed_42_train_seed_42_train_samples_10000_calibration_seed_42",
+        "gif_aware": "artifacts/snn2_main_v1/tulu3/meta-llama_Meta-Llama-3-8B/gif_aware/epochs_1_num_samples_128_lr1e-06_train_samples_10000_calibration_group_size_128/prefix_enabled_ture_common_clip_enabled_true/phase_base_2_T_4_mtn_T_4_round_gradient_estimator_STE_lr_scheduler_type_cosine_warmup_ratio_0.0_gradient_accumulation_steps_16/experiment_seed_42_train_seed_42_train_samples_10000_calibration_seed_42",
     }
     for path in generated_configs:
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -420,6 +426,49 @@ def test_tulu_full_run_paths_include_aware_training_identity(generated_configs):
             if cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}:
                 expected_root = expected_root.parent / calibration_trajectory_dirname(cfg) / expected_root.name
             assert ArtifactLayout(cfg).root == expected_root
+
+
+@pytest.mark.parametrize("task", ["tldr", "tulu3"])
+def test_train_sample_count_isolates_data_dependent_artifacts_only(
+    generated_configs, task
+):
+    from snn2.artifacts import ArtifactLayout
+
+    cfg = yaml.safe_load(next(
+        path.read_text(encoding="utf-8")
+        for path in generated_configs
+        if task in path.stem and path.stem.endswith("__phase_aware")
+    ))
+    changed = copy.deepcopy(cfg)
+    field = "tldr_train_samples" if task == "tldr" else "train_samples"
+    changed["training"][field] = 20_000
+    first = ArtifactLayout(cfg)
+    second = ArtifactLayout(changed)
+
+    assert first.root != second.root
+    assert first.data_dir != second.data_dir
+    assert first.ann_training_prefix_dir != second.ann_training_prefix_dir
+    assert first.ann_training_calibration_dir != second.ann_training_calibration_dir
+    assert (
+        first.canonical_preprocessing_calibration_manifest_path
+        == second.canonical_preprocessing_calibration_manifest_path
+    )
+    assert first.rotation_dir == second.rotation_dir
+    assert first.rotation_regression_path == second.rotation_regression_path
+
+
+@pytest.mark.parametrize("task", ["tldr", "tulu3"])
+def test_full_train_sample_identity_uses_full(generated_configs, task):
+    from snn2.artifacts import ArtifactLayout
+
+    cfg = yaml.safe_load(next(
+        path.read_text(encoding="utf-8")
+        for path in generated_configs
+        if task in path.stem and path.stem.endswith("__vanilla")
+    ))
+    field = "tldr_train_samples" if task == "tldr" else "train_samples"
+    cfg["training"][field] = None
+    assert "train_samples_full" in ArtifactLayout(cfg).run_seed_name
 
 
 @pytest.mark.parametrize("mode", ["vanilla", "unaware", "phase_aware", "gif_aware"])

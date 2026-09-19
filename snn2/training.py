@@ -286,9 +286,7 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
         report_to=[],
         ddp_find_unused_parameters=False,
     )
-    bundle = load_selected_raw(
-        cfg, layout, use_configured_train_subset=True
-    )
+    bundle = load_selected_raw(cfg, layout)
     configured_train_samples = (training_cfg.get("tldr_train_samples") if cfg["experiment"]["task"] == "tldr" else training_cfg.get("train_samples"))
     if configured_train_samples is not None and len(bundle.train) != int(configured_train_samples):
         raise RuntimeError(

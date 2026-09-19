@@ -8,7 +8,13 @@ from typing import Any
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-from .artifacts import ArtifactLayout, read_json, sha256_file, write_json
+from .artifacts import (
+    ArtifactLayout,
+    data_selection_seed_dirname,
+    read_json,
+    sha256_file,
+    write_json,
+)
 
 
 @dataclass
@@ -130,14 +136,17 @@ def _validate_stage_a_calibration_selection(
 
 
 def _stage_a_calibration_provenance(
-    cfg: dict[str, Any], train_indices: list[int]
+    cfg: dict[str, Any],
+    train_indices: list[int],
+    train_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Describe the ANN selection from which Stage-A calibration was drawn."""
     task = cfg["experiment"]["task"]
-    parent_seed = (
-        int(cfg["training"].get("tldr_train_seed", 42))
-        if task == "tldr"
-        else int(cfg["training"].get("train_seed", 42))
+    seed_field = "tldr_train_seed" if task == "tldr" else "train_seed"
+    parent_seed = int(
+        train_manifest[seed_field]
+        if train_manifest is not None
+        else cfg["training"].get(seed_field, 42)
     )
     provenance = {
         "parent_training_samples": len(train_indices),
@@ -152,6 +161,79 @@ def _stage_a_calibration_provenance(
     else:
         provenance["retained_in_training"] = True
     return provenance
+
+
+def validate_train_manifest_for_config(
+    cfg: dict[str, Any], manifest: dict[str, Any]
+) -> None:
+    """Fail closed unless a fixed Step-2 train manifest matches the config."""
+    task = cfg["experiment"]["task"]
+    indices = manifest.get("indices")
+    mismatches: dict[str, tuple[Any, Any]] = {}
+
+    if not isinstance(indices, list):
+        mismatches["indices"] = ("list[int]", type(indices).__name__)
+    elif any(type(index) is not int or index < 0 for index in indices):
+        mismatches["indices"] = ("non-negative integers", "invalid entries")
+    elif len(set(indices)) != len(indices):
+        mismatches["indices"] = ("unique training indices", "duplicates present")
+
+    expected_common = {
+        "seed": int(cfg["experiment"]["seed"]),
+        "split": cfg["data"].get("train_split", "train"),
+        "data_selection_identity": data_selection_seed_dirname(cfg),
+    }
+    for field, expected in expected_common.items():
+        if manifest.get(field) != expected:
+            mismatches[field] = (expected, manifest.get(field))
+
+    if task == "tldr":
+        configured_samples = cfg["training"].get("tldr_train_samples")
+        expected = {
+            "tldr_train_samples": configured_samples,
+            "tldr_train_seed": int(cfg["training"].get("tldr_train_seed", 42)),
+        }
+        full_sampling = "full_split"
+    elif task == "tulu3":
+        configured_samples = cfg["training"].get("train_samples")
+        expected = {
+            "train_samples": configured_samples,
+            "train_seed": int(cfg["training"].get("train_seed", 42)),
+            "validation_size": int(cfg["data"]["validation_size"]),
+        }
+        full_sampling = "full_training_pool"
+    else:
+        configured_samples = None
+        expected = {}
+        full_sampling = None
+
+    missing = object()
+    for field, expected_value in expected.items():
+        actual = manifest.get(field, missing)
+        if actual != expected_value or type(actual) is not type(expected_value):
+            mismatches[field] = (
+                expected_value,
+                "<missing>" if actual is missing else actual,
+            )
+
+    if configured_samples is not None and isinstance(indices, list):
+        if len(indices) != int(configured_samples):
+            mismatches["indices_count"] = (int(configured_samples), len(indices))
+    elif configured_samples is None and full_sampling is not None:
+        if manifest.get("sampling") != full_sampling:
+            mismatches["sampling"] = (full_sampling, manifest.get("sampling"))
+
+    if mismatches:
+        details = ", ".join(
+            f"{field}: configured={expected!r}, manifest={actual!r}"
+            for field, (expected, actual) in mismatches.items()
+        )
+        raise ValueError(
+            "Training manifest does not match the current configuration. "
+            "The ANN training subset must be prepared by Step 2. "
+            f"Mismatches: {details}. Re-run: python scripts/prepare_data.py "
+            "--config <config>"
+        )
 
 
 def _tulu3_shared_split_selection(raw_train: Any, cfg: dict[str, Any]) -> tuple[list[int], list[int]]:
@@ -206,9 +288,20 @@ def _manifest_split_selection(
 def prepare_calibration_manifest(
     cfg: dict[str, Any], layout: ArtifactLayout
 ) -> dict[str, Any]:
-    """Write only the current config's Stage-A calibration manifest."""
+    """Derive Stage-A calibration only from an existing Step-2 train manifest."""
+    train_manifest_path = layout.data_dir / "train_manifest.json"
+    if not train_manifest_path.exists():
+        raise FileNotFoundError(
+            "Step 2 training manifest is missing. Run: python "
+            "scripts/prepare_data.py --config <config> before using "
+            "--calibration-only."
+        )
+    train_manifest = read_json(train_manifest_path)
+    validate_train_manifest_for_config(cfg, train_manifest)
     raw = _load_raw(cfg)
-    raw_train, train_split, train_indices, _, _, _ = _manifest_split_selection(cfg, raw)
+    train_split = train_manifest["split"]
+    raw_train = raw[train_split]
+    train_indices = [int(index) for index in train_manifest["indices"]]
     data_cfg = cfg["data"]
     calibration_num_samples = int(cfg["calibration"]["num_samples"])
     with_replacement = bool(cfg["calibration"].get("with_replacement", False))
@@ -235,7 +328,8 @@ def prepare_calibration_manifest(
         "indices": calibration_indices,
         "record_ids": _record_ids(raw_train, calibration_indices),
         "duplicates_preserved": with_replacement,
-        **_stage_a_calibration_provenance(cfg, train_indices),
+        "data_selection_identity": data_selection_seed_dirname(cfg),
+        **_stage_a_calibration_provenance(cfg, train_indices, train_manifest),
     }
     manifest_path = layout.calibration_data_manifest_path
     write_json(manifest_path, manifest)
@@ -280,9 +374,11 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         "dataset_revision": data_cfg.get("dataset_revision"),
         "seed": seed,
     }
+    data_selection_identity = data_selection_seed_dirname(cfg)
     manifests = {
         "train": {
             **common,
+            "data_selection_identity": data_selection_identity,
             "split": train_split,
             "sampling": train_sampling,
             **(
@@ -306,6 +402,7 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         },
         "calibration": {
             **common,
+            "data_selection_identity": data_selection_identity,
             "manifest_role": "stage_a_calibration_selection",
             "split": train_split,
             "sampling": "seeded_with_replacement" if with_replacement else "seeded_without_replacement",
@@ -440,36 +537,14 @@ def validate_prefix_discovery_state(
 def load_selected_raw(
     cfg: dict[str, Any],
     layout: ArtifactLayout,
-    *,
-    use_configured_train_subset: bool = False,
 ) -> DatasetBundle:
     manifests = load_manifests(cfg, layout)
+    validate_train_manifest_for_config(cfg, manifests["train"])
     raw = _load_raw(cfg)
-    selected = {}
-    for name, manifest in manifests.items():
-        if (
-            name == "train"
-            and use_configured_train_subset
-            and cfg["experiment"]["task"] in {"tldr", "tulu3"}
-        ):
-            raw_train = raw[manifest["split"]]
-            if cfg["experiment"]["task"] == "tldr":
-                indices, sampling = _tldr_train_selection(raw_train, cfg)
-            else:
-                permutation = list(range(len(raw_train)))
-                random.Random(int(cfg["experiment"]["seed"])).shuffle(permutation)
-                indices, sampling = _tulu3_train_selection(permutation[int(cfg["data"]["validation_size"]):], cfg)
-            selected[name] = raw_train.select(indices)
-            manifests[name] = {
-                **manifest,
-                "indices": indices,
-                "record_ids": _record_ids(raw_train, indices),
-                "sampling": sampling,
-                **({"tldr_train_samples": cfg["training"].get("tldr_train_samples"), "tldr_train_seed": int(cfg["training"].get("tldr_train_seed", 42))} if cfg["experiment"]["task"] == "tldr" else {"train_samples": cfg["training"].get("train_samples"), "train_seed": int(cfg["training"].get("train_seed", 42)), "validation_size": int(cfg["data"]["validation_size"])}),
-                "selection_scope": "current_ann_training_config",
-            }
-        else:
-            selected[name] = raw[manifest["split"]].select(manifest["indices"])
+    selected = {
+        name: raw[manifest["split"]].select(manifest["indices"])
+        for name, manifest in manifests.items()
+    }
     return DatasetBundle(
         train=selected["train"],
         validation=selected["validation"],

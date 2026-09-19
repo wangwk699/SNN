@@ -281,8 +281,8 @@ def test_vanilla_analysis_calibration_config_logs_and_sites_are_group_isolated()
 
 @pytest.mark.parametrize(
     ("configured", "suffix"),
-    [(None, "lr1e-06_train_samples_full/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.03/seed42"),
-     (128, "lr1e-06_train_samples_128/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.03/seed42")],
+    [(None, "lr1e-06_train_samples_full/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.03/experiment_seed_42_tldr_train_seed_42_train_samples_full_calibration_seed_42"),
+     (128, "lr1e-06_train_samples_128/prefix_enabled_false/lr_scheduler_type_cosine_warmup_ratio_0.03/experiment_seed_42_tldr_train_seed_42_train_samples_128_calibration_seed_42")],
 )
 def test_vanilla_tldr_path_records_no_pretraining_prefix(configured, suffix):
     cfg = _cfg("vanilla")

@@ -193,7 +193,7 @@ def test_tldr_train_subset_is_fixed_random_without_replacement(monkeypatch, tmp_
     assert set(manifests["calibration"]["indices"]) <= set(expected)
 
 
-def test_ann_training_subset_uses_current_config_even_when_shared_manifest_is_full(
+def test_load_selected_raw_consumes_manifest_indices_without_resampling(
     monkeypatch, tmp_path
 ):
     raw = {
@@ -210,26 +210,39 @@ def test_ann_training_subset_uses_current_config_even_when_shared_manifest_is_fu
             "validation_split": "validation",
             "evaluation_split": "test",
         },
-        "training": {"tldr_train_samples": None, "tldr_train_seed": 42},
+        "training": {"tldr_train_samples": 8, "tldr_train_seed": 42},
         "calibration": {"seed": 42, "num_samples": 4, "with_replacement": False},
     }
     layout = SimpleNamespace(data_dir=tmp_path)
-    prepare_manifests(cfg, layout)
-    assert len(load_selected_raw(cfg, layout).train) == 200
-
-    cfg["training"]["tldr_train_samples"] = 8
-    bundle = load_selected_raw(cfg, layout, use_configured_train_subset=True)
+    manifests = prepare_manifests(cfg, layout)
     expected = random.Random(42).sample(range(200), k=8)
     expected.sort()
+    assert manifests["train"]["indices"] == expected
+
+    monkeypatch.setattr(
+        "snn2.data._tldr_train_selection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("runtime resampling is forbidden")
+        ),
+    )
+    monkeypatch.setattr(
+        "snn2.data._tulu3_train_selection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("runtime resampling is forbidden")
+        ),
+    )
+    bundle = load_selected_raw(cfg, layout)
 
     assert len(bundle.train) == 8
     assert [row["value"] for row in bundle.train] == expected
     assert bundle.manifests["train"]["indices"] == expected
-    assert bundle.manifests["train"]["selection_scope"] == "current_ann_training_config"
+    assert bundle.manifests["train"]["data_selection_identity"] == (
+        "experiment_seed_7_tldr_train_seed_42_train_samples_8_calibration_seed_42"
+    )
     assert len(bundle.calibration) == 4
 
 
-def test_ann_training_subset_rejects_more_rows_than_raw_split(monkeypatch, tmp_path):
+def test_load_selected_raw_rejects_stale_train_manifest(monkeypatch, tmp_path):
     raw = {
         "train": _Dataset({"value": index} for index in range(130)),
         "validation": _Dataset({"value": index} for index in range(2)),
@@ -249,10 +262,10 @@ def test_ann_training_subset_rejects_more_rows_than_raw_split(monkeypatch, tmp_p
     }
     layout = SimpleNamespace(data_dir=tmp_path)
     prepare_manifests(cfg, layout)
-    cfg["training"]["tldr_train_samples"] = 131
+    cfg["training"]["tldr_train_samples"] = 8
 
-    with pytest.raises(ValueError, match="contains only 130 rows"):
-        load_selected_raw(cfg, layout, use_configured_train_subset=True)
+    with pytest.raises(ValueError, match="Training manifest does not match"):
+        load_selected_raw(cfg, layout)
 
 
 @pytest.mark.parametrize(

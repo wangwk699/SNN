@@ -11,7 +11,10 @@ def main():
     arg_parser.add_argument(
         "--calibration-only",
         action="store_true",
-        help="Write only the current config's Stage-A calibration manifest.",
+        help=(
+            "Write only the current config's Stage-A calibration manifest from "
+            "an existing, matching Step-2 train_manifest.json."
+        ),
     )
     args = arg_parser.parse_args()
     if args.calibration_only:

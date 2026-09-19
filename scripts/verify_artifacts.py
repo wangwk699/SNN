@@ -7,7 +7,7 @@ import torch
 from _common import apply_deployment_overrides, parser, setup
 
 from snn2.artifacts import lm_eval_spec_dirname, prefix_enabled_dirname, safe_name, read_json, sha256_file, write_json
-from snn2.data import validate_prefix_discovery_state
+from snn2.data import validate_prefix_discovery_state, validate_train_manifest_for_config
 from snn2.config import (
     conversion_prefix_enabled,
     gif_mse_refinement_enabled,
@@ -936,6 +936,9 @@ def main():
                 "Missing required artifacts:\n"
                 + "\n".join(missing)
             )
+        validate_train_manifest_for_config(
+            cfg, read_json(layout.data_dir / "train_manifest.json")
+        )
         if task == "tulu3":
             _validate_tulu_stage_a_calibration_manifest(cfg, layout)
             for spec in enabled_lm_eval_task_specs(cfg):
