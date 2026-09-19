@@ -129,7 +129,7 @@ def evaluation_depends_on_prefix_num_samples(
     if base or neuron != "ann":
         return False
     if rotated_pre_finetuning:
-        return rotated_pre_finetuning_prefix_enabled(cfg)
+        return False
     if cfg["experiment"]["ann_mode"] == "vanilla":
         return False
     if cfg["experiment"]["ann_mode"] == "unaware":

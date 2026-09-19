@@ -693,18 +693,28 @@ def test_verify_selector_source_matrix(mode, use_post, prefix_stage, calibration
 
 
 
-def _write_prefix_state(layout, root):
-    layout.calibration_data_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(layout.calibration_data_manifest_path, {"num_samples": 128})
+def _write_prefix_state(layout, root, *, stage):
+    pre = stage == "pre_finetuning"
+    manifest_path = (
+        layout.canonical_preprocessing_calibration_manifest_path
+        if pre
+        else layout.calibration_data_manifest_path
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(manifest_path, {"num_samples": 128})
     root.mkdir(parents=True, exist_ok=True)
     write_json(
         root / "prefix_state.json",
         {
             "prefix_token_ids": [],
             "discovery_num_samples": 128,
-            "discovery_data_source": "stage_a_calibration_selection",
-            "discovery_manifest_path": str(layout.calibration_data_manifest_path.resolve()),
-            "discovery_manifest_sha256": sha256_file(layout.calibration_data_manifest_path),
+            "discovery_data_source": (
+                "canonical_preprocessing_calibration"
+                if pre
+                else "stage_a_calibration_selection"
+            ),
+            "discovery_manifest_path": str(manifest_path.resolve()),
+            "discovery_manifest_sha256": sha256_file(manifest_path),
         },
     )
 
@@ -719,33 +729,46 @@ def test_verify_unaware_pre_selector_validates_final_and_snn_prefixes(tmp_path):
     })
     layout = SimpleNamespace(
         calibration_data_manifest_path=tmp_path / "data" / "calibration_manifest.json",
+        canonical_preprocessing_calibration_manifest_path=(
+            tmp_path / "canonical" / "calibration_manifest.json"
+        ),
         ann_training_prefix_dir=tmp_path / "pre" / "num_samples_128",
         post_finetuning_prefix_dir=tmp_path / "post" / "num_samples_128",
         conversion_prefix_dir=tmp_path / "pre" / "num_samples_128",
     )
-    _write_prefix_state(layout, layout.ann_training_prefix_dir)
-    _write_prefix_state(layout, layout.post_finetuning_prefix_dir)
+    _write_prefix_state(
+        layout, layout.ann_training_prefix_dir, stage="pre_finetuning"
+    )
+    _write_prefix_state(
+        layout, layout.post_finetuning_prefix_dir, stage="post_finetuning"
+    )
 
     final_root = _VERIFY._final_ann_prefix_root(cfg, layout)
     assert final_root == layout.post_finetuning_prefix_dir
     _VERIFY._validate_prefix_artifact(
-        cfg, layout, final_root, label="Post-finetuning Final ANN"
+        cfg, layout, final_root, label="Post-finetuning Final ANN",
+        stage="post_finetuning",
     )
     _VERIFY._validate_prefix_artifact(
-        cfg, layout, layout.conversion_prefix_dir, label="Selected SNN"
+        cfg, layout, layout.conversion_prefix_dir, label="Selected SNN",
+        stage="pre_finetuning",
     )
 
     (layout.post_finetuning_prefix_dir / "prefix_state.json").unlink()
     with pytest.raises(FileNotFoundError, match="Post-finetuning Final ANN Prefix"):
         _VERIFY._validate_prefix_artifact(
-            cfg, layout, final_root, label="Post-finetuning Final ANN"
+            cfg, layout, final_root, label="Post-finetuning Final ANN",
+            stage="post_finetuning",
         )
 
-    _write_prefix_state(layout, layout.post_finetuning_prefix_dir)
+    _write_prefix_state(
+        layout, layout.post_finetuning_prefix_dir, stage="post_finetuning"
+    )
     (layout.ann_training_prefix_dir / "prefix_state.json").unlink()
     with pytest.raises(FileNotFoundError, match="Selected SNN Prefix"):
         _VERIFY._validate_prefix_artifact(
-            cfg, layout, layout.conversion_prefix_dir, label="Selected SNN"
+            cfg, layout, layout.conversion_prefix_dir, label="Selected SNN",
+            stage="pre_finetuning",
         )
 
 
@@ -758,7 +781,7 @@ def test_verify_aware_post_selector_still_validates_training_provenance(
         "prefix": {"enabled": True},
         "ann_training": {"prefix_enabled": True},
     })
-    manifest_path = tmp_path / "data" / "calibration_manifest.json"
+    manifest_path = tmp_path / "canonical" / "calibration_manifest.json"
     prefix_dir = tmp_path / "pre" / "num_samples_128"
     site_dir = tmp_path / "ann_sites"
     profile_dir = tmp_path / "clip_profile"
@@ -769,7 +792,7 @@ def test_verify_aware_post_selector_still_validates_training_provenance(
     write_json(prefix_dir / "prefix_state.json", {
         "prefix_token_ids": [],
         "discovery_num_samples": 128,
-        "discovery_data_source": "stage_a_calibration_selection",
+        "discovery_data_source": "canonical_preprocessing_calibration",
         "discovery_manifest_path": str(manifest_path.resolve()),
         "discovery_manifest_sha256": sha256_file(manifest_path),
     })
@@ -780,7 +803,8 @@ def test_verify_aware_post_selector_still_validates_training_provenance(
         ann_training_prefix_dir=prefix_dir,
         ann_training_site_dir=site_dir,
         ann_training_clip_profile_dir=profile_dir,
-        calibration_data_manifest_path=manifest_path,
+        calibration_data_manifest_path=tmp_path / "data" / "calibration_manifest.json",
+        canonical_preprocessing_calibration_manifest_path=manifest_path,
     )
     monkeypatch.setattr(
         "snn2.training.validate_site_state_bundle",

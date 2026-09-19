@@ -222,7 +222,9 @@ def validate_conversion_prefix(
             "prefix_num_samples": None,
             "prefix_discovery_manifest_sha256": None,
         }
-    prefix_info = validate_prefix_discovery_state(cfg, layout, root)
+    prefix_info = validate_prefix_discovery_state(
+        cfg, layout, root, stage=source_stage
+    )
     state_path = prefix_info["state_path"]
     kv_path = prefix_info["kv_path"]
     return {

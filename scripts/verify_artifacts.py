@@ -7,7 +7,11 @@ import torch
 from _common import apply_deployment_overrides, parser, setup
 
 from snn2.artifacts import lm_eval_spec_dirname, prefix_enabled_dirname, safe_name, read_json, sha256_file, write_json
-from snn2.data import validate_prefix_discovery_state, validate_train_manifest_for_config
+from snn2.data import (
+    validate_canonical_preprocessing_manifest_for_config,
+    validate_prefix_discovery_state,
+    validate_train_manifest_for_config,
+)
 from snn2.config import (
     conversion_prefix_enabled,
     gif_mse_refinement_enabled,
@@ -259,11 +263,11 @@ def _final_ann_prefix_root(cfg, layout):
     )
 
 
-def _validate_prefix_artifact(cfg, layout, root, *, label):
+def _validate_prefix_artifact(cfg, layout, root, *, label, stage):
     state_path = root / "prefix_state.json"
     if not state_path.exists():
         raise FileNotFoundError(f"{label} Prefix is missing: {state_path}")
-    return validate_prefix_discovery_state(cfg, layout, root)
+    return validate_prefix_discovery_state(cfg, layout, root, stage=stage)
 
 
 def _selected_snn_prefix_summary(prefix_info):
@@ -910,6 +914,8 @@ def main():
 
                     layout.rotation_summary_path,
 
+                    layout.canonical_preprocessing_calibration_manifest_path,
+
                     layout.rotation_dir
                     / "fused_base"
                     / "config.json",
@@ -952,17 +958,20 @@ def main():
             _validate_prefix_artifact(
                 cfg, layout, layout.ann_training_prefix_dir,
                 label="ANN-training Pre-finetuning",
+                stage="pre_finetuning",
             )
 
         final_ann_prefix_root = _final_ann_prefix_root(cfg, layout)
         if final_ann_prefix_root is not None:
+            final_ann_prefix_stage = final_ann_evaluation_prefix_artifact_stage(cfg)
             _validate_prefix_artifact(
                 cfg, layout, final_ann_prefix_root,
                 label=(
                     "Post-finetuning Final ANN"
-                    if final_ann_evaluation_prefix_artifact_stage(cfg) == "post_finetuning"
+                    if final_ann_prefix_stage == "post_finetuning"
                     else "Pre-finetuning Final ANN"
                 ),
+                stage=final_ann_prefix_stage,
             )
 
         selected_snn_prefix_info = {"token_ids": []}
@@ -970,12 +979,19 @@ def main():
             selected_snn_prefix_info = _validate_prefix_artifact(
                 cfg, layout, layout.conversion_prefix_dir,
                 label="Selected SNN",
+                stage=conversion_prefix_artifact_stage(cfg),
             )
 
         _validate_aware_final_ann_training_provenance(cfg, layout)
         _validate_aware_source_ann_runtime_provenance(cfg, layout)
 
         if cfg["rotation"]["enabled"]:
+            validate_canonical_preprocessing_manifest_for_config(
+                cfg,
+                read_json(
+                    layout.canonical_preprocessing_calibration_manifest_path
+                ),
+            )
             regression_path = layout.rotation_regression_path
             regression = read_json(regression_path)
             _verify_rotation_regression_suite(regression)

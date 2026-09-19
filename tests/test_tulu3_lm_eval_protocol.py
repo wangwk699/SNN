@@ -1,3 +1,4 @@
+import json
 import random
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ from snn2.data import (
     _manifest_split_selection,
     prepare_calibration_manifest,
     prepare_manifests,
+    validate_canonical_preprocessing_manifest_for_config,
 )
 from snn2.lm_eval_protocol import (LM_EVAL_0_4_8_TASK_COT, LM_EVAL_0_4_8_TASK_METRIC, build_test_selection, correct_effective_sample_counts, prune_empty_selected_leaves,
     extract_metric_value, result_contains_metric, seconds_to_hms, selection_by_leaf, validate_lm_eval_task_specs)
@@ -86,8 +88,72 @@ def test_tulu_calibration_seed_changes_only_nested_calibration(monkeypatch, tmp_
     second = prepare_manifests(changed, type("L", (), {"data_dir": tmp_path / "two"})())
     assert first["train"]["indices"] == second["train"]["indices"]
     assert first["calibration"]["indices"] != second["calibration"]["indices"]
+    assert (
+        first["canonical_preprocessing_calibration"]
+        == second["canonical_preprocessing_calibration"]
+    )
     assert set(first["calibration"]["indices"]).issubset(first["train"]["indices"])
     assert set(second["calibration"]["indices"]).issubset(second["train"]["indices"])
+
+
+def test_canonical_manifest_is_write_once_validate_and_reuse(monkeypatch, tmp_path):
+    class Dataset(list):
+        column_names = ()
+
+        def select(self, indices):
+            return Dataset(self[index] for index in indices)
+
+    raw = {"train": Dataset({"id": i} for i in range(200))}
+    monkeypatch.setattr("snn2.data._load_raw", lambda cfg: raw)
+    cfg = _cfg(samples=40, seed=42)
+    cfg.update({
+        "data": {
+            "dataset_name": "fake",
+            "dataset_revision": "revision",
+            "train_split": "train",
+            "validation_size": 5,
+        },
+        "calibration": {
+            "seed": 42,
+            "num_samples": 4,
+            "with_replacement": False,
+        },
+    })
+    layout = SimpleNamespace(
+        data_dir=tmp_path / "data",
+        calibration_data_manifest_path=tmp_path / "stage_a" / "manifest.json",
+        canonical_preprocessing_calibration_manifest_path=(
+            tmp_path / "canonical" / "calibration_manifest.json"
+        ),
+    )
+    first = prepare_manifests(cfg, layout)["canonical_preprocessing_calibration"]
+    changed = {
+        **cfg,
+        "training": {"train_samples": 20, "train_seed": 99},
+        "calibration": {**cfg["calibration"], "seed": 99, "num_samples": 8},
+    }
+    second = prepare_manifests(changed, layout)["canonical_preprocessing_calibration"]
+    assert second == first
+    assert first["selection_seed_source"] == "experiment.seed"
+    assert first["selection_seed"] == cfg["experiment"]["seed"]
+    assert first["selection_scope"] == "raw_train_split"
+    for obsolete in (
+        "calibration_seed",
+        "positions_in_selected_train",
+        "retained_in_training",
+    ):
+        assert obsolete not in first
+
+    stale = dict(first)
+    stale["selection_seed"] = 999
+    with pytest.raises(ValueError, match="selection_seed"):
+        validate_canonical_preprocessing_manifest_for_config(cfg, stale)
+
+    layout.canonical_preprocessing_calibration_manifest_path.write_text(
+        json.dumps(stale), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="selection_seed"):
+        prepare_manifests(cfg, layout)
 
 
 def test_tulu_calibration_only_matches_full_prepare(monkeypatch, tmp_path):
@@ -183,26 +249,35 @@ def test_tulu_run_and_shared_data_paths_encode_all_selection_seeds():
     changed_train = ArtifactLayout({**cfg, "training": {**cfg["training"], "train_seed": 45}})
     changed_samples = ArtifactLayout({**cfg, "training": {**cfg["training"], "train_samples": 20}})
     changed_calibration = ArtifactLayout({**cfg, "calibration": {**cfg["calibration"], "seed": 46}})
+    changed_num_samples = ArtifactLayout({**cfg, "calibration": {**cfg["calibration"], "num_samples": 8}})
     changed_experiment = ArtifactLayout({**cfg, "experiment": {**cfg["experiment"], "seed": 8}})
     for changed in (changed_train, changed_samples, changed_calibration, changed_experiment):
         assert changed.root != layout.root
     assert changed_train.calibration_data_manifest_path != layout.calibration_data_manifest_path
-    assert changed_train.ann_training_prefix_dir != layout.ann_training_prefix_dir
+    assert changed_train.ann_training_prefix_dir == layout.ann_training_prefix_dir
+    assert changed_train.rotated_pre_finetuning_dir == layout.rotated_pre_finetuning_dir
     assert changed_train.ann_training_calibration_dir != layout.ann_training_calibration_dir
     assert changed_train.canonical_preprocessing_calibration_manifest_path == layout.canonical_preprocessing_calibration_manifest_path
     assert changed_train.rotation_dir == layout.rotation_dir
     assert changed_train.rotation_regression_path == layout.rotation_regression_path
     assert changed_train.rotation_summary_path == layout.rotation_summary_path
     assert changed_samples.calibration_data_manifest_path != layout.calibration_data_manifest_path
-    assert changed_samples.ann_training_prefix_dir != layout.ann_training_prefix_dir
+    assert changed_samples.ann_training_prefix_dir == layout.ann_training_prefix_dir
+    assert changed_samples.rotated_pre_finetuning_dir == layout.rotated_pre_finetuning_dir
     assert changed_samples.ann_training_calibration_dir != layout.ann_training_calibration_dir
     assert changed_samples.canonical_preprocessing_calibration_manifest_path == layout.canonical_preprocessing_calibration_manifest_path
     assert changed_samples.rotation_dir == layout.rotation_dir
     assert changed_samples.rotation_regression_path == layout.rotation_regression_path
-    assert changed_calibration.ann_training_prefix_dir != layout.ann_training_prefix_dir
-    assert changed_calibration.canonical_preprocessing_calibration_manifest_path != layout.canonical_preprocessing_calibration_manifest_path
+    assert changed_calibration.ann_training_prefix_dir == layout.ann_training_prefix_dir
+    assert changed_calibration.canonical_preprocessing_calibration_manifest_path == layout.canonical_preprocessing_calibration_manifest_path
+    assert changed_calibration.rotated_pre_finetuning_dir == layout.rotated_pre_finetuning_dir
     assert changed_calibration.rotation_dir == layout.rotation_dir
-    assert changed_calibration.rotation_regression_path != layout.rotation_regression_path
+    assert changed_calibration.rotation_regression_path == layout.rotation_regression_path
+    assert changed_num_samples.ann_training_prefix_dir == layout.ann_training_prefix_dir
+    assert changed_num_samples.canonical_preprocessing_calibration_manifest_path == layout.canonical_preprocessing_calibration_manifest_path
+    assert changed_num_samples.rotation_regression_path == layout.rotation_regression_path
+    assert changed_num_samples.rotated_pre_finetuning_dir == layout.rotated_pre_finetuning_dir
+    assert changed_num_samples.ann_training_calibration_dir != layout.ann_training_calibration_dir
     assert changed_experiment.rotation_dir != layout.rotation_dir
     for changed in (changed_train, changed_samples, changed_calibration):
         assert changed.rotation_dir / "rotation_state.pt" == layout.rotation_dir / "rotation_state.pt"

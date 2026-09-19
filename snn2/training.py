@@ -49,7 +49,10 @@ def capture_training_artifact_provenance(
     captured: dict[str, Any] = {}
     if training_prefix_enabled(cfg):
         prefix_info = validate_prefix_discovery_state(
-            cfg, layout, layout.ann_training_prefix_dir
+            cfg,
+            layout,
+            layout.ann_training_prefix_dir,
+            stage="pre_finetuning",
         )
         prefix_state_path = prefix_info["state_path"]
         saved_ids = prefix_info["token_ids"]

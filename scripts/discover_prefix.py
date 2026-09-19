@@ -2,7 +2,8 @@ from _common import parser, setup
 
 from snn2.artifacts import sha256_file, write_json
 from snn2.controller import SiteController
-from snn2.data import load_selected_raw
+from snn2.data import load_canonical_preprocessing_raw, load_selected_raw
+from snn2.data_constants import CANONICAL_PREPROCESSING_NUM_SAMPLES
 from snn2.logging_utils import StageRun
 from snn2.model_integration import install_model_integration
 from snn2.modeling import load_model, load_tokenizer, model_source_for_stage, rotation_state
@@ -31,6 +32,13 @@ def main():
     logs_dir = layout.ann_training_prefix_logs_dir if canonical_stage == "pre_finetuning" else layout.post_finetuning_prefix_logs_dir
     with StageRun(f"discover_prefix_{args.stage}", logs_dir, cfg["experiment"]) as run:
         if canonical_stage == "pre_finetuning":
+            manifest_path = layout.canonical_preprocessing_calibration_manifest_path
+            if not manifest_path.exists():
+                raise FileNotFoundError(
+                    "Pre-finetuning Prefix requires the fixed canonical 128 "
+                    "manifest. Run Step 2 prepare_data.py first. Missing: "
+                    f"{manifest_path}"
+                )
             missing = []
             if bool(cfg["rotation"]["enabled"]):
                 fused_config = layout.rotation_dir / "fused_base" / "config.json"
@@ -47,19 +55,31 @@ def main():
                     f"Missing: {', '.join(str(path) for path in missing)}"
                 )
             output_dir = layout.ann_training_prefix_dir
+            calibration_raw = load_canonical_preprocessing_raw(cfg, layout)
+            discovery_num_samples = CANONICAL_PREPROCESSING_NUM_SAMPLES
+            discovery_data_source = "canonical_preprocessing_calibration"
         else:
             if not layout.ann_checkpoint_dir.exists():
                 raise FileNotFoundError(layout.ann_checkpoint_dir)
             output_dir = layout.post_finetuning_prefix_dir
+            calibration_raw = load_selected_raw(cfg, layout).calibration
+            manifest_path = layout.calibration_data_manifest_path
+            discovery_num_samples = int(cfg["calibration"]["num_samples"])
+            discovery_data_source = "stage_a_calibration_selection"
         source = model_source_for_stage(cfg, layout, stage=canonical_stage)
         model = load_model(cfg, source, training=False, device_map=cfg["calibration"].get("device_map"))
         tokenizer = load_tokenizer(cfg, source)
         install_model_integration(model, SiteController(mode="identity"), rotation_state(cfg, layout))
-        state = discover_prefix_tokens(model, tokenizer, load_selected_raw(cfg, layout).calibration, cfg, output_dir / "prefix_state.json")
-        manifest_path = layout.calibration_data_manifest_path
+        state = discover_prefix_tokens(
+            model,
+            tokenizer,
+            calibration_raw,
+            cfg,
+            output_dir / "prefix_state.json",
+        )
         state.update({
-            "discovery_num_samples": int(cfg["calibration"]["num_samples"]),
-            "discovery_data_source": "stage_a_calibration_selection",
+            "discovery_num_samples": discovery_num_samples,
+            "discovery_data_source": discovery_data_source,
             "discovery_manifest_path": str(manifest_path.resolve()),
             "discovery_manifest_sha256": sha256_file(manifest_path),
         })

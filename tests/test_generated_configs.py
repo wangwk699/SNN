@@ -447,7 +447,8 @@ def test_train_sample_count_isolates_data_dependent_artifacts_only(
 
     assert first.root != second.root
     assert first.data_dir != second.data_dir
-    assert first.ann_training_prefix_dir != second.ann_training_prefix_dir
+    assert first.ann_training_prefix_dir == second.ann_training_prefix_dir
+    assert first.rotated_pre_finetuning_dir == second.rotated_pre_finetuning_dir
     assert first.ann_training_calibration_dir != second.ann_training_calibration_dir
     assert (
         first.canonical_preprocessing_calibration_manifest_path

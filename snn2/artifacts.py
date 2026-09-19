@@ -19,6 +19,7 @@ from .config import (
     training_common_clip_enabled,
     use_post_finetuning_artifacts,
 )
+from .data_constants import CANONICAL_PREPROCESSING_NUM_SAMPLES
 
 
 def prefix_enabled_dirname(enabled: bool) -> str:
@@ -314,7 +315,6 @@ class ArtifactLayout:
             / "_shared"
             / experiment_seed_name
             / "canonical_preprocessing"
-            / f"calibration_seed_{int(cfg['calibration'].get('seed', 42))}"
         )
         policy = "rotated_prefix" if cfg["rotation"]["enabled"] else "vanilla_original"
         self.policy_root = self.shared_model_root / policy
@@ -382,11 +382,7 @@ class ArtifactLayout:
     @property
     def rotation_regression_dir(self) -> Path:
         if self._cfg["experiment"]["task"] in {"tldr", "tulu3"}:
-            return (
-                self.rotation_dir
-                / "regression"
-                / f"calibration_seed_{int(self._cfg['calibration'].get('seed', 42))}"
-            )
+            return self.rotation_dir / "regression"
         return self.rotation_dir
 
     @property
@@ -399,11 +395,13 @@ class ArtifactLayout:
 
     @property
     def ann_training_prefix_base_dir(self) -> Path:
-        return self.data_selection_policy_root / "pre_finetuning_prefix"
+        return self.policy_root / "pre_finetuning_prefix"
 
     @property
     def ann_training_prefix_dir(self) -> Path:
-        return self.ann_training_prefix_base_dir / f'num_samples_{int(self._cfg["calibration"]["num_samples"])}'
+        return self.ann_training_prefix_base_dir / (
+            f"num_samples_{CANONICAL_PREPROCESSING_NUM_SAMPLES}"
+        )
 
     @property
     def ann_training_prefix_config_dir(self) -> Path:
@@ -415,7 +413,7 @@ class ArtifactLayout:
     @property
     def rotated_pre_finetuning_dir(self) -> Path:
         """Shared artifacts for evaluating the rotated Base before ANN fine-tuning."""
-        return self.data_selection_policy_root / "rotated_pre_finetuning"
+        return self.policy_root / "rotated_pre_finetuning"
 
     @property
     def rotated_pre_finetuning_config_dir(self) -> Path:

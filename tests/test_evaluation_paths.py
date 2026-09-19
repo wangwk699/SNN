@@ -13,8 +13,19 @@ from snn2.evaluation import (
     evaluation_forward_metadata,
     global_final_norm_evaluation_metadata,
     final_ann_replacement_mode,
+    evaluation_depends_on_prefix_num_samples,
     resolve_tldr_evaluation_layout,
 )
+
+
+def test_rotated_pre_finetuning_evaluation_never_depends_on_prefix_sample_count():
+    cfg = {
+        "experiment": {"ann_mode": "unaware"},
+        "rotated_pre_finetuning": {"prefix_enabled": True},
+    }
+    assert not evaluation_depends_on_prefix_num_samples(
+        cfg, rotated_pre_finetuning=True, neuron="ann"
+    )
 
 
 @pytest.mark.parametrize(

@@ -127,7 +127,16 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         else (layout.post_finetuning_prefix_dir if stage == "post_finetuning" and prefix_enabled else None)
     )
     prefix_info = (
-        validate_prefix_discovery_state(cfg, layout, prefix_dir)
+        validate_prefix_discovery_state(
+            cfg,
+            layout,
+            prefix_dir,
+            stage=(
+                "pre_finetuning"
+                if stage == "ann_training"
+                else "post_finetuning"
+            ),
+        )
         if prefix_dir is not None
         else None
     )

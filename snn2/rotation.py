@@ -10,11 +10,8 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from .data import (
-    CANONICAL_PREPROCESSING_NUM_SAMPLES, CausalLMCollator,
-    encode_generation_prompt, tokenize_dataset,
-)
 from .data import CausalLMCollator, encode_generation_prompt, tokenize_dataset
+from .data_constants import CANONICAL_PREPROCESSING_NUM_SAMPLES
 from .hadamard import (
     HadamardSpec,
     make_spec,

@@ -47,7 +47,7 @@ def _provenance_fixture(tmp_path):
     manifest.write_text(json.dumps({"num_samples": 128}), encoding="utf-8")
     (prefix_dir / "prefix_state.json").write_text(json.dumps({
         "prefix_token_ids": [7, 8], "discovery_num_samples": 128,
-        "discovery_data_source": "stage_a_calibration_selection",
+        "discovery_data_source": "canonical_preprocessing_calibration",
         "discovery_manifest_path": str(manifest.resolve()),
         "discovery_manifest_sha256": sha256_file(manifest),
     }), encoding="utf-8")
@@ -59,7 +59,8 @@ def _provenance_fixture(tmp_path):
            "phase": {"T": 4, "base": 2.0}, "mtn": {"T": 4}}
     layout = SimpleNamespace(ann_training_prefix_dir=prefix_dir, ann_training_site_dir=site_dir,
                              ann_training_clip_profile_dir=clip_dir,
-                             calibration_data_manifest_path=manifest)
+                             calibration_data_manifest_path=tmp_path / "stage_a_manifest.json",
+                             canonical_preprocessing_calibration_manifest_path=manifest)
     return cfg, layout
 
 

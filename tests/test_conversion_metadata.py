@@ -352,6 +352,9 @@ class _SelectorLayout:
         self.ann_checkpoint_dir = self.ann_dir / "final"
         self.rotation_dir = root / "rotation"
         self.calibration_data_manifest_path = root / "data" / "calibration_manifest.json"
+        self.canonical_preprocessing_calibration_manifest_path = (
+            root / "canonical" / "calibration_manifest.json"
+        )
         self.ann_training_prefix_dir = root / "shared" / "pre_prefix" / "num_samples_128"
         self.post_finetuning_prefix_dir = root / "post" / "prefix" / "num_samples_128"
         self.ann_training_site_dir = root / "shared" / "ann_training_sites"
@@ -370,15 +373,25 @@ class _SelectorLayout:
 
 
 def _write_prefix_fixture(layout, directory):
-    layout.calibration_data_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    layout.calibration_data_manifest_path.write_text(json.dumps({"num_samples": 128}), encoding="utf-8")
+    pre = directory == layout.ann_training_prefix_dir
+    manifest_path = (
+        layout.canonical_preprocessing_calibration_manifest_path
+        if pre
+        else layout.calibration_data_manifest_path
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps({"num_samples": 128}), encoding="utf-8")
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "prefix_state.json").write_text(json.dumps({
         "prefix_token_ids": [],
         "discovery_num_samples": 128,
-        "discovery_data_source": "stage_a_calibration_selection",
-        "discovery_manifest_path": str(layout.calibration_data_manifest_path.resolve()),
-        "discovery_manifest_sha256": sha256_file(layout.calibration_data_manifest_path),
+        "discovery_data_source": (
+            "canonical_preprocessing_calibration"
+            if pre
+            else "stage_a_calibration_selection"
+        ),
+        "discovery_manifest_path": str(manifest_path.resolve()),
+        "discovery_manifest_sha256": sha256_file(manifest_path),
     }), encoding="utf-8")
 
 

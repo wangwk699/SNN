@@ -15,6 +15,7 @@ from .artifacts import (
     sha256_file,
     write_json,
 )
+from .data_constants import CANONICAL_PREPROCESSING_NUM_SAMPLES
 
 
 @dataclass
@@ -89,9 +90,6 @@ def _tulu3_train_selection(training_pool_indices: list[int], cfg: dict[str, Any]
     indices = random.Random(int(cfg["training"].get("train_seed", 42))).sample(training_pool_indices, k=requested)
     indices.sort()
     return indices, "seeded_random_without_replacement"
-
-
-CANONICAL_PREPROCESSING_NUM_SAMPLES = 128
 
 
 def _calibration_selection(
@@ -361,9 +359,9 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
     _validate_stage_a_calibration_selection(
         train_indices, calibration_positions, calibration_indices
     )
-    canonical_positions, canonical_indices = _calibration_selection(
+    _, canonical_indices = _calibration_selection(
         list(range(len(raw_train))),
-        seed=int(cfg["calibration"]["seed"]),
+        seed=int(cfg["experiment"]["seed"]),
         num_samples=CANONICAL_PREPROCESSING_NUM_SAMPLES,
         with_replacement=False,
     )
@@ -417,15 +415,15 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         "canonical_preprocessing_calibration": {
             **common,
             "manifest_role": "canonical_preprocessing_calibration",
+            "selection_scope": "raw_train_split",
+            "selection_seed_source": "experiment.seed",
+            "selection_seed": int(cfg["experiment"]["seed"]),
             "split": train_split,
             "sampling": "seeded_without_replacement",
-            "calibration_seed": int(cfg["calibration"]["seed"]),
             "num_samples": CANONICAL_PREPROCESSING_NUM_SAMPLES,
-            "positions_in_selected_train": canonical_positions,
             "indices": canonical_indices,
             "record_ids": _record_ids(raw_train, canonical_indices),
             "duplicates_preserved": False,
-            "retained_in_training": True,
         },
     }
     if task == "tldr":
@@ -453,7 +451,20 @@ def prepare_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, 
         layout.data_dir / "canonical_preprocessing" / "num_samples_128" / "calibration_manifest.json",
     )
     write_json(stage_a_manifest_path, manifests["calibration"])
-    write_json(canonical_manifest_path, manifests["canonical_preprocessing_calibration"])
+    canonical_manifest = manifests["canonical_preprocessing_calibration"]
+    if canonical_manifest_path.exists():
+        existing = read_json(canonical_manifest_path)
+        validate_canonical_preprocessing_manifest_for_config(
+            cfg, existing, expected_indices=canonical_indices
+        )
+        if existing.get("record_ids") != canonical_manifest["record_ids"]:
+            raise ValueError(
+                "Canonical preprocessing calibration manifest record IDs do not "
+                "match the deterministic canonical selection"
+            )
+        manifests["canonical_preprocessing_calibration"] = existing
+    else:
+        write_json(canonical_manifest_path, canonical_manifest)
     return manifests
 
 
@@ -471,11 +482,24 @@ def load_manifests(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[str, dic
         result["evaluation"] = read_json(evaluation)
     return result
 
-def load_canonical_preprocessing_raw(cfg: dict[str, Any], layout: ArtifactLayout) -> Any:
-    """Load the fixed canonical 128-sample selection used only by preprocessing."""
-    manifest = read_json(layout.canonical_preprocessing_calibration_manifest_path)
+def validate_canonical_preprocessing_manifest_for_config(
+    cfg: dict[str, Any],
+    manifest: dict[str, Any],
+    *,
+    expected_indices: list[int] | None = None,
+) -> None:
+    """Validate the task-shared canonical selection against its full identity."""
+    data_cfg = cfg["data"]
     expected = {
+        "dataset_name": data_cfg["dataset_name"],
+        "dataset_config_name": data_cfg.get("dataset_config_name"),
+        "dataset_revision": data_cfg.get("dataset_revision"),
+        "seed": int(cfg["experiment"]["seed"]),
         "manifest_role": "canonical_preprocessing_calibration",
+        "selection_scope": "raw_train_split",
+        "selection_seed_source": "experiment.seed",
+        "selection_seed": int(cfg["experiment"]["seed"]),
+        "split": data_cfg.get("train_split", "train"),
         "num_samples": CANONICAL_PREPROCESSING_NUM_SAMPLES,
         "sampling": "seeded_without_replacement",
         "duplicates_preserved": False,
@@ -485,11 +509,31 @@ def load_canonical_preprocessing_raw(cfg: dict[str, Any], layout: ArtifactLayout
         for key, value in expected.items()
         if manifest.get(key) != value
     }
+    indices = manifest.get("indices")
+    indices_valid = (
+        isinstance(indices, list)
+        and len(indices) == CANONICAL_PREPROCESSING_NUM_SAMPLES
+        and all(isinstance(index, int) and index >= 0 for index in indices)
+        and len(set(indices)) == len(indices)
+    )
+    if not indices_valid:
+        mismatched["indices"] = ("128 unique nonnegative integers", indices)
+    elif expected_indices is not None and indices != expected_indices:
+        mismatched["indices"] = (expected_indices, indices)
     if mismatched:
         raise ValueError(
             "Canonical preprocessing calibration manifest is invalid: "
             f"{mismatched}"
         )
+
+
+def load_canonical_preprocessing_raw(cfg: dict[str, Any], layout: ArtifactLayout) -> Any:
+    """Load the fixed experiment-seed canonical 128-sample selection."""
+    manifest_path = layout.canonical_preprocessing_calibration_manifest_path
+    if not manifest_path.exists():
+        raise FileNotFoundError(manifest_path)
+    manifest = read_json(manifest_path)
+    validate_canonical_preprocessing_manifest_for_config(cfg, manifest)
     raw = _load_raw(cfg)
     return raw[manifest["split"]].select(manifest["indices"])
 
@@ -498,20 +542,38 @@ def validate_prefix_discovery_state(
     cfg: dict[str, Any],
     layout: ArtifactLayout,
     prefix_dir: str | Path,
+    *,
+    stage: str,
 ) -> dict[str, Any]:
-    """Validate that a Prefix artifact belongs to the current Stage A selection."""
+    """Validate Prefix provenance for an explicit discovery stage."""
+    if stage not in {"pre_finetuning", "post_finetuning"}:
+        raise ValueError(f"Unknown Prefix discovery stage: {stage}")
     root = Path(prefix_dir)
-    expected_dirname = f"num_samples_{int(cfg['calibration']['num_samples'])}"
+    pre = stage == "pre_finetuning"
+    num_samples = (
+        CANONICAL_PREPROCESSING_NUM_SAMPLES
+        if pre
+        else int(cfg["calibration"]["num_samples"])
+    )
+    expected_dirname = f"num_samples_{num_samples}"
     if root.name != expected_dirname:
         raise ValueError(f"Prefix root must be {expected_dirname}, got {root.name}")
     path = root / "prefix_state.json"
     if not path.exists():
         raise FileNotFoundError(path)
     state = read_json(path)
-    manifest_path = layout.calibration_data_manifest_path
+    manifest_path = (
+        layout.canonical_preprocessing_calibration_manifest_path
+        if pre
+        else layout.calibration_data_manifest_path
+    )
     expected = {
-        "discovery_num_samples": int(cfg["calibration"]["num_samples"]),
-        "discovery_data_source": "stage_a_calibration_selection",
+        "discovery_num_samples": num_samples,
+        "discovery_data_source": (
+            "canonical_preprocessing_calibration"
+            if pre
+            else "stage_a_calibration_selection"
+        ),
         "discovery_manifest_path": str(manifest_path.resolve()),
         "discovery_manifest_sha256": sha256_file(manifest_path),
     }
