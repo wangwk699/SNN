@@ -23,9 +23,9 @@ from snn2.neurons import (
     SoftmaxIdentityGIF, StaticGIF, _mask_values, GIF_LOW_QMAX,
 )
 from snn2.prefix_cache import install_prefix_kv_forward, prefix_length
-from snn2.training import validate_recorded_training_artifact_provenance
 
 ENERGY_PROFILER_VERSION = 3
+ENERGY_METADATA_SCHEMA_VERSION = 2
 ENERGY_ACCOUNTING_POLICY = "sat_llm_mac_ac_v3_final_deployment_protocol"
 SEQUENCE_LENGTH = 512
 COLUMNS = ("Model", "Neuron", "T", "MACs (G)", "Synaptic ACs (G)", "Neuron ACs (G)", "Total ACs (G)", "Energy (J)")
@@ -296,11 +296,55 @@ def validate_energy_deployment_protocol(cfg: dict, neuron: str) -> None:
     raise ValueError(f"Unknown Energy neuron: {neuron!r}")
 
 
+SAMPLE_IDENTITY_KEYS = (
+    "validation_manifest_sha256",
+    "selected_validation_positions",
+    "profile_num_samples",
+    "profile_seed",
+    "profile_sequence_length",
+)
+
+
+def energy_sample_identity(metadata: dict) -> dict:
+    """Return the held-out sample identity required across all four Energy rows."""
+    return {key: metadata[key] for key in SAMPLE_IDENTITY_KEYS}
+
+
+def validate_energy_prefix_runtime(*, actual_enabled: bool, cache: Any | None, prefix_tokens: int) -> None:
+    """Keep the resolved deployment policy, loaded cache, and length in sync."""
+    if actual_enabled and cache is None:
+        raise RuntimeError("Energy protocol says Prefix is enabled but no Prefix KV cache was loaded")
+    if not actual_enabled and cache is not None:
+        raise RuntimeError("Energy protocol says Prefix is disabled but a Prefix KV cache was loaded")
+    if actual_enabled and prefix_tokens <= 0:
+        raise RuntimeError("Energy protocol says Prefix is enabled but Prefix length is not positive")
+    if not actual_enabled and prefix_tokens != 0:
+        raise RuntimeError("Energy protocol says Prefix is disabled but Prefix length is nonzero")
+
+
+def energy_prefix_provenance(cfg: dict, layout: Any, *, neuron: str, cache: Any | None, prefix_tokens: int) -> dict:
+    """Describe both the configured switch and the Prefix actually used."""
+    actual_enabled = bool(layout.energy_prefix_enabled(neuron))
+    validate_energy_prefix_runtime(actual_enabled=actual_enabled, cache=cache, prefix_tokens=prefix_tokens)
+    if actual_enabled:
+        artifact_stage = (
+            final_ann_evaluation_prefix_artifact_stage(cfg)
+            if neuron == "ann" else final_snn_evaluation_prefix_artifact_stage(cfg)
+        )
+    else:
+        artifact_stage = None
+    return {
+        "configured_evaluation_prefix_enabled": bool(cfg["evaluation"]["prefix_enabled"]),
+        "actual_evaluation_prefix_enabled": actual_enabled,
+        "prefix_artifact_stage": artifact_stage,
+        "prefix_length": prefix_tokens,
+        "energy_path_prefix_enabled": actual_enabled,
+    }
+
+
 def profile_energy(cfg: dict, layout: Any, *, neuron: str) -> dict:
     validate_energy_deployment_protocol(cfg, neuron)
     source = model_source_for_stage(cfg, layout, stage="post_finetuning")
-    if neuron == "ann" and cfg["experiment"]["ann_mode"] in {"phase_aware", "gif_aware"}:
-        validate_recorded_training_artifact_provenance(cfg, layout)
     controller, _ = build_evaluation_controller(cfg, layout, neuron=neuron)
     model = load_model(cfg, source, training=False)
     model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
@@ -310,6 +354,9 @@ def profile_energy(cfg: dict, layout: Any, *, neuron: str) -> dict:
     prefix_stage = "final_ann_evaluation" if neuron == "ann" else "final_snn_evaluation"
     cache = prefix_key_values_for_stage(cfg, layout, stage=prefix_stage)
     prefix_tokens = prefix_length(cache) if cache is not None else 0
+    prefix_provenance = energy_prefix_provenance(
+        cfg, layout, neuron=neuron, cache=cache, prefix_tokens=prefix_tokens
+    )
     if cache is not None:
         install_prefix_kv_forward(model, cache, controller=controller)
     model.eval()
@@ -351,6 +398,6 @@ def profile_energy(cfg: dict, layout: Any, *, neuron: str) -> dict:
         writer.writerow(result)
     write_json(output / "energy_results.json", result)
     write_json(output / "energy_sample_manifest.json", {"source": "validation_manifest", "sequence_length": SEQUENCE_LENGTH, "num_samples": n, "selection_seed_source": "calibration.seed", "selection_seed": seed, "sampling": "seeded_random_without_replacement", "positions_in_validation": positions, "validation_manifest_sha256": manifest_hash})
-    metadata = {"energy_profiler_version": ENERGY_PROFILER_VERSION, "energy_accounting_policy": ENERGY_ACCOUNTING_POLICY, "experiment_id": cfg["experiment"].get("id"), "task": cfg["experiment"]["task"], "model_name": cfg["experiment"]["model_name"], "ann_mode": cfg["experiment"]["ann_mode"], "source_ann_mode": cfg["experiment"]["ann_mode"], "energy_deployment_protocol": "vanilla_ann_vs_single_selected_aware_checkpoint_snn", "energy_deployment_role": "ann_baseline" if neuron == "ann" else "selected_aware_snn", "neuron": neuron, "deployment_T": result["T"], "phase_base": cfg["phase"]["base"] if neuron == "phase" else None, "mtn_K": cfg["mtn"]["K"] if neuron == "mtn" else None, "conversion_use_post_finetuning_artifacts": cfg["conversion"]["use_post_finetuning_artifacts"], "evaluation_prefix_enabled": cfg["evaluation"]["prefix_enabled"], "prefix_artifact_stage": final_ann_evaluation_prefix_artifact_stage(cfg) if neuron == "ann" else final_snn_evaluation_prefix_artifact_stage(cfg), "prefix_length": prefix_tokens, "profile_sequence_length": SEQUENCE_LENGTH, "profile_num_samples": n, "profile_seed": seed, "selected_validation_positions": positions, "validation_manifest_path": str(manifest_path), "validation_manifest_sha256": manifest_hash, "checkpoint_source": source, "controller_mode": controller.mode, "mac_energy_pj": 4.6, "ac_energy_pj": 0.9, "energy_scope": "mac_synaptic_ac_neuron_ac_only", "memory_energy_included": False, "dense_residual_bias_ac_included": False, "dense_elementwise_additions_included": False, "special_function_energy_included": False, "hadamard_rotation_energy_included": False, "fixed_neuron_coefficient_policy": "prefold_or_fixed_event_lookup", "gif_unit_event_policy": "integer_code_expanded_to_unit_events", "gif_zero_point_compensation_policy": "fixed_prefolded_or_bias_like_compensation_not_counted", "gif_asymmetric_zero_point_energy_included": False, "energy_path_profile_num_samples": n, "energy_path_prefix_enabled": layout.energy_prefix_enabled(neuron), "gif_neuron_ac_policy": "no_recurrent_membrane_ac_in_current_static_gif_temporal_impl", "total_mac_raw": total.mac_raw, "total_synaptic_ac_raw": total.synaptic_ac_raw, "total_neuron_ac_raw": total.neuron_ac_raw, "mean_mac_raw": mean_mac, "mean_synaptic_ac_raw": mean_syn, "mean_neuron_ac_raw": mean_neuron}
+    metadata = {"energy_profiler_version": ENERGY_PROFILER_VERSION, "energy_metadata_schema_version": ENERGY_METADATA_SCHEMA_VERSION, "energy_accounting_policy": ENERGY_ACCOUNTING_POLICY, "experiment_id": cfg["experiment"].get("id"), "task": cfg["experiment"]["task"], "model_name": cfg["experiment"]["model_name"], "ann_mode": cfg["experiment"]["ann_mode"], "source_ann_mode": cfg["experiment"]["ann_mode"], "energy_deployment_protocol": "vanilla_ann_vs_single_selected_aware_checkpoint_snn", "energy_deployment_role": "ann_baseline" if neuron == "ann" else "selected_aware_snn", "neuron": neuron, "deployment_T": result["T"], "phase_base": cfg["phase"]["base"] if neuron == "phase" else None, "mtn_K": cfg["mtn"]["K"] if neuron == "mtn" else None, "conversion_use_post_finetuning_artifacts": cfg["conversion"]["use_post_finetuning_artifacts"], **prefix_provenance, "profile_sequence_length": SEQUENCE_LENGTH, "profile_num_samples": n, "profile_seed": seed, "selected_validation_positions": positions, "validation_manifest_path": str(manifest_path), "validation_manifest_sha256": manifest_hash, "checkpoint_source": source, "controller_mode": controller.mode, "mac_energy_pj": 4.6, "ac_energy_pj": 0.9, "energy_scope": "mac_synaptic_ac_neuron_ac_only", "memory_energy_included": False, "dense_residual_bias_ac_included": False, "dense_elementwise_additions_included": False, "special_function_energy_included": False, "hadamard_rotation_energy_included": False, "fixed_neuron_coefficient_policy": "prefold_or_fixed_event_lookup", "gif_unit_event_policy": "integer_code_expanded_to_unit_events", "gif_zero_point_compensation_policy": "fixed_prefolded_or_bias_like_compensation_not_counted", "gif_asymmetric_zero_point_energy_included": False, "energy_path_profile_num_samples": n, "gif_neuron_ac_policy": "no_recurrent_membrane_ac_in_current_static_gif_temporal_impl", "total_mac_raw": total.mac_raw, "total_synaptic_ac_raw": total.synaptic_ac_raw, "total_neuron_ac_raw": total.neuron_ac_raw, "mean_mac_raw": mean_mac, "mean_synaptic_ac_raw": mean_syn, "mean_neuron_ac_raw": mean_neuron}
     write_json(output / "energy_metadata.json", metadata)
     return result

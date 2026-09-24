@@ -7,6 +7,8 @@ from snn2.energy_profiler import (
     fixed_length_input, gif_integer_multiplicity, linear_counts,
     select_validation_positions, temporal_product_counts,
     validate_energy_deployment_protocol, profile_energy, ENERGY_PROFILER_VERSION, ENERGY_ACCOUNTING_POLICY,
+    ENERGY_METADATA_SCHEMA_VERSION, energy_prefix_provenance, validate_energy_prefix_runtime,
+    energy_sample_identity,
 )
 from snn2.neurons import IdentityGIF, SoftmaxIdentityGIF, StaticGIF
 
@@ -300,3 +302,87 @@ def test_profile_entry_rejects_invalid_source_before_artifact_access(monkeypatch
         profile_energy({"experiment": {"ann_mode": "gif_aware"}}, object(), neuron="ann")
     assert ENERGY_PROFILER_VERSION == 3
     assert ENERGY_ACCOUNTING_POLICY == "sat_llm_mac_ac_v3_final_deployment_protocol"
+
+
+def test_vanilla_ann_prefix_provenance_uses_actual_disabled_state():
+    from snn2.artifacts import ArtifactLayout
+    from snn2.config import load_config
+    cfg = load_config("configs/generated/exp1_qwen3_1_7b_tldr__vanilla.yaml")
+    cfg["evaluation"]["prefix_enabled"] = True
+    layout = ArtifactLayout(cfg)
+    assert layout.energy_prefix_enabled("ann") is False
+    provenance = energy_prefix_provenance(cfg, layout, neuron="ann", cache=None, prefix_tokens=0)
+    assert provenance == {
+        "configured_evaluation_prefix_enabled": True,
+        "actual_evaluation_prefix_enabled": False,
+        "prefix_artifact_stage": None,
+        "prefix_length": 0,
+        "energy_path_prefix_enabled": False,
+    }
+    assert ENERGY_METADATA_SCHEMA_VERSION == 2
+
+
+@pytest.mark.parametrize("use_post,expected_stage", [(False, "pre_finetuning"), (True, "post_finetuning")])
+def test_selected_aware_snn_prefix_provenance_follows_selector(use_post, expected_stage):
+    from snn2.artifacts import ArtifactLayout
+    from snn2.config import load_config
+    cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__phase_aware.yaml")
+    cfg["evaluation"]["prefix_enabled"] = True
+    cfg["conversion"]["use_post_finetuning_artifacts"] = use_post
+    layout = ArtifactLayout(cfg)
+    provenance = energy_prefix_provenance(cfg, layout, neuron="phase", cache=object(), prefix_tokens=16)
+    assert provenance["configured_evaluation_prefix_enabled"] is True
+    assert provenance["actual_evaluation_prefix_enabled"] is True
+    assert provenance["energy_path_prefix_enabled"] is True
+    assert provenance["prefix_artifact_stage"] == expected_stage
+    assert provenance["prefix_length"] == 16
+
+
+def test_selected_aware_snn_disabled_prefix_has_no_artifact_stage():
+    from snn2.artifacts import ArtifactLayout
+    from snn2.config import load_config
+    cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__phase_aware.yaml")
+    cfg["evaluation"]["prefix_enabled"] = False
+    provenance = energy_prefix_provenance(cfg, ArtifactLayout(cfg), neuron="gif", cache=None, prefix_tokens=0)
+    assert provenance["configured_evaluation_prefix_enabled"] is False
+    assert provenance["actual_evaluation_prefix_enabled"] is False
+    assert provenance["prefix_artifact_stage"] is None
+    assert provenance["prefix_length"] == 0
+
+
+@pytest.mark.parametrize("enabled,cache,tokens", [
+    (True, None, 0),
+    (True, object(), 0),
+    (False, object(), 0),
+    (False, None, 1),
+])
+def test_prefix_runtime_rejects_inconsistent_state(enabled, cache, tokens):
+    with pytest.raises(RuntimeError, match="Energy protocol says Prefix"):
+        validate_energy_prefix_runtime(actual_enabled=enabled, cache=cache, prefix_tokens=tokens)
+
+
+def test_prefix_runtime_accepts_consistent_state():
+    validate_energy_prefix_runtime(actual_enabled=True, cache=object(), prefix_tokens=16)
+    validate_energy_prefix_runtime(actual_enabled=False, cache=None, prefix_tokens=0)
+
+
+@pytest.mark.parametrize("changed_key", [
+    "validation_manifest_sha256", "selected_validation_positions",
+    "profile_num_samples", "profile_seed", "profile_sequence_length",
+])
+def test_four_row_sample_identity_detects_every_mismatch(changed_key):
+    from copy import deepcopy
+    baseline = {
+        "validation_manifest_sha256": "same-manifest",
+        "selected_validation_positions": [1, 3, 7],
+        "profile_num_samples": 3,
+        "profile_seed": 42,
+        "profile_sequence_length": 512,
+        "checkpoint_source": "vanilla-final-ann",
+    }
+    rows = [deepcopy(baseline) for _ in range(4)]
+    for row in rows[1:]:
+        row["checkpoint_source"] = "selected-aware-final-ann"
+    assert len({str(energy_sample_identity(row)) for row in rows}) == 1
+    rows[-1][changed_key] = [2, 3, 7] if changed_key == "selected_validation_positions" else "different"
+    assert energy_sample_identity(rows[-1]) != energy_sample_identity(rows[0])
