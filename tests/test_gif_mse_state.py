@@ -175,6 +175,7 @@ def test_common_calibration_runs_one_or_two_passes_with_identical_sample_order(
 
     for enabled, expected in ((False, [11, 22]), (True, [11, 22, 11, 22])):
         cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__gif_aware.yaml")
+        cfg["calibration"]["gif_previous_layers_snn"] = False
         cfg["gif"]["mse_scale_refinement"] = enabled
         controller = SiteController(mode="collect")
         model = ToyModel(controller)
@@ -232,6 +233,7 @@ def test_histogram_binds_current_source_statistics_hash(tmp_path):
             return {"format_version": 2, "configured_group_size": 128, **metadata}
 
     cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__gif_aware.yaml")
+    cfg["calibration"]["gif_previous_layers_snn"] = False
     directory = tmp_path / "layer_000" / "site_02"
     directory.mkdir(parents=True)
     source = directory / "statistics.pt"
