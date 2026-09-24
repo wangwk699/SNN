@@ -619,6 +619,17 @@ class ArtifactLayout:
             return result / mtn_snn_dirname(self._cfg["mtn"]["T"], self._cfg["mtn"]["K"])
         return result
 
+    @property
+    def energy_root(self) -> Path:
+        return self.root / "energy"
+
+    def energy_dir(self, neuron: str) -> Path:
+        if neuron == "ann":
+            return self.energy_root / "ann"
+        if neuron not in {"phase", "gif", "mtn"}:
+            raise ValueError(f"Unknown energy neuron: {neuron}")
+        return self.energy_root / "snn" / self.snn_dir(neuron).relative_to(self.root / "snn")
+
     def snn_conversion_dir(self, neuron: str) -> Path:
         enabled = conversion_prefix_enabled(self._cfg)
         return self.snn_dir(neuron) / "conversion" / prefix_enabled_dirname(enabled)
