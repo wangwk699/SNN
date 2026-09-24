@@ -6,6 +6,7 @@ from snn2.energy_profiler import (
     EnergyInstrumentation, _pair, count_temporal_matmul, energy_j_from_raw_counts,
     fixed_length_input, gif_integer_multiplicity, linear_counts,
     select_validation_positions, temporal_product_counts,
+    validate_energy_deployment_protocol, profile_energy, ENERGY_PROFILER_VERSION, ENERGY_ACCOUNTING_POLICY,
 )
 from snn2.neurons import IdentityGIF, SoftmaxIdentityGIF, StaticGIF
 
@@ -273,3 +274,29 @@ def test_gif_nonzero_zero_point_uses_unsigned_code_event_policy():
     assert gif_integer_multiplicity(module, incoming)[:, 0, 0].tolist() == [[3, 15], [0, 6]]
     # Numerical GIF output still subtracts the fixed zero points.
     torch.testing.assert_close(module.temporal(incoming).sum(0), incoming.sum(0))
+
+
+@pytest.mark.parametrize("mode,neuron,allowed", [
+    (mode, neuron, (mode == "vanilla" if neuron == "ann" else mode in {"phase_aware", "gif_aware"}))
+    for mode in ("vanilla", "unaware", "phase_aware", "gif_aware")
+    for neuron in ("ann", "phase", "gif", "mtn")
+])
+def test_final_energy_deployment_protocol(mode, neuron, allowed):
+    cfg = {"experiment": {"ann_mode": mode}}
+    if allowed:
+        validate_energy_deployment_protocol(cfg, neuron)
+    else:
+        with pytest.raises(ValueError, match="Final .* Energy requires"):
+            validate_energy_deployment_protocol(cfg, neuron)
+
+
+def test_profile_entry_rejects_invalid_source_before_artifact_access(monkeypatch):
+    import snn2.energy_profiler as energy_profiler
+    monkeypatch.setattr(
+        energy_profiler, "model_source_for_stage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("artifact access")),
+    )
+    with pytest.raises(ValueError, match="Final ANN Energy requires"):
+        profile_energy({"experiment": {"ann_mode": "gif_aware"}}, object(), neuron="ann")
+    assert ENERGY_PROFILER_VERSION == 3
+    assert ENERGY_ACCOUNTING_POLICY == "sat_llm_mac_ac_v3_final_deployment_protocol"

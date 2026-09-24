@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from _common import apply_deployment_overrides, parser, setup
 from snn2.conversion import validate_conversion_metadata
-from snn2.energy_profiler import profile_energy
+from snn2.energy_profiler import profile_energy, validate_energy_deployment_protocol
 from snn2.logging_utils import StageRun
 
 
@@ -14,6 +14,7 @@ def main() -> None:
     ).parse_args()
     cfg, layout = setup(args.config)
     apply_deployment_overrides(args, cfg)
+    validate_energy_deployment_protocol(cfg, args.neuron)
     if args.neuron != "ann":
         try:
             validate_conversion_metadata(cfg, layout, args.neuron)
