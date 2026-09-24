@@ -25,7 +25,7 @@ from snn2.neurons import (
 from snn2.prefix_cache import install_prefix_kv_forward, prefix_length
 
 ENERGY_PROFILER_VERSION = 3
-ENERGY_METADATA_SCHEMA_VERSION = 2
+ENERGY_METADATA_SCHEMA_VERSION = 3
 ENERGY_ACCOUNTING_POLICY = "sat_llm_mac_ac_v3_final_deployment_protocol"
 SEQUENCE_LENGTH = 512
 COLUMNS = ("Model", "Neuron", "T", "MACs (G)", "Synaptic ACs (G)", "Neuron ACs (G)", "Total ACs (G)", "Energy (J)")
@@ -310,23 +310,25 @@ def energy_sample_identity(metadata: dict) -> dict:
     return {key: metadata[key] for key in SAMPLE_IDENTITY_KEYS}
 
 
-def validate_energy_prefix_runtime(*, actual_enabled: bool, cache: Any | None, prefix_tokens: int) -> None:
-    """Keep the resolved deployment policy, loaded cache, and length in sync."""
-    if actual_enabled and cache is None:
-        raise RuntimeError("Energy protocol says Prefix is enabled but no Prefix KV cache was loaded")
-    if not actual_enabled and cache is not None:
-        raise RuntimeError("Energy protocol says Prefix is disabled but a Prefix KV cache was loaded")
-    if actual_enabled and prefix_tokens <= 0:
-        raise RuntimeError("Energy protocol says Prefix is enabled but Prefix length is not positive")
-    if not actual_enabled and prefix_tokens != 0:
-        raise RuntimeError("Energy protocol says Prefix is disabled but Prefix length is nonzero")
+def validate_energy_prefix_runtime(*, cache: Any | None, prefix_tokens: int) -> None:
+    """Check cache/length consistency without requiring a nonempty Prefix."""
+    if cache is not None and prefix_tokens <= 0:
+        raise RuntimeError("Loaded Prefix KV cache must have positive Prefix length")
+    if cache is None and prefix_tokens != 0:
+        raise RuntimeError("Prefix length must be zero when no Prefix KV cache is loaded")
 
 
 def energy_prefix_provenance(cfg: dict, layout: Any, *, neuron: str, cache: Any | None, prefix_tokens: int) -> dict:
-    """Describe both the configured switch and the Prefix actually used."""
-    actual_enabled = bool(layout.energy_prefix_enabled(neuron))
-    validate_energy_prefix_runtime(actual_enabled=actual_enabled, cache=cache, prefix_tokens=prefix_tokens)
-    if actual_enabled:
+    """Record configured switch, resolved policy, and actual KV injection separately."""
+    configured = bool(cfg["evaluation"]["prefix_enabled"])
+    resolved_policy = bool(layout.energy_prefix_enabled(neuron))
+    cache_loaded = cache is not None
+    validate_energy_prefix_runtime(cache=cache, prefix_tokens=prefix_tokens)
+    if not resolved_policy and cache_loaded:
+        raise RuntimeError(
+            "Prefix KV cache was loaded although the resolved Energy Prefix policy is disabled"
+        )
+    if resolved_policy:
         artifact_stage = (
             final_ann_evaluation_prefix_artifact_stage(cfg)
             if neuron == "ann" else final_snn_evaluation_prefix_artifact_stage(cfg)
@@ -334,11 +336,13 @@ def energy_prefix_provenance(cfg: dict, layout: Any, *, neuron: str, cache: Any 
     else:
         artifact_stage = None
     return {
-        "configured_evaluation_prefix_enabled": bool(cfg["evaluation"]["prefix_enabled"]),
-        "actual_evaluation_prefix_enabled": actual_enabled,
+        "configured_evaluation_prefix_enabled": configured,
+        "resolved_prefix_policy_enabled": resolved_policy,
+        "prefix_cache_loaded": cache_loaded,
+        "actual_evaluation_prefix_enabled": cache_loaded,
         "prefix_artifact_stage": artifact_stage,
         "prefix_length": prefix_tokens,
-        "energy_path_prefix_enabled": actual_enabled,
+        "energy_path_prefix_enabled": resolved_policy,
     }
 
 

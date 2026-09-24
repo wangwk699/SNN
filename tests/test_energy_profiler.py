@@ -314,12 +314,14 @@ def test_vanilla_ann_prefix_provenance_uses_actual_disabled_state():
     provenance = energy_prefix_provenance(cfg, layout, neuron="ann", cache=None, prefix_tokens=0)
     assert provenance == {
         "configured_evaluation_prefix_enabled": True,
+        "resolved_prefix_policy_enabled": False,
+        "prefix_cache_loaded": False,
         "actual_evaluation_prefix_enabled": False,
         "prefix_artifact_stage": None,
         "prefix_length": 0,
         "energy_path_prefix_enabled": False,
     }
-    assert ENERGY_METADATA_SCHEMA_VERSION == 2
+    assert ENERGY_METADATA_SCHEMA_VERSION == 3
 
 
 @pytest.mark.parametrize("use_post,expected_stage", [(False, "pre_finetuning"), (True, "post_finetuning")])
@@ -332,6 +334,8 @@ def test_selected_aware_snn_prefix_provenance_follows_selector(use_post, expecte
     layout = ArtifactLayout(cfg)
     provenance = energy_prefix_provenance(cfg, layout, neuron="phase", cache=object(), prefix_tokens=16)
     assert provenance["configured_evaluation_prefix_enabled"] is True
+    assert provenance["resolved_prefix_policy_enabled"] is True
+    assert provenance["prefix_cache_loaded"] is True
     assert provenance["actual_evaluation_prefix_enabled"] is True
     assert provenance["energy_path_prefix_enabled"] is True
     assert provenance["prefix_artifact_stage"] == expected_stage
@@ -345,25 +349,51 @@ def test_selected_aware_snn_disabled_prefix_has_no_artifact_stage():
     cfg["evaluation"]["prefix_enabled"] = False
     provenance = energy_prefix_provenance(cfg, ArtifactLayout(cfg), neuron="gif", cache=None, prefix_tokens=0)
     assert provenance["configured_evaluation_prefix_enabled"] is False
+    assert provenance["resolved_prefix_policy_enabled"] is False
+    assert provenance["prefix_cache_loaded"] is False
     assert provenance["actual_evaluation_prefix_enabled"] is False
     assert provenance["prefix_artifact_stage"] is None
     assert provenance["prefix_length"] == 0
 
 
-@pytest.mark.parametrize("enabled,cache,tokens", [
-    (True, None, 0),
-    (True, object(), 0),
-    (False, object(), 0),
-    (False, None, 1),
-])
-def test_prefix_runtime_rejects_inconsistent_state(enabled, cache, tokens):
-    with pytest.raises(RuntimeError, match="Energy protocol says Prefix"):
-        validate_energy_prefix_runtime(actual_enabled=enabled, cache=cache, prefix_tokens=tokens)
+def test_resolved_enabled_empty_prefix_is_valid():
+    from snn2.artifacts import ArtifactLayout
+    from snn2.config import load_config
+    cfg = load_config("configs/generated/exp1_qwen3_1_7b_tldr__phase_aware.yaml")
+    cfg["evaluation"]["prefix_enabled"] = True
+    layout = ArtifactLayout(cfg)
+    provenance = energy_prefix_provenance(cfg, layout, neuron="phase", cache=None, prefix_tokens=0)
+    assert provenance == {
+        "configured_evaluation_prefix_enabled": True,
+        "resolved_prefix_policy_enabled": True,
+        "prefix_cache_loaded": False,
+        "actual_evaluation_prefix_enabled": False,
+        "prefix_artifact_stage": "pre_finetuning"
+            if not cfg["conversion"]["use_post_finetuning_artifacts"] else "post_finetuning",
+        "prefix_length": 0,
+        "energy_path_prefix_enabled": True,
+    }
+    assert layout.energy_prefix_enabled("phase") is True
 
 
-def test_prefix_runtime_accepts_consistent_state():
-    validate_energy_prefix_runtime(actual_enabled=True, cache=object(), prefix_tokens=16)
-    validate_energy_prefix_runtime(actual_enabled=False, cache=None, prefix_tokens=0)
+@pytest.mark.parametrize("cache,tokens", [(object(), 0), (object(), -1), (None, 1)])
+def test_prefix_runtime_rejects_cache_length_mismatch(cache, tokens):
+    with pytest.raises(RuntimeError, match="Prefix"):
+        validate_energy_prefix_runtime(cache=cache, prefix_tokens=tokens)
+
+
+def test_prefix_runtime_accepts_nonempty_and_empty_prefix():
+    validate_energy_prefix_runtime(cache=object(), prefix_tokens=16)
+    validate_energy_prefix_runtime(cache=None, prefix_tokens=0)
+
+
+def test_disabled_prefix_policy_rejects_loaded_cache():
+    from snn2.artifacts import ArtifactLayout
+    from snn2.config import load_config
+    cfg = load_config("configs/generated/exp1_qwen3_1_7b_tldr__vanilla.yaml")
+    cfg["evaluation"]["prefix_enabled"] = True
+    with pytest.raises(RuntimeError, match="resolved Energy Prefix policy is disabled"):
+        energy_prefix_provenance(cfg, ArtifactLayout(cfg), neuron="ann", cache=object(), prefix_tokens=1)
 
 
 @pytest.mark.parametrize("changed_key", [
