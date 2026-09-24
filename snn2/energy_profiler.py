@@ -25,8 +25,8 @@ from snn2.neurons import (
 from snn2.prefix_cache import install_prefix_kv_forward, prefix_length
 from snn2.training import validate_recorded_training_artifact_provenance
 
-ENERGY_PROFILER_VERSION = 1
-ENERGY_ACCOUNTING_POLICY = "sat_llm_mac_ac_v1"
+ENERGY_PROFILER_VERSION = 2
+ENERGY_ACCOUNTING_POLICY = "sat_llm_mac_ac_v2_mixed_temporal_fix"
 SEQUENCE_LENGTH = 512
 COLUMNS = ("Model", "Neuron", "T", "MACs (G)", "Synaptic ACs (G)", "Neuron ACs (G)", "Total ACs (G)", "Energy (J)")
 
@@ -98,21 +98,30 @@ def linear_counts(x: torch.Tensor, out_features: int, multiplicity: torch.Tensor
 
 
 def _pair(a: torch.Tensor, b: torch.Tensor) -> int:
-    # CUDA has no batched int64 matmul. Unit codes and per-term totals fit the
-    # exact-integer range of float64 for this fixed 512-token protocol.
-    value = torch.matmul(a.to(torch.float64), b.to(torch.float64)).sum().item()
-    if value > 2**53 or value != int(value):
-        raise OverflowError("Temporal event pair count exceeds exact float64 integer range")
-    return int(value)
+    """Count event pairs by reducing the shared feature dimension."""
+    if a.shape[:-2] != b.shape[:-2] or a.shape[-1] != b.shape[-2]:
+        raise ValueError(f"Incompatible pair shapes: {tuple(a.shape)} and {tuple(b.shape)}")
+    left = a.to(torch.int64).sum(dim=-2)
+    right = b.to(torch.int64).sum(dim=-1)
+    value = int((left * right).sum().item())
+    if value < 0:
+        raise OverflowError("Event pair count overflowed int64")
+    return value
 
 
 def temporal_product_counts(a: torch.Tensor, b: torch.Tensor, ma: torch.Tensor | None, mb: torch.Tensor | None) -> EnergyCounts:
+    if a.shape != b.shape or (ma is not None and ma.shape != a.shape) or (mb is not None and mb.shape != b.shape):
+        raise ValueError("Temporal product operands and multiplicities must have the same shape")
     if ma is None and mb is None:
         return EnergyCounts(mac_raw=2 * a.numel())
-    aa = ma if ma is not None else torch.ones_like(a, dtype=torch.int32)
-    bb = mb if mb is not None else torch.ones_like(b, dtype=torch.int32)
-    count = int((aa.to(torch.int64) * bb.sum(0, keepdim=True).to(torch.int64) + aa.sum(0, keepdim=True).to(torch.int64) * bb.to(torch.int64)).sum().item())
-    return EnergyCounts(synaptic_ac_raw=count) if ma is not None and mb is not None else EnergyCounts(mac_raw=count)
+    if ma is not None and mb is not None:
+        left = ma.to(torch.int64)
+        right = mb.to(torch.int64)
+        count = int((left * right.sum(dim=0, keepdim=True) + left.sum(dim=0, keepdim=True) * right).sum().item())
+        return EnergyCounts(synaptic_ac_raw=count)
+    # A dense dynamic value, including its temporal sum, is one operand.
+    events = mb if ma is None else ma
+    return EnergyCounts(mac_raw=(int(a.shape[0]) + 1) * int(events.sum().item()))
 
 
 class EnergyInstrumentation:
@@ -250,12 +259,22 @@ class EnergyInstrumentation:
 
 
 def count_temporal_matmul(a: torch.Tensor, b: torch.Tensor, ma: torch.Tensor | None, mb: torch.Tensor | None) -> EnergyCounts:
+    if a.shape[:-2] != b.shape[:-2] or a.shape[-1] != b.shape[-2]:
+        raise ValueError("Temporal matmul operand shapes are incompatible")
+    if (ma is not None and ma.shape != a.shape) or (mb is not None and mb.shape != b.shape):
+        raise ValueError("Temporal event multiplicity shape differs from its operand")
     if ma is None and mb is None:
-        return EnergyCounts(mac_raw=3 * a.numel() // a.shape[-1] * a.shape[-1] * b.shape[-1])
-    aa = ma if ma is not None else torch.ones_like(a, dtype=torch.int32)
-    bb = mb if mb is not None else torch.ones_like(b, dtype=torch.int32)
-    count = _pair(aa.cumsum(0), bb) + _pair(aa, bb.cumsum(0)) + _pair(aa, bb)
-    return EnergyCounts(synaptic_ac_raw=count) if ma is not None and mb is not None else EnergyCounts(mac_raw=count)
+        return EnergyCounts(mac_raw=3 * a.numel() * int(b.shape[-1]))
+    if ma is not None and mb is not None:
+        count = _pair(ma.cumsum(0), mb) + _pair(ma, mb.cumsum(0)) + _pair(ma, mb)
+        return EnergyCounts(synaptic_ac_raw=count)
+    if ma is None:
+        current = int(a.shape[-2]) * int(mb.sum().item())
+        cumulative = int(a.shape[-2]) * int(mb.cumsum(0).sum().item())
+        return EnergyCounts(mac_raw=2 * current + cumulative)
+    current = int(b.shape[-1]) * int(ma.sum().item())
+    cumulative = int(b.shape[-1]) * int(ma.cumsum(0).sum().item())
+    return EnergyCounts(mac_raw=cumulative + 2 * current)
 
 
 def profile_energy(cfg: dict, layout: Any, *, neuron: str) -> dict:
@@ -312,6 +331,6 @@ def profile_energy(cfg: dict, layout: Any, *, neuron: str) -> dict:
         writer.writerow(result)
     write_json(output / "energy_results.json", result)
     write_json(output / "energy_sample_manifest.json", {"source": "validation_manifest", "sequence_length": SEQUENCE_LENGTH, "num_samples": n, "selection_seed_source": "calibration.seed", "selection_seed": seed, "sampling": "seeded_random_without_replacement", "positions_in_validation": positions, "validation_manifest_sha256": manifest_hash})
-    metadata = {"energy_profiler_version": ENERGY_PROFILER_VERSION, "energy_accounting_policy": ENERGY_ACCOUNTING_POLICY, "experiment_id": cfg["experiment"].get("id"), "task": cfg["experiment"]["task"], "model_name": cfg["experiment"]["model_name"], "ann_mode": cfg["experiment"]["ann_mode"], "neuron": neuron, "deployment_T": result["T"], "phase_base": cfg["phase"]["base"] if neuron == "phase" else None, "mtn_K": cfg["mtn"]["K"] if neuron == "mtn" else None, "conversion_use_post_finetuning_artifacts": cfg["conversion"]["use_post_finetuning_artifacts"], "evaluation_prefix_enabled": cfg["evaluation"]["prefix_enabled"], "prefix_artifact_stage": final_ann_evaluation_prefix_artifact_stage(cfg) if neuron == "ann" else final_snn_evaluation_prefix_artifact_stage(cfg), "prefix_length": prefix_tokens, "profile_sequence_length": SEQUENCE_LENGTH, "profile_num_samples": n, "profile_seed": seed, "selected_validation_positions": positions, "validation_manifest_path": str(manifest_path), "validation_manifest_sha256": manifest_hash, "checkpoint_source": source, "controller_mode": controller.mode, "mac_energy_pj": 4.6, "ac_energy_pj": 0.9, "energy_scope": "mac_synaptic_ac_neuron_ac_only", "memory_energy_included": False, "dense_residual_bias_ac_included": False, "dense_elementwise_additions_included": False, "special_function_energy_included": False, "hadamard_rotation_energy_included": False, "fixed_neuron_coefficient_policy": "prefold_or_fixed_event_lookup", "gif_unit_event_policy": "integer_code_expanded_to_unit_events", "gif_neuron_ac_policy": "no_recurrent_membrane_ac_in_current_static_gif_temporal_impl", "total_mac_raw": total.mac_raw, "total_synaptic_ac_raw": total.synaptic_ac_raw, "total_neuron_ac_raw": total.neuron_ac_raw, "mean_mac_raw": mean_mac, "mean_synaptic_ac_raw": mean_syn, "mean_neuron_ac_raw": mean_neuron}
+    metadata = {"energy_profiler_version": ENERGY_PROFILER_VERSION, "energy_accounting_policy": ENERGY_ACCOUNTING_POLICY, "experiment_id": cfg["experiment"].get("id"), "task": cfg["experiment"]["task"], "model_name": cfg["experiment"]["model_name"], "ann_mode": cfg["experiment"]["ann_mode"], "neuron": neuron, "deployment_T": result["T"], "phase_base": cfg["phase"]["base"] if neuron == "phase" else None, "mtn_K": cfg["mtn"]["K"] if neuron == "mtn" else None, "conversion_use_post_finetuning_artifacts": cfg["conversion"]["use_post_finetuning_artifacts"], "evaluation_prefix_enabled": cfg["evaluation"]["prefix_enabled"], "prefix_artifact_stage": final_ann_evaluation_prefix_artifact_stage(cfg) if neuron == "ann" else final_snn_evaluation_prefix_artifact_stage(cfg), "prefix_length": prefix_tokens, "profile_sequence_length": SEQUENCE_LENGTH, "profile_num_samples": n, "profile_seed": seed, "selected_validation_positions": positions, "validation_manifest_path": str(manifest_path), "validation_manifest_sha256": manifest_hash, "checkpoint_source": source, "controller_mode": controller.mode, "mac_energy_pj": 4.6, "ac_energy_pj": 0.9, "energy_scope": "mac_synaptic_ac_neuron_ac_only", "memory_energy_included": False, "dense_residual_bias_ac_included": False, "dense_elementwise_additions_included": False, "special_function_energy_included": False, "hadamard_rotation_energy_included": False, "fixed_neuron_coefficient_policy": "prefold_or_fixed_event_lookup", "gif_unit_event_policy": "integer_code_expanded_to_unit_events", "gif_zero_point_compensation_policy": "fixed_prefolded_or_bias_like_compensation_not_counted", "gif_asymmetric_zero_point_energy_included": False, "energy_path_profile_num_samples": n, "energy_path_prefix_enabled": layout.energy_prefix_enabled(neuron), "gif_neuron_ac_policy": "no_recurrent_membrane_ac_in_current_static_gif_temporal_impl", "total_mac_raw": total.mac_raw, "total_synaptic_ac_raw": total.synaptic_ac_raw, "total_neuron_ac_raw": total.neuron_ac_raw, "mean_mac_raw": mean_mac, "mean_synaptic_ac_raw": mean_syn, "mean_neuron_ac_raw": mean_neuron}
     write_json(output / "energy_metadata.json", metadata)
     return result

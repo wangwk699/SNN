@@ -11,6 +11,8 @@ from typing import Any
 from .phase_math import format_phase_base
 from .config import (
     conversion_prefix_enabled,
+    evaluation_prefix_enabled,
+    final_ann_evaluation_prefix_enabled,
     calibration_trajectory_config,
     gif_mse_refinement_enabled,
     gif_mse_refinement_signature,
@@ -623,12 +625,18 @@ class ArtifactLayout:
     def energy_root(self) -> Path:
         return self.root / "energy"
 
-    def energy_dir(self, neuron: str) -> Path:
+    def energy_prefix_enabled(self, neuron: str) -> bool:
         if neuron == "ann":
-            return self.energy_root / "ann"
-        if neuron not in {"phase", "gif", "mtn"}:
-            raise ValueError(f"Unknown energy neuron: {neuron}")
-        return self.energy_root / "snn" / self.snn_dir(neuron).relative_to(self.root / "snn")
+            return final_ann_evaluation_prefix_enabled(self._cfg)
+        if neuron in {"phase", "gif", "mtn"}:
+            return evaluation_prefix_enabled(self._cfg)
+        raise ValueError(f"Unknown energy neuron: {neuron}")
+
+    def energy_dir(self, neuron: str) -> Path:
+        suffix = Path(prefix_enabled_dirname(self.energy_prefix_enabled(neuron))) / Path(f"profile_num_samples_{int(self._cfg['calibration']['num_samples'])}")
+        if neuron == "ann":
+            return self.energy_root / "ann" / suffix
+        return self.energy_root / "snn" / self.snn_dir(neuron).relative_to(self.root / "snn") / suffix
 
     def snn_conversion_dir(self, neuron: str) -> Path:
         enabled = conversion_prefix_enabled(self._cfg)

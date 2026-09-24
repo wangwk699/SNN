@@ -3,7 +3,7 @@ import torch
 from torch import nn
 
 from snn2.energy_profiler import (
-    EnergyInstrumentation, count_temporal_matmul, energy_j_from_raw_counts,
+    EnergyInstrumentation, _pair, count_temporal_matmul, energy_j_from_raw_counts,
     fixed_length_input, gif_integer_multiplicity, linear_counts,
     select_validation_positions, temporal_product_counts,
 )
@@ -27,8 +27,12 @@ def test_temporal_three_terms_and_dynamic():
     m = torch.ones_like(a, dtype=torch.int32)
     assert count_temporal_matmul(a, b, m, m).synaptic_ac_raw == 8
     assert count_temporal_matmul(a, b, None, None).mac_raw == 6
-    assert count_temporal_matmul(a, b, None, m).mac_raw == 8
+    assert count_temporal_matmul(a, b, None, m).mac_raw == 7
+    assert count_temporal_matmul(a, b, m, None).mac_raw == 7
     assert temporal_product_counts(a, b, None, None).mac_raw == 4
+    assert temporal_product_counts(a, b, None, m).mac_raw == 6
+    assert temporal_product_counts(a, b, m, None).mac_raw == 6
+    assert temporal_product_counts(a, b, m, m).synaptic_ac_raw == 8
 
 
 def test_selection_and_fixed_input():
@@ -104,11 +108,11 @@ def test_gif_code_expansion_roles_and_identity():
 
 
 def test_energy_paths_isolate_deployments():
-    from snn2.artifacts import ArtifactLayout
+    from snn2.artifacts import ArtifactLayout, prefix_enabled_dirname
     from snn2.config import load_config
     cfg = load_config("configs/generated/exp2_llama3_8b_tulu3__phase_aware.yaml")
     layout = ArtifactLayout(cfg)
-    ann = layout.energy_dir("ann")
+    ann128 = layout.energy_dir("ann")
     phase4 = layout.energy_dir("phase")
     cfg["phase"]["T"] = 8
     phase8 = layout.energy_dir("phase")
@@ -120,7 +124,20 @@ def test_energy_paths_isolate_deployments():
     mtn8 = layout.energy_dir("mtn")
     cfg["conversion"]["use_post_finetuning_artifacts"] = not cfg["conversion"]["use_post_finetuning_artifacts"]
     selector = layout.energy_dir("mtn")
-    assert len({ann, phase4, phase8, phase_base3, mtn4, mtn8, selector}) == 7
+    cfg["evaluation"]["prefix_enabled"] = not cfg["evaluation"]["prefix_enabled"]
+    prefix_off_mtn = layout.energy_dir("mtn")
+    ann_prefix_off = layout.energy_dir("ann")
+    cfg["calibration"]["num_samples"] = 256
+    mtn256 = layout.energy_dir("mtn")
+    ann256 = layout.energy_dir("ann")
+    paths = {ann128, phase4, phase8, phase_base3, mtn4, mtn8, selector,
+             prefix_off_mtn, ann_prefix_off, mtn256, ann256}
+    assert len(paths) == 11
+    assert ann128.parts[-2:] == (prefix_enabled_dirname(True), "profile_num_samples_128")
+    assert ann256.parts[-2:] == (prefix_enabled_dirname(False), "profile_num_samples_256")
+    vanilla = load_config("configs/generated/exp1_qwen3_1_7b_tldr__vanilla.yaml")
+    vanilla["evaluation"]["prefix_enabled"] = True
+    assert ArtifactLayout(vanilla).energy_dir("ann").parts[-2] == prefix_enabled_dirname(False)
 
 
 def test_gif_all_low_second_frame_and_softmax_identity():
@@ -207,5 +224,52 @@ def test_temporal_attention_wrapper_counts_prefix_length_and_restores_binding():
         weights = torch.ones(2, 1, 1, 2, 3)
         value = torch.ones(2, 1, 1, 3, 2)
         temporal_model.temporal_seq_matmul(weights, value)
-        assert profiler.counts.mac_raw == 96
+        assert profiler.counts.mac_raw == 84
     assert temporal_model.temporal_seq_matmul is original
+
+
+def test_gif_pv_dynamic_attention_times_event_value_uses_mixed_mac_rule():
+    # Site 5 SoftmaxIdentityGIF is dense; Site 4 emits GIF unit events.
+    attention = torch.ones(2, 1, 1, 1, 2)
+    value = torch.ones(2, 1, 1, 2, 1)
+    events = torch.tensor([[[[[1], [0]]]], [[[[2], [1]]]]], dtype=torch.int32)
+    result = count_temporal_matmul(attention, value, None, events)
+    # cumsum(P)*V: 4; P*cumsum(V): 5; P*V: 4.
+    assert result.mac_raw == 13
+    assert result.synaptic_ac_raw == 0
+
+
+def test_pair_reduction_matches_tiny_matmul():
+    a = torch.tensor([[[[1, 2], [3, 4]]], [[[2, 0], [1, 5]]]], dtype=torch.int32)
+    b = torch.tensor([[[[2, 1, 0], [0, 3, 1]]], [[[1, 1, 1], [2, 0, 3]]]], dtype=torch.int32)
+    assert _pair(a, b) == int(torch.matmul(a.float(), b.float()).sum().item())
+
+
+def test_pair_counter_does_not_call_dense_matmul(monkeypatch):
+    a = torch.ones(2, 1, 2, 3, dtype=torch.int32)
+    b = torch.ones(2, 1, 3, 4, dtype=torch.int32)
+    monkeypatch.setattr(torch, "matmul", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("dense matmul called")))
+    assert _pair(a, b) == 48
+
+
+def test_gif_nonzero_zero_point_uses_unsigned_code_event_policy():
+    from snn2.temporal_ops import GIF_INTEGER_DECOMPOSITION, SITE_STATE_FORMAT_VERSION, TEMPORAL_IMPLEMENTATION_VERSION
+    state = {
+        "state_kind": "gif", "format_version": SITE_STATE_FORMAT_VERSION,
+        "temporal_implementation_version": TEMPORAL_IMPLEMENTATION_VERSION,
+        "parameter_layout": "last_dim_grouped", "configured_group_size": 1,
+        "group_size": 1, "num_heads": None, "channels_per_head": 2,
+        "groups_per_head": 2, "gif_policy": "ordinary_salient_static_qmax30",
+        "base_bits": 4, "add_bits": 1, "low_qmin": 0, "low_qmax": 15,
+        "high_qmin": 0, "high_qmax": 30, "temporal_steps": 2,
+        "per_step_qmin": 0, "per_step_qmax": 15,
+        "integer_decomposition": GIF_INTEGER_DECOMPOSITION,
+        "low_scale": torch.ones(2), "low_zero": torch.full((2,), 3.),
+        "high_scale": torch.ones(2), "high_zero": torch.full((2,), 5.),
+        "mask_low": torch.tensor([True, False]),
+    }
+    module = StaticGIF(state)
+    incoming = torch.tensor([[[[0., 16.]]], [[[0., 0.]]]])
+    assert gif_integer_multiplicity(module, incoming)[:, 0, 0].tolist() == [[3, 15], [0, 6]]
+    # Numerical GIF output still subtracts the fixed zero points.
+    torch.testing.assert_close(module.temporal(incoming).sum(0), incoming.sum(0))
