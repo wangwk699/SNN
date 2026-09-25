@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import timedelta
 import gc
 import json
 import os
@@ -56,9 +57,16 @@ from snn2.training import validate_recorded_training_artifact_provenance
 def _managed_accelerator(accelerator_factory=None):
     if accelerator_factory is None:
         from accelerate import Accelerator
+        from accelerate.utils import InitProcessGroupKwargs
 
-        accelerator_factory = Accelerator
-    accelerator = accelerator_factory()
+        process_group_kwargs = InitProcessGroupKwargs(
+            timeout=timedelta(hours=1),
+        )
+        accelerator = Accelerator(
+            kwargs_handlers=[process_group_kwargs],
+        )
+    else:
+        accelerator = accelerator_factory()
     try:
         yield accelerator
     finally:
