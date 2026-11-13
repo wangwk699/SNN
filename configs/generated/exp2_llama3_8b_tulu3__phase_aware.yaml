@@ -125,7 +125,7 @@ gif:
   saliency_rule: operator_aware_spikellm_extension
 replacement:
   train_mode: phase
-  common_clip_enabled: false
+  common_clip_enabled: true
   outer_clip_backward: hard_clip
   clip_rule: phase_mtn_gif_low_high_common_intersection
 rotated_pre_finetuning:

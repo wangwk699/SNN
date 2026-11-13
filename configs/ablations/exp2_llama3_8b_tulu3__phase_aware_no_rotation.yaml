@@ -72,7 +72,7 @@ deployment:
   phase_tau_ema_factor: 0.99
   phase_tau_accumulator_dtype: float32
 phase:
-  T: 5
+  T: 4
   base: 2.0
   surrogate_slope: 12.0
   timestep_indexing: t_0_to_T_minus_1
