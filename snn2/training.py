@@ -40,6 +40,24 @@ def ann_training_common_clip_metadata(cfg: dict[str, Any]) -> dict[str, bool]:
     }
 
 
+def disabled_training_prefix_provenance(result: dict[str, Any]) -> dict[str, Any]:
+    """Normalize absent/empty Prefix fields, rejecting any effective Prefix."""
+    empty = {
+        "ann_training_prefix_root": None,
+        "ann_training_prefix_state_sha256": None,
+        "ann_training_prefix_kv_sha256": None,
+        "ann_training_prefix_num_samples": None,
+        "ann_training_prefix_discovery_manifest_sha256": None,
+        "ann_training_prefix_token_ids": [],
+    }
+    if "prefix_enabled" in result and result["prefix_enabled"] is not False:
+        raise ValueError("Disabled ANN-training Prefix must have prefix_enabled=false")
+    for key, value in empty.items():
+        if result.get(key, value) != value:
+            raise ValueError(f"Disabled ANN-training Prefix has non-empty {key}")
+    return empty
+
+
 def capture_training_artifact_provenance(
     cfg: dict[str, Any],
     layout: ArtifactLayout,
@@ -75,6 +93,11 @@ def capture_training_artifact_provenance(
                 ],
             }
         )
+    if not training_prefix_enabled(cfg):
+        if prefix_ids:
+            raise ValueError("Disabled ANN-training Prefix must have empty token IDs")
+        if is_aware_ann_mode(cfg):
+            captured.update(disabled_training_prefix_provenance({}))
     if is_aware_ann_mode(cfg):
         validation = validate_site_state_bundle(
             layout.ann_training_site_dir, cfg=cfg, clip_policy="forbid_all"
@@ -89,6 +112,15 @@ def capture_training_artifact_provenance(
             num_samples=int(cfg["calibration"]["num_samples"]),
         )
         manifest_metadata = validation["manifest"]
+        if not cfg.get("rotation", {}).get("enabled", True):
+            expected_source = {
+                "purpose": "ann_training_calibration",
+                "eligible_for_ann_training": True,
+                "calibration_data_manifest_path": str(layout.calibration_data_manifest_path.resolve()),
+                "calibration_data_manifest_sha256": sha256_file(layout.calibration_data_manifest_path),
+            }
+            if any(manifest_metadata.get(key) != value for key, value in expected_source.items()):
+                raise ValueError("No-Rotation ANN-training Stage A data/source provenance differs from config")
         trajectory = calibration_trajectory_config(cfg)
         recorded_flags = manifest_metadata.get("effective_previous_layers_snn")
         if (recorded_flags is None and any(trajectory["effective_previous_layers_snn"].values())) or (recorded_flags is not None and recorded_flags != trajectory["effective_previous_layers_snn"]):
@@ -184,6 +216,8 @@ def validate_recorded_training_artifact_provenance(
         "statistics_format_version",
     )
     recorded = {key: recorded_result[key] for key in keys if key in recorded_result}
+    if is_aware_ann_mode(cfg) and not training_prefix_enabled(cfg):
+        recorded.update(disabled_training_prefix_provenance(recorded_result))
     try:
         current = capture_training_artifact_provenance(
             cfg,
@@ -255,6 +289,7 @@ def train_full_parameters(cfg: dict[str, Any], layout: ArtifactLayout) -> dict[s
             if cfg["gif"]["round_gradient_estimator"] == "HTGE" else None
         )
     model.config.snn2_fused_weights_are_trainable = bool(cfg["rotation"]["enabled"])
+    model.config.snn2_rotation_enabled = bool(cfg["rotation"]["enabled"])
     for parameter in model.parameters():
         parameter.requires_grad_(True)
 

@@ -1,0 +1,236 @@
+experiment:
+  id: snn2_ablation_no_rotation_and_aware_FT_v1
+  output_root: artifacts
+  seed: 42
+  trust_remote_code: false
+  task: tulu3
+  model_name: meta-llama/Meta-Llama-3-8B
+  model_revision: 8cde5ca
+  ann_mode: gif_aware
+data:
+  max_seq_length: 2048
+  truncation: true
+  truncation_side: right
+  packing: false
+  dataset_name: allenai/tulu-3-sft-mixture
+  dataset_revision: 3c09be1fe3882f2b1cb5a42ab26ceeab3dc9c6ea
+  train_split: train
+  validation_size: 1000
+  chat_template_override: true
+  chat_template: '{{ bos_token }}{% for message in messages %}{{ ''<|start_header_id|>''
+    + message[''role''] + ''<|end_header_id|>\n\n'' }}{% if message[''role''] == ''assistant''
+    %}{% generation %}{{ message[''content''] | trim + ''<|eot_id|>'' }}{% endgeneration
+    %}{% else %}{{ message[''content''] | trim + ''<|eot_id|>'' }}{% endif %}{% endfor
+    %}{% if add_generation_prompt %}{{ ''<|start_header_id|>assistant<|end_header_id|>\n\n''
+    }}{% endif %}'
+rotation:
+  enabled: false
+  seed: 42
+  fusion_device: cuda
+  implementation: fused_weights_plus_online_R3_R4
+  fused_weights_are_finetuned: false
+  regression_relative_l2_threshold: 0.05
+  regression_top1_agreement_threshold: 0.95
+prefix:
+  enabled: false
+  outlier_threshold: 64.0
+  detection_activation: down_proj_input
+  loss_masked: true
+ann_training:
+  prefix_enabled: false
+ann_training_memory:
+  attention_core_checkpoint: true
+  mlp_checkpoint: false
+conversion:
+  use_post_finetuning_artifacts: false
+post_finetuning:
+  rediscover_prefix: false
+  recalibrate_sites: true
+  prefix_enabled: false
+  post_finetuning_recalibration: true
+calibration:
+  seed: 42
+  num_samples: 128
+  with_replacement: false
+  batch_size: 1
+  group_size: 128
+  expected_sites_per_layer: 10
+  device_map: auto
+  phase_previous_layers_snn: false
+  gif_previous_layers_snn: true
+  mtn_previous_layers_snn: false
+deployment:
+  temporal_implementation: sparse_llm_temporal_v8_final_norm_phase_mtn_ema_clamp
+  temporal_layout: time_major_flattened_TB
+  linear_bias_policy: first_timestep_once
+  prefix_temporal_policy: uniform_kv_divide_by_T
+  embedding_temporal_policy: uniform_embedding_divide_by_T
+  softmax_prefix_neuron_policy: full_softmax_tensor_including_prefix
+  softmax_site5_gif_policy: spikellm_nbits16_sentinel_identity
+  final_norm_neuron_policy: phase_ann_surrogate_phase_snn_temporal_mtn_snn_temporal_gif_identity_clip_forbidden_v1
+  phase_tau_calibration: ema_channel_abs_max_then_group_max
+  phase_tau_ema_factor: 0.99
+  phase_tau_accumulator_dtype: float32
+phase:
+  T: 4
+  base: 2.0
+  surrogate_slope: 1.0
+  timestep_indexing: t_0_to_T_minus_1
+  threshold_rule: tau * base ** (-(t + 1))
+mtn:
+  T: 4
+  K: 6
+  threshold_factor: 0.75
+gif:
+  base_bits: 4
+  add_bits: 1
+  high_qmax: 30
+  temporal_steps: 2
+  per_step_qmax: 15
+  low_ratio: 0.9
+  salient_ratio: 0.1
+  scale_initialization: direct_min_max
+  mse_scale_refinement: false
+  mse_refinement:
+    version: static_mse_v1
+    objective: elementwise_mse
+    histogram_bins: 4096
+    coarse_alpha_values:
+    - 1.0
+    - 0.995
+    - 0.99
+    - 0.98
+    - 0.97
+    - 0.95
+    - 0.925
+    - 0.9
+    - 0.875
+    - 0.85
+    - 0.8
+    - 0.75
+    - 0.7
+    fine_alpha_radius: 0.03
+    fine_alpha_step: 0.005
+    fine_alpha_min: 0.7
+    fine_alpha_max: 1.0
+    local_scale_ratio_min: 0.95
+    local_scale_ratio_max: 1.05
+    local_scale_ratio_step: 0.01
+    local_zero_radius: 2
+    preserve_zero: true
+    fallback_to_direct_min_max: true
+  runtime_quantization: static
+  round_gradient_estimator: STE
+  htge_t: 16.0
+  saliency_rule: operator_aware_spikellm_extension
+replacement:
+  train_mode: gif
+  common_clip_enabled: false
+  outer_clip_backward: hard_clip
+  clip_rule: phase_mtn_gif_low_high_common_intersection
+rotated_pre_finetuning:
+  prefix_enabled: false
+training:
+  train_samples: 10000
+  train_seed: 42
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 2.0e-06
+  weight_decay: 0.0
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1.0e-08
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.0
+  bf16: true
+  fp16: false
+  dtype: bfloat16
+  max_grad_norm: 1.0
+  gradient_checkpointing: false
+  attn_implementation: eager
+  flash_attention: false
+  eval_strategy: 'no'
+  save_strategy: 'no'
+  load_best_model_at_end: false
+  logging_steps: 10
+  deepspeed_config: configs/deepspeed_zero3_cpu_offload.json
+  resume_from_checkpoint: null
+evaluation:
+  prefix_enabled: false
+  batch_size: 8
+  snn_batch_size: 4
+  lm_eval_revision: 6d2abda4fd171e68a8789330c4149e37c1ca0bda
+  apply_chat_template: true
+  lm_eval_task_specs:
+  - name: truthfulqa_mc1
+    enabled: true
+    num_fewshot: 0
+    metric: acc
+    cot: false
+    test_samples: null
+    test_seed: 42
+  - name: agieval
+    enabled: true
+    num_fewshot: 0
+    metric: acc
+    cot: false
+    test_samples: 1000
+    test_seed: 42
+  - name: arc_challenge
+    enabled: true
+    num_fewshot: 0
+    metric: acc_norm
+    cot: false
+    test_samples: null
+    test_seed: 42
+  - name: piqa
+    enabled: true
+    num_fewshot: 0
+    metric: acc_norm
+    cot: false
+    test_samples: null
+    test_seed: 42
+  - name: winogrande
+    enabled: true
+    num_fewshot: 0
+    metric: acc
+    cot: false
+    test_samples: null
+    test_seed: 42
+  - name: boolq
+    enabled: true
+    num_fewshot: 0
+    metric: acc
+    cot: false
+    test_samples: null
+    test_seed: 42
+  - name: mmlu_pro
+    enabled: false
+    num_fewshot: 5
+    metric: exact_match
+    cot: true
+    test_samples: null
+    test_seed: 42
+  - name: bbh
+    enabled: false
+    num_fewshot: 3
+    metric: exact_match
+    cot: true
+    test_samples: null
+    test_seed: 42
+  - name: gsm8k_cot
+    enabled: false
+    num_fewshot: 4
+    metric: exact_match
+    cot: true
+    test_samples: null
+    test_seed: 42
+  - name: minerva_math
+    enabled: false
+    num_fewshot: 4
+    metric: exact_match
+    cot: false
+    test_samples: null
+    test_seed: 42

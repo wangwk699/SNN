@@ -28,6 +28,7 @@ from snn2.evaluation import (
     activation_neuron_operators_per_temporal_forward,
     global_final_norm_evaluation_metadata,
     build_evaluation_controller,
+    evaluation_requires_integration,
     append_evaluation_num_samples_if_needed,
     deployment_policy_metadata,
     evaluation_calibration_metadata,
@@ -423,16 +424,9 @@ def main():
             rotated_pre_finetuning=args.rotated_pre_finetuning,
         )
 
-        # Base + vanilla + ann：
-        #
-        # args.neuron == ann
-        # rotation.enabled == False
-        #
-        # 所以不会进入这里，
-        # 保证原始 Base 模型不安装 SNN2 integration。
-        if (
-            args.neuron != "ann"
-            or cfg["rotation"]["enabled"]
+        if evaluation_requires_integration(
+            cfg, neuron=args.neuron, base=args.base,
+            rotated_pre_finetuning=args.rotated_pre_finetuning,
         ):
             install_model_integration(
                 model,

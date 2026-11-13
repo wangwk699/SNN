@@ -131,12 +131,8 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
         cfg["replacement"]["train_mode"] = "none"
         cfg["replacement"]["common_clip_enabled"] = False
     elif mode == "phase_aware":
-        cfg["rotation"]["enabled"] = True
-        cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
         cfg["replacement"]["train_mode"] = "phase"
     elif mode == "gif_aware":
-        cfg["rotation"]["enabled"] = True
-        cfg["prefix"]["enabled"] = bool(cfg["ann_training"]["prefix_enabled"])
         cfg["replacement"]["train_mode"] = "gif"
     return cfg
 
@@ -347,7 +343,10 @@ def validate_config(cfg: dict[str, Any]) -> None:
     if type(cfg["gif"].get("mse_scale_refinement")) is not bool:
         raise ValueError("gif.mse_scale_refinement must be true or false")
     validate_mse_refinement_config(cfg["gif"].get("mse_refinement", {}))
-    if mode != "vanilla" and not bool(cfg["rotation"].get("fused_weights_are_finetuned", False)):
+    for section, key in (("rotation", "enabled"), ("rotation", "fused_weights_are_finetuned"), ("prefix", "enabled")):
+        if type(cfg[section].get(key)) is not bool:
+            raise ValueError(f"{section}.{key} must be true or false")
+    if cfg["rotation"]["enabled"] and not cfg["rotation"]["fused_weights_are_finetuned"]:
         raise ValueError("Rotated modes must fine-tune the fused rotation weights")
     if float(cfg["rotation"].get("regression_relative_l2_threshold", 0.05)) <= 0.0:
         raise ValueError("rotation.regression_relative_l2_threshold must be positive")
@@ -365,7 +364,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("vanilla requires conversion.use_post_finetuning_artifacts=true")
     if mode == "vanilla" and training_prefix_enabled(cfg):
         raise ValueError("vanilla must not use a Pre-finetuning Prefix")
-    if mode != "vanilla" and not training_prefix_enabled(cfg):
+    if mode == "unaware" and not training_prefix_enabled(cfg):
         raise ValueError(f"{mode} requires the shared Pre-finetuning Prefix")
     common_clip_enabled = cfg["replacement"].get("common_clip_enabled")
     if not isinstance(common_clip_enabled, bool):
@@ -380,6 +379,19 @@ def validate_config(cfg: dict[str, Any]) -> None:
         value = cfg["post_finetuning"].get(key)
         if not isinstance(value, bool):
             raise ValueError(f"post_finetuning.{key} must be true or false")
+    if is_aware_ann_mode(cfg):
+        if cfg["rotation"]["enabled"] != training_prefix_enabled(cfg):
+            raise ValueError("Aware modes require Rotation and ANN-training Prefix jointly enabled or disabled")
+        if cfg["prefix"]["enabled"] != training_prefix_enabled(cfg):
+            raise ValueError("prefix.enabled must match ann_training.prefix_enabled in aware modes")
+        if not cfg["rotation"]["enabled"]:
+            if cfg["rotation"]["fused_weights_are_finetuned"]:
+                raise ValueError("Aware modes without Rotation require rotation.fused_weights_are_finetuned=false")
+            for section in ("rotated_pre_finetuning", "post_finetuning", "evaluation"):
+                if cfg[section]["prefix_enabled"]:
+                    raise ValueError(f"Aware modes without Rotation require {section}.prefix_enabled=false")
+            if cfg["post_finetuning"]["rediscover_prefix"]:
+                raise ValueError("Aware modes without Rotation require post_finetuning.rediscover_prefix=false")
 
 
 def training_prefix_enabled(cfg: dict[str, Any]) -> bool:
@@ -409,7 +421,7 @@ def training_common_clip_enabled(cfg: dict[str, Any]) -> bool:
 
 
 def requires_pre_finetuning_prefix(cfg: dict[str, Any]) -> bool:
-    return cfg["experiment"]["ann_mode"] != "vanilla"
+    return training_prefix_enabled(cfg)
 
 
 def requires_ann_training_calibration(cfg: dict[str, Any]) -> bool:

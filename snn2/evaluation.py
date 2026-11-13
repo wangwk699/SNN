@@ -143,6 +143,20 @@ def append_evaluation_num_samples_if_needed(output_dir, cfg: dict[str, object], 
     return output_dir
 
 
+def evaluation_requires_integration(
+    cfg: dict[str, object], *, neuron: str,
+    base: bool = False, rotated_pre_finetuning: bool = False,
+) -> bool:
+    """Install static aware sites even when the checkpoint has no Rotation."""
+    if neuron != "ann":
+        return True
+    if base:
+        return False
+    return bool(cfg["rotation"]["enabled"]) or (
+        not rotated_pre_finetuning and is_aware_ann_mode(cfg)
+    )
+
+
 def build_evaluation_controller(
     cfg: dict[str, object],
     layout: object,

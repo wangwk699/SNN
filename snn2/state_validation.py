@@ -7,6 +7,7 @@ from typing import Any, Literal
 import torch
 
 from .artifacts import clip_profile_dirname, sha256_file
+from .config import AWARE_ANN_MODES, training_prefix_enabled
 from .phase_math import phase_representable_bound, validate_phase_base
 from .neurons import (
     Clipper, MultiThresholdNeuron, PhaseSurrogate, gif_module_from_state,
@@ -335,6 +336,31 @@ def _validate_state_runtime_provenance(
             raise ValueError(f"MTN sequential-calibration runtime provenance mismatch: {context}")
 
 
+def validate_disabled_component_provenance(cfg: dict[str, Any], manifest: dict[str, Any]) -> None:
+    """Require an explicitly empty Rotation/Prefix lineage for aware ablations."""
+    if not (cfg.get("experiment", {}).get("ann_mode") in AWARE_ANN_MODES
+            and cfg.get("rotation", {}).get("enabled") is False
+            and not training_prefix_enabled(cfg)):
+        return
+    expected = {
+        "rotation_enabled": False, "rotation_state_path": None,
+        "rotation_state_sha256": None, "prefix_enabled": False,
+        "prefix_protocol_enabled": False, "prefix_token_ids": [],
+        "prefix_kv_present": False, "prefix_state_path": None,
+        "prefix_state_sha256": None, "prefix_kv_path": None,
+        "prefix_kv_sha256": None, "prefix_discovery_num_samples": None,
+        "prefix_discovery_manifest_path": None, "prefix_discovery_manifest_sha256": None,
+    }
+    if manifest.get("purpose") == "ann_training_calibration":
+        expected.update(source_model_stage="original_pretrained_base",
+                        source_ann_mode=None, source_ann_checkpoint=None,
+                        source_ann_config_sha256=None)
+    mismatch = {key: (value, manifest.get(key)) for key, value in expected.items()
+                if manifest.get(key) != value or (type(value) is bool and type(manifest.get(key)) is not bool)}
+    if mismatch:
+        raise ValueError(f"No-Rotation/no-Prefix calibration provenance mismatch: {mismatch}")
+
+
 def validate_site_state_bundle(
     site_root: str | Path,
     manifest: dict[str, Any] | None = None,
@@ -348,6 +374,7 @@ def validate_site_state_bundle(
     root = Path(site_root)
     manifest = load_calibration_manifest(root) if manifest is None else manifest
     if cfg is not None:
+        validate_disabled_component_provenance(cfg, manifest)
         validate_gif_qparam_manifest_compatibility(
             manifest, cfg, context=root / "calibration_state_manifest.json"
         )

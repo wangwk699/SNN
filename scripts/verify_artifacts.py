@@ -290,6 +290,26 @@ def _validate_aware_source_ann_runtime_provenance(cfg, layout):
     return None
 
 
+def _verify_disabled_components(cfg, layout):
+    if not (is_aware_ann_mode(cfg) and not cfg["rotation"]["enabled"]):
+        return
+    forbidden = [layout.rotation_dir / "rotation_state.pt", layout.rotation_dir / "fused_base"]
+    for root in (layout.ann_training_prefix_dir, layout.post_finetuning_prefix_dir):
+        forbidden.extend(root / name for name in ("prefix_state.json", "prefixed_key_values.pt"))
+    present = [str(path) for path in forbidden if path.exists()]
+    if present:
+        raise ValueError(f"Disabled Rotation/Prefix artifacts must be absent: {present}")
+    checkpoint = read_json(layout.ann_checkpoint_dir / "config.json")
+    training = read_json(layout.ann_dir / "training_result.json")
+    for metadata, fields in (
+        (checkpoint, ("snn2_rotation_enabled", "snn2_fused_weights_are_trainable")),
+        (training, ("fused_rotation_weights_trained", "prefix_enabled")),
+    ):
+        for field in fields:
+            if metadata.get(field) is not False:
+                raise ValueError(f"Disabled Rotation/Prefix requires {field}=false")
+
+
 def _verify_final_ann_forward_metadata(cfg, layout, path):
     metadata = _evaluation_metadata(path)
     mode = final_ann_replacement_mode(cfg)
@@ -358,6 +378,8 @@ def _verify_final_ann_forward_metadata(cfg, layout, path):
     if not prefix_enabled:
         if metadata.get("prefix_root") is not None:
             raise ValueError(f"Final ANN evaluation unexpectedly uses a Prefix root: {path}")
+        if is_aware_ann_mode(cfg) and not cfg["rotation"]["enabled"] and metadata.get("prefix_token_ids", []) != []:
+            raise ValueError(f"Final ANN evaluation unexpectedly uses Prefix token IDs: {path}")
     else:
         expected_prefix_stage = final_ann_evaluation_prefix_artifact_stage(cfg)
         actual_prefix_root = metadata.get("prefix_root")
@@ -984,6 +1006,7 @@ def main():
 
         _validate_aware_final_ann_training_provenance(cfg, layout)
         _validate_aware_source_ann_runtime_provenance(cfg, layout)
+        _verify_disabled_components(cfg, layout)
 
         if cfg["rotation"]["enabled"]:
             validate_canonical_preprocessing_manifest_for_config(

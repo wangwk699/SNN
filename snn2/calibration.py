@@ -177,7 +177,11 @@ def calibration_provenance(cfg: dict[str, Any], layout: ArtifactLayout, *, stage
         "common_clip_required": False,
         "common_clip_generated": False,
         "common_clip_application_control": "replacement.common_clip_enabled",
-        "source_model_stage": "original_pretrained_base" if stage == "vanilla_analysis" else ("rotated_fused_base" if stage == "ann_training" else "final_ann_checkpoint"),
+        "source_model_stage": (
+            "final_ann_checkpoint" if post else
+            ("rotated_fused_base" if stage == "ann_training" and cfg["rotation"]["enabled"]
+             else "original_pretrained_base")
+        ),
         "source_ann_mode": cfg["experiment"]["ann_mode"] if post else None,
         "source_ann_checkpoint": str(layout.ann_checkpoint_dir.resolve()) if post else None,
         "source_ann_config_sha256": sha256_file(ann_config) if ann_config else None,

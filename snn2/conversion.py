@@ -13,6 +13,7 @@ from .config import (
     is_aware_ann_mode,
     previous_layers_snn_enabled,
     training_common_clip_enabled,
+    training_prefix_enabled,
     use_post_finetuning_artifacts,
     calibration_trajectory_config,
 )
@@ -20,7 +21,7 @@ from .controller import SiteController
 from .phase_math import validate_phase_base
 from .data import validate_prefix_discovery_state
 from .sites import topology_metadata
-from .state_validation import validate_site_state_bundle
+from .state_validation import validate_site_state_bundle, validate_clip_profile
 from .temporal_ops import (
     CONVERSION_METADATA_FORMAT_VERSION,
     CALIBRATION_GROUPING_POLICY,
@@ -252,6 +253,16 @@ def _validate_aware_training_provenance(
             f"Aware conversion requires ANN training provenance: {result_path}"
         )
     result = read_json(result_path)
+    if not training_prefix_enabled(cfg):
+        from .training import disabled_training_prefix_provenance
+
+        result.update(disabled_training_prefix_provenance(result))
+        if any(prefix[key] != value for key, value in {
+            "prefix_root": None, "prefix_token_ids": [],
+            "prefix_state_sha256": None, "prefix_kv_sha256": None,
+            "prefix_num_samples": None, "prefix_discovery_manifest_sha256": None,
+        }.items()):
+            raise ValueError("Disabled ANN-training Prefix cannot reuse an effective SNN Prefix")
     expected = {
         "ann_training_prefix_root": prefix["prefix_root"],
         "ann_training_prefix_state_sha256": prefix["prefix_state_sha256"],
@@ -277,6 +288,21 @@ def _validate_aware_training_provenance(
         validate_phase_base(result.get("ann_training_phase_base"))
     except ValueError as exc:
         raise ValueError("Aware ANN training provenance is missing ann_training_phase_base") from exc
+    if not training_prefix_enabled(cfg):
+        expected.update({
+            "ann_training_stage_a_root": str(layout.ann_training_site_dir.resolve()),
+            "ann_training_stage_a_manifest_sha256": sha256_file(calibration_manifest),
+            "ann_training_calibration_num_samples": int(cfg["calibration"]["num_samples"]),
+            "ann_training_calibration_trajectory_signature": calibration_trajectory_config(cfg),
+        })
+        for neuron, enabled in calibration_trajectory_config(cfg)["effective_previous_layers_snn"].items():
+            expected[f"ann_training_{neuron}_previous_layers_snn"] = enabled
+        validate_clip_profile(
+            layout.ann_training_site_dir, profile_path.parent,
+            phase_T=result["ann_training_phase_T"], phase_base=result["ann_training_phase_base"],
+            mtn_T=result["ann_training_mtn_T"], group_size=int(cfg["calibration"]["group_size"]),
+            num_samples=int(cfg["calibration"]["num_samples"]),
+        )
     mismatched = {
         key: {"expected": value, "actual": result.get(key)}
         for key, value in expected.items()
@@ -314,11 +340,21 @@ def _source_bundle(
     )
     manifest_path = layout.conversion_site_dir / "calibration_state_manifest.json"
     manifest = read_json(manifest_path)
+    if is_aware_ann_mode(cfg) and not cfg["rotation"]["enabled"]:
+        expected_data = {
+            "calibration_data_manifest_path": str(layout.calibration_data_manifest_path.resolve()),
+            "calibration_data_manifest_sha256": sha256_file(layout.calibration_data_manifest_path),
+        }
+        if any(manifest.get(key) != value for key, value in expected_data.items()):
+            raise ValueError("No-Rotation conversion calibration data provenance mismatch")
     validate_calibration_trajectory_provenance(cfg, layout.conversion_site_dir, manifest)
     _validate_source_manifest(manifest, reused=reused)
     expected_source = (
         {
-            "source_model_stage": "rotated_fused_base",
+            "source_model_stage": (
+                "rotated_fused_base" if cfg["rotation"]["enabled"]
+                else "original_pretrained_base"
+            ),
             "source_ann_mode": None,
             "source_ann_checkpoint": None,
             "source_ann_config_sha256": None,
@@ -431,6 +467,8 @@ def validate_conversion_metadata(
         "final_norm_gif_state_present": False,
         "final_norm_clip_state_present": False,
     }
+    if is_aware_ann_mode(cfg) and not cfg["rotation"]["enabled"]:
+        expected["prefix_root"] = None
     mismatched = {
         key: {"expected": value, "actual": metadata.get(key)}
         for key, value in expected.items()

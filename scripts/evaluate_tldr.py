@@ -29,6 +29,7 @@ from snn2.evaluation import (
     append_evaluation_num_samples_if_needed,
     activation_neuron_operators_per_temporal_forward,
     build_evaluation_controller,
+    evaluation_requires_integration,
     global_final_norm_evaluation_metadata,
     greedy_generate,
     deployment_policy_metadata,
@@ -264,7 +265,10 @@ def main():
             base=args.base,
             rotated_pre_finetuning=args.rotated_pre_finetuning,
         )
-        if args.neuron != "ann" or cfg["rotation"]["enabled"]:
+        if evaluation_requires_integration(
+            cfg, neuron=args.neuron, base=args.base,
+            rotated_pre_finetuning=args.rotated_pre_finetuning,
+        ):
             install_model_integration(model, controller, rotation_state(cfg, layout))
         prefixes = prefix_ids_for_stage(cfg, layout, stage=prefix_stage)
         install_prefix_kv_forward(
